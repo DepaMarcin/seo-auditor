@@ -1,0 +1,190 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Audyt: {{ audit.url }}{% endblock %}
+
+{% block content %}
+
+{# ---------- SEKCJA 1: wynik główny + statystyki ---------- #}
+<div class="panel">
+    <p><a class="link" href="{% url 'auditor:index' %}">&larr; Wszystkie audyty</a></p>
+    <h1>{{ audit.url }}</h1>
+    <p>
+        <span class="badge badge-{{ audit.status }}">{{ audit.get_status_display }}</span>
+        &nbsp;&middot;&nbsp; {{ audit.created_at|date:"Y-m-d H:i" }}
+    </p>
+    <div class="score">{{ audit.score }}<span style="font-size: 1rem; color: var(--muted);">/100</span></div>
+
+    {% if audit.status == "completed" %}
+    <div class="stats-row">
+        <div class="stat-tile stat-errors">
+            <div class="stat-value">{{ stats.errors_count }}</div>
+            <div class="stat-label">Krytyczne błędy</div>
+        </div>
+        <div class="stat-tile stat-warnings">
+            <div class="stat-value">{{ stats.warnings_count }}</div>
+            <div class="stat-label">Ostrzeżenia</div>
+        </div>
+        <div class="stat-tile stat-passed">
+            <div class="stat-value">{{ stats.passed_count }}</div>
+            <div class="stat-label">Zdane testy</div>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+{% if audit.status == "failed" %}
+<div class="panel">
+    <p>Audyt zakończył się błędem — nie udało się pobrać lub przetworzyć strony.</p>
+</div>
+{% elif audit.status == "completed" %}
+
+{# ---------- SEKCJA 2: priorytety / krytyczne błędy ---------- #}
+<div class="priority-panel critical">
+    <h2 class="section-heading critical-heading">🔥 Priorytety (Krytyczne błędy)</h2>
+    {% if critical_errors %}
+    {% for metric in critical_errors %}
+    <div class="priority-card critical-card">
+        <div class="priority-card-header">
+            <span class="priority-card-title">{{ metric.display_key }}</span>
+            <span class="category-tag">{{ metric.category }}</span>
+        </div>
+        <p class="priority-note">{{ metric.value.note }}</p>
+        {% if metric.value.recommendation %}
+        <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
+        {% endif %}
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="priority-empty">Brak krytycznych błędów — świetna robota.</p>
+    {% endif %}
+</div>
+
+{# ---------- SEKCJA 3: ostrzeżenia ---------- #}
+<div class="priority-panel warning-panel">
+    <h2 class="section-heading warning-heading">⚠️ Warto poprawić (Ostrzeżenia)</h2>
+    {% if warnings %}
+    {% for metric in warnings %}
+    <div class="priority-card warning-card">
+        <div class="priority-card-header">
+            <span class="priority-card-title">{{ metric.display_key }}</span>
+            <span class="category-tag">{{ metric.category }}</span>
+        </div>
+        <p class="priority-note">{{ metric.value.note }}</p>
+        {% if metric.value.recommendation %}
+        <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
+        {% endif %}
+    </div>
+    {% endfor %}
+    {% else %}
+    <p class="priority-empty">Brak ostrzeżeń.</p>
+    {% endif %}
+</div>
+
+{# ---------- SEKCJA 4: szczegółowy raport (surowe dane wg kategorii) ---------- #}
+<div class="report-section">
+    <h2 class="section-heading">📊 Szczegółowy raport</h2>
+
+    <div class="panel">
+        <h2>Performance</h2>
+
+        <div class="score-preview">
+            <div class="score-preview-item">
+                <div class="cwv-label">📱 Mobile</div>
+                <div class="cwv-value">{% if mobile_score is not None %}{{ mobile_score }}/100{% else %}—{% endif %}</div>
+            </div>
+            <div class="score-preview-item">
+                <div class="cwv-label">🖥️ Desktop</div>
+                <div class="cwv-value">{% if desktop_score is not None %}{{ desktop_score }}/100{% else %}—{% endif %}</div>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <input type="radio" id="tab-mobile" name="pagespeed-tabs" class="tab-input" checked>
+            <label for="tab-mobile" class="tab-label">📱 Mobile</label>
+            <input type="radio" id="tab-desktop" name="pagespeed-tabs" class="tab-input">
+            <label for="tab-desktop" class="tab-label">🖥️ Desktop</label>
+
+            <div class="tab-panel" id="panel-mobile">
+                {% include "auditor/_pagespeed_tab.html" with metrics=mobile_metrics %}
+            </div>
+            <div class="tab-panel" id="panel-desktop">
+                {% include "auditor/_pagespeed_tab.html" with metrics=desktop_metrics %}
+            </div>
+        </div>
+
+        {% if other_performance_metrics %}
+        <div style="margin-top: 0.5rem;">
+            {% for metric in other_performance_metrics %}
+            <div style="padding: 0.75rem 0; border-bottom: 1px solid var(--border);">
+                <div class="metric-key">{{ metric.key }}</div>
+                <span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span>
+                <p>{{ metric.value.note }}</p>
+                {% if metric.value.recommendation %}
+                <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="panel">
+        <h2>Struktura &amp; GEO / E-E-A-T</h2>
+        {% if structure_metrics %}
+        <div class="structure-grid">
+            {% for metric in structure_metrics %}
+            <div class="structure-card status-{{ metric.status }}">
+                <div class="metric-key">{{ metric.key }}</div>
+                <span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span>
+                <p>{{ metric.value.note }}</p>
+                {% if metric.value.recommendation %}
+                <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p>Brak danych.</p>
+        {% endif %}
+    </div>
+
+    {% for category, metrics in metrics_by_category.items %}
+    <div class="panel">
+        <h2>{{ category }}</h2>
+        {% for metric in metrics %}
+        <div style="padding: 0.75rem 0; border-bottom: 1px solid var(--border);">
+            <div class="metric-key">{{ metric.key }}</div>
+            <span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span>
+            <p>{{ metric.value.note }}</p>
+            {% if metric.value.recommendation %}
+            <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endfor %}
+</div>
+
+{# ---------- SEKCJA 5: zdane testy (zwinięte) ---------- #}
+<div class="report-section">
+    <details class="passed-tests">
+        <summary class="section-heading" style="display: inline-block;">✅ Zdane testy ({{ stats.passed_count }})</summary>
+        <div class="passed-list">
+            {% for metric in passed_tests %}
+            <div class="passed-item">
+                <span>{{ metric.display_key }}</span>
+                <span class="passed-category">{{ metric.category }}</span>
+            </div>
+            {% empty %}
+            <p class="priority-empty">Brak zdanych testów.</p>
+            {% endfor %}
+        </div>
+    </details>
+</div>
+
+{% else %}
+<div class="panel">
+    <p>Audyt jest jeszcze przetwarzany.</p>
+</div>
+{% endif %}
+{% endblock %}

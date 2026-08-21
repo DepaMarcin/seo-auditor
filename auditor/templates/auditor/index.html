@@ -1,0 +1,42 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}SEO Auditor{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <h1>Nowy audyt SEO</h1>
+    <form class="audit-form" method="post" action="{% url 'auditor:index' %}">
+        {% csrf_token %}
+        <input type="url" name="url" placeholder="https://przyklad.pl" required>
+        <button type="submit">Uruchom audyt</button>
+    </form>
+</div>
+
+<div class="panel">
+    <h2>Dotychczasowe audyty</h2>
+    {% if audits %}
+    <table>
+        <thead>
+            <tr>
+                <th>URL</th>
+                <th>Status</th>
+                <th>Wynik</th>
+                <th>Data</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for audit in audits %}
+            <tr>
+                <td><a class="link" href="{% url 'auditor:detail' audit.pk %}">{{ audit.url }}</a></td>
+                <td><span class="badge badge-{{ audit.status }}">{{ audit.get_status_display }}</span></td>
+                <td>{{ audit.score }}/100</td>
+                <td>{{ audit.created_at|date:"Y-m-d H:i" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>Brak audytów. Podaj adres URL powyżej, aby rozpocząć.</p>
+    {% endif %}
+</div>
+{% endblock %}

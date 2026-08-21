@@ -1,0 +1,291 @@
+{% load static %}<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <title>{% block title %}SEO Auditor{% endblock %}</title>
+    <style>
+        :root {
+            --bg: #0f172a;
+            --panel: #1e293b;
+            --border: #334155;
+            --text: #e2e8f0;
+            --muted: #94a3b8;
+            --accent: #38bdf8;
+            --ok: #22c55e;
+            --warning: #eab308;
+            --error: #ef4444;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+        header {
+            padding: 1.5rem 2rem;
+            border-bottom: 1px solid var(--border);
+        }
+        header a {
+            color: var(--text);
+            text-decoration: none;
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+        main {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+        }
+        form.audit-form {
+            display: flex;
+            gap: 0.5rem;
+        }
+        input[type="url"] {
+            flex: 1;
+            padding: 0.6rem 0.8rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: #0b1220;
+            color: var(--text);
+        }
+        button {
+            padding: 0.6rem 1.2rem;
+            border-radius: 6px;
+            border: none;
+            background: var(--accent);
+            color: #0b1220;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        button:hover { opacity: 0.9; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 0.6rem; border-bottom: 1px solid var(--border); }
+        th { color: var(--muted); font-weight: 500; font-size: 0.85rem; text-transform: uppercase; }
+        tr:last-child td { border-bottom: none; }
+        a.link { color: var(--accent); text-decoration: none; }
+        a.link:hover { text-decoration: underline; }
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.6rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .badge-pending, .badge-processing { background: rgba(148, 163, 184, 0.2); color: var(--muted); }
+        .badge-completed, .badge-ok { background: rgba(34, 197, 94, 0.15); color: var(--ok); }
+        .badge-failed, .badge-error { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+        .badge-warning { background: rgba(234, 179, 8, 0.15); color: var(--warning); }
+        .messages { list-style: none; padding: 0; margin: 0 0 1rem; }
+        .messages li { padding: 0.6rem 1rem; border-radius: 6px; background: rgba(239, 68, 68, 0.15); color: var(--error); margin-bottom: 0.5rem; }
+        .score { font-size: 2.5rem; font-weight: 700; }
+        .metric-key { color: var(--muted); font-size: 0.8rem; }
+        .recommendation {
+            margin-top: 0.4rem;
+            padding: 0.6rem 0.8rem;
+            border-left: 3px solid var(--accent);
+            background: rgba(56, 189, 248, 0.08);
+            font-size: 0.9rem;
+        }
+        h2 { text-transform: capitalize; }
+        .cwv-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+            margin-bottom: 1rem;
+        }
+        .cwv-tile {
+            border-radius: 8px;
+            padding: 1rem;
+            background: #0b1220;
+            border: 1px solid var(--border);
+            border-top: 3px solid var(--muted);
+        }
+        .cwv-tile.cwv-ok { border-top-color: var(--ok); }
+        .cwv-tile.cwv-warning { border-top-color: var(--warning); }
+        .cwv-tile.cwv-error { border-top-color: var(--error); }
+        .cwv-label { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
+        .cwv-value { font-size: 1.6rem; font-weight: 700; margin: 0.15rem 0; }
+        .cwv-tile.cwv-ok .cwv-value { color: var(--ok); }
+        .cwv-tile.cwv-warning .cwv-value { color: var(--warning); }
+        .cwv-tile.cwv-error .cwv-value { color: var(--error); }
+        .cwv-note { font-size: 0.8rem; color: var(--muted); }
+        .score-preview { display: flex; gap: 1rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
+        .score-preview-item {
+            background: #0b1220;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem 1.5rem;
+        }
+        .tabs { margin-top: 0.5rem; }
+        .tab-input { display: none; }
+        .tab-label {
+            display: inline-block;
+            padding: 0.5rem 1.25rem;
+            margin-right: 0.4rem;
+            border-radius: 8px 8px 0 0;
+            background: #0b1220;
+            border: 1px solid var(--border);
+            border-bottom: none;
+            color: var(--muted);
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .tab-panel {
+            display: none;
+            padding: 1rem 0 0;
+            border-top: 1px solid var(--border);
+        }
+        #tab-mobile:checked ~ label[for="tab-mobile"],
+        #tab-desktop:checked ~ label[for="tab-desktop"] {
+            background: var(--panel);
+            color: var(--text);
+            border-color: var(--accent);
+        }
+        #tab-mobile:checked ~ #panel-mobile,
+        #tab-desktop:checked ~ #panel-desktop {
+            display: block;
+        }
+        .structure-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 0.75rem;
+        }
+        .structure-card {
+            background: #0b1220;
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--muted);
+            border-radius: 8px;
+            padding: 1rem;
+        }
+        .structure-card.status-ok { border-left-color: var(--ok); }
+        .structure-card.status-warning { border-left-color: var(--warning); }
+        .structure-card.status-error { border-left-color: var(--error); }
+
+        /* --- Executive Summary: statystyki, priorytety, zdane testy --- */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+            margin-top: 1.25rem;
+        }
+        .stat-tile {
+            background: #0b1220;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            text-align: center;
+        }
+        .stat-tile .stat-value { font-size: 1.9rem; font-weight: 700; line-height: 1.2; }
+        .stat-tile .stat-label { color: var(--muted); font-size: 0.8rem; margin-top: 0.25rem; }
+        .stat-tile.stat-errors { border-color: rgba(239, 68, 68, 0.4); }
+        .stat-tile.stat-errors .stat-value { color: var(--error); }
+        .stat-tile.stat-warnings { border-color: rgba(234, 179, 8, 0.4); }
+        .stat-tile.stat-warnings .stat-value { color: var(--warning); }
+        .stat-tile.stat-passed { border-color: rgba(34, 197, 94, 0.4); }
+        .stat-tile.stat-passed .stat-value { color: var(--ok); }
+
+        .section-heading {
+            font-size: 1.1rem;
+            margin: 0 0 1rem;
+        }
+
+        .priority-panel {
+            border-radius: 10px;
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            border: 1px solid var(--border);
+        }
+        .priority-panel.critical {
+            background: rgba(239, 68, 68, 0.07);
+            border-color: rgba(239, 68, 68, 0.35);
+        }
+        .priority-panel.warning-panel {
+            background: rgba(234, 179, 8, 0.07);
+            border-color: rgba(234, 179, 8, 0.35);
+        }
+        .priority-panel .section-heading.critical-heading { color: var(--error); }
+        .priority-panel .section-heading.warning-heading { color: var(--warning); }
+        .priority-card {
+            background: #0b1220;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.75rem;
+        }
+        .priority-card:last-child { margin-bottom: 0; }
+        .priority-card.critical-card { border-left: 4px solid var(--error); }
+        .priority-card.warning-card { border-left: 4px solid var(--warning); }
+        .priority-card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.4rem;
+            flex-wrap: wrap;
+        }
+        .priority-card-title { font-weight: 600; }
+        .category-tag {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            color: var(--muted);
+            background: rgba(148, 163, 184, 0.15);
+            padding: 0.1rem 0.5rem;
+            border-radius: 999px;
+        }
+        .priority-note { margin: 0.25rem 0 0; }
+        .priority-empty { color: var(--muted); font-style: italic; margin: 0; }
+
+        .report-section { margin-top: 2rem; }
+        .report-section > .section-heading { margin-bottom: 1rem; }
+
+        details.passed-tests {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1.25rem 1.5rem;
+        }
+        details.passed-tests summary {
+            cursor: pointer;
+            font-weight: 600;
+            list-style: none;
+        }
+        details.passed-tests summary::-webkit-details-marker { display: none; }
+        details.passed-tests summary::before { content: "▶ "; color: var(--muted); }
+        details.passed-tests[open] summary::before { content: "▼ "; }
+        .passed-list { margin-top: 1rem; }
+        .passed-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.9rem;
+        }
+        .passed-item:last-child { border-bottom: none; }
+        .passed-item .passed-category { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+<header>
+    <a href="{% url 'auditor:index' %}">SEO Auditor · silnik RAG</a>
+</header>
+<main>
+    {% if messages %}
+    <ul class="messages">
+        {% for message in messages %}
+        <li>{{ message }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+    {% block content %}{% endblock %}
+</main>
+</body>
+</html>
