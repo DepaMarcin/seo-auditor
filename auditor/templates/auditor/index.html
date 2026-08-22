@@ -5,12 +5,101 @@
 {% block content %}
 <div class="panel">
     <h1>Nowy audyt SEO</h1>
-    <form class="audit-form" method="post" action="{% url 'auditor:index' %}">
+    <form class="audit-form" id="audit-form" method="post" action="{% url 'auditor:index' %}">
         {% csrf_token %}
-        <input type="url" name="url" placeholder="https://przyklad.pl" required>
-        <button type="submit">Uruchom audyt</button>
+        <input type="url" name="url" id="audit-url" placeholder="https://przyklad.pl" required>
+        <button type="submit" id="audit-submit">Uruchom audyt</button>
     </form>
+
+    <div id="loading-container" class="loading-container hidden">
+        <div class="loading-header">
+            <span class="spinner"></span>
+            <span>Trwa audyt strony…</span>
+        </div>
+        <div class="progress-track">
+            <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <p class="loading-status" id="loading-status"></p>
+    </div>
 </div>
+
+<script>
+(function () {
+    var form = document.getElementById("audit-form");
+    if (!form) return;
+
+    var urlInput = document.getElementById("audit-url");
+    var submitBtn = document.getElementById("audit-submit");
+    var loadingContainer = document.getElementById("loading-container");
+    var progressBar = document.getElementById("progress-bar");
+    var loadingStatus = document.getElementById("loading-status");
+
+    var STATUS_MESSAGES = [
+        "1/3: Pobieranie kodu HTML i analiza struktury nagłówków...",
+        "2/3: Odpytywanie Google PageSpeed Insights API (Mobile & Desktop)...",
+        "3/3: Odpytywanie bazy wiedzy RAG i generowanie rekomendacji AI..."
+    ];
+
+    form.addEventListener("submit", function (event) {
+        event.preventDefault();
+
+        // Loader startuje tylko wtedy, gdy pole URL faktycznie ma wartość.
+        if (!urlInput.value.trim()) {
+            urlInput.reportValidity();
+            return;
+        }
+
+        // Uwaga: `disabled` na polu URL wyklucza je z FormData/natywnego wysyłania
+        // formularza - przeglądarka nie wyśle wtedy wartości w żądaniu POST.
+        // `readOnly` blokuje edycję, ale wartość pola nadal trafia do żądania.
+        urlInput.readOnly = true;
+        submitBtn.style.pointerEvents = "none";
+        submitBtn.style.opacity = "0.6";
+        submitBtn.textContent = "Trwa audyt…";
+        loadingContainer.classList.remove("hidden");
+
+        var progress = 4;
+        progressBar.style.width = progress + "%";
+        var progressTimer = setInterval(function () {
+            progress += (90 - progress) * 0.12 + 0.5;
+            if (progress > 90) progress = 90;
+            progressBar.style.width = progress + "%";
+        }, 350);
+
+        var statusIndex = 0;
+        loadingStatus.textContent = STATUS_MESSAGES[0];
+        var statusTimer = setInterval(function () {
+            statusIndex = (statusIndex + 1) % STATUS_MESSAGES.length;
+            loadingStatus.textContent = STATUS_MESSAGES[statusIndex];
+        }, 2500);
+
+        function stopTimers() {
+            clearInterval(progressTimer);
+            clearInterval(statusTimer);
+        }
+
+        var formData = new FormData(form);
+
+        fetch(form.action, { method: "POST", body: formData })
+            .then(function (response) {
+                stopTimers();
+                progressBar.style.width = "100%";
+                var destination = response.url;
+                setTimeout(function () {
+                    window.location.href = destination;
+                }, 400);
+            })
+            .catch(function () {
+                stopTimers();
+                loadingStatus.textContent = "Wystąpił błąd połączenia. Spróbuj ponownie.";
+                urlInput.readOnly = false;
+                submitBtn.style.pointerEvents = "";
+                submitBtn.style.opacity = "";
+                submitBtn.textContent = "Uruchom audyt";
+            });
+    });
+})();
+</script>
 
 <div class="panel">
     <h2>Dotychczasowe audyty</h2>

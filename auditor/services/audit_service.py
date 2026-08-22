@@ -273,10 +273,61 @@ class AuditService:
     # ------------------------------------------------------------------
     def _build_pagespeed_metrics(self, url: str) -> list[dict]:
         results = self.pagespeed_service.analyze_all(url)
-        metrics = []
+        metrics = [self._build_pagespeed_summary_metric(results)]
         for strategy in ("mobile", "desktop"):
             metrics.extend(self._build_pagespeed_metrics_for_strategy(strategy, results[strategy]))
         return metrics
+
+    def _build_pagespeed_summary_metric(self, results: dict) -> dict:
+        """Łączy ogólne wyniki punktowe PageSpeed (Mobile + Desktop) w jedną metrykę,
+        żeby w podsumowaniu (Priorytety/Ostrzeżenia) nie powielać dwóch osobnych kart
+        i wygenerować przez RAGEngine tylko jedną, kompleksową poradę."""
+        mobile_score = results["mobile"].get("performance_score")
+        desktop_score = results["desktop"].get("performance_score")
+
+        mobile_status = self._pagespeed_score_status(mobile_score)
+        desktop_status = self._pagespeed_score_status(desktop_score)
+        status = self._worse_status(mobile_status, desktop_status)
+
+        mobile_display = f"{mobile_score}/100" if mobile_score is not None else "brak danych"
+        desktop_display = f"{desktop_score}/100" if desktop_score is not None else "brak danych"
+        label = f"Wynik PageSpeed Insights (Mobile: {mobile_display}, Desktop: {desktop_display})"
+
+        if mobile_score is None and desktop_score is None:
+            note = "Nie udało się pobrać wyniku wydajności PageSpeed Insights ani dla Mobile, ani dla Desktop."
+        elif mobile_score is None or desktop_score is None:
+            missing = "Mobile" if mobile_score is None else "Desktop"
+            note = f"Nie udało się pobrać wyniku PageSpeed Insights dla wariantu {missing}."
+        elif status == "ok":
+            note = "Wydajność strony na urządzeniach mobilnych i desktopowych mieści się w dobrych progach Google PageSpeed."
+        else:
+            weaker = "mobilnych" if mobile_score <= desktop_score else "desktopowych"
+            note = (
+                f"Wydajność jest niższa na urządzeniach {weaker}. Google ocenia witryny przede wszystkim na "
+                "podstawie wersji mobilnej (mobile-first indexing), dlatego wynik mobilny ma priorytet "
+                "przy optymalizacji."
+            )
+
+        value = {
+            "label": label,
+            "mobile_score": mobile_score,
+            "desktop_score": desktop_score,
+            "note": note,
+        }
+        return self._make_metric("performance", "pagespeed_score", value, status)
+
+    def _pagespeed_score_status(self, score: int | None) -> str:
+        if score is None:
+            return "warning"
+        if score >= PAGESPEED_SCORE_GOOD:
+            return "ok"
+        if score >= PAGESPEED_SCORE_WARNING:
+            return "warning"
+        return "error"
+
+    def _worse_status(self, a: str, b: str) -> str:
+        severity = {"ok": 0, "warning": 1, "error": 2}
+        return a if severity[a] >= severity[b] else b
 
     def _build_pagespeed_metrics_for_strategy(self, strategy: str, result: dict) -> list[dict]:
         prefix = f"{strategy}_"
@@ -303,6 +354,8 @@ class AuditService:
         ]
 
     def _evaluate_pagespeed_score(self, result: dict, prefix: str = "") -> dict:
+        # Uwaga: rekomendacja RAG dla wyniku ogólnego generowana jest raz, zbiorczo,
+        # w _build_pagespeed_summary_metric() - tutaj tylko dane do kafelka w zakładce.
         score = result["performance_score"]
         if score is None:
             status, note = "warning", "Brak wyniku wydajności PageSpeed."
@@ -313,7 +366,9 @@ class AuditService:
         else:
             status, note = "error", f"Wynik wydajności PageSpeed: {score}/100 - niska wydajność."
         value = {"value": score, "unit": "", "label": "Wynik PageSpeed", "note": note, "strategy": prefix.rstrip("_")}
-        return self._make_metric("performance", f"{prefix}pagespeed_score", value, status)
+        return self._make_metric(
+            "performance", f"{prefix}pagespeed_score", value, status, generate_recommendation=False
+        )
 
     def _evaluate_lcp(self, result: dict, prefix: str = "") -> dict:
         lcp = result["lcp"]
@@ -391,8 +446,10 @@ class AuditService:
         }
         return self._make_metric("performance", f"{prefix}inp", value, status)
 
-    def _make_metric(self, category: str, key: str, value: dict, status: str) -> dict:
-        if status in ("warning", "error"):
+    def _make_metric(
+        self, category: str, key: str, value: dict, status: str, generate_recommendation: bool = True
+    ) -> dict:
+        if generate_recommendation and status in ("warning", "error"):
             recommendation = self.rag_engine.generate_recommendation(value.get("note", key), category=category)
             value = {**value, "recommendation": recommendation}
         return {"category": category, "key": key, "value": value, "status": status}

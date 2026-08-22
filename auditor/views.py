@@ -42,10 +42,22 @@ def _annotate_metric_labels(metrics):
     return metrics
 
 
+# Metryki score per urządzenie zastąpione są w podsumowaniu (Priorytety/Ostrzeżenia)
+# jedną zbiorczą metryką "pagespeed_score" - nie pokazujemy ich tam osobno.
+MERGED_PAGESPEED_SCORE_KEYS = {"mobile_pagespeed_score", "desktop_pagespeed_score"}
+
+
 def _split_performance_metrics(metrics):
-    """Rozdziela metryki performance na mobile/desktop (wg przedrostka) i pozostałe."""
+    """Rozdziela metryki performance na mobile/desktop (wg przedrostka) i pozostałe.
+
+    Zbiorcza metryka "pagespeed_score" (bez przedrostka) jest pomijana tutaj celowo -
+    jest prezentowana wyłącznie w sekcjach Priorytety/Ostrzeżenia/Zdane testy, żeby nie
+    powielać jej obok pełnych kafelków Mobile/Desktop w sekcji szczegółowej.
+    """
     mobile, desktop, other = [], [], []
     for metric in metrics:
+        if metric.key == "pagespeed_score":
+            continue
         if metric.key.startswith("mobile_"):
             mobile.append(metric)
         elif metric.key.startswith("desktop_"):
@@ -77,15 +89,19 @@ def audit_detail(request, pk):
         (m.value.get("value") for m in desktop_metrics if m.short_key == "pagespeed_score"), None
     )
 
-    critical_errors = [m for m in all_metrics if m.status == AuditMetric.MetricStatus.ERROR]
-    warnings = [m for m in all_metrics if m.status == AuditMetric.MetricStatus.WARNING]
-    passed_tests = [m for m in all_metrics if m.status == AuditMetric.MetricStatus.OK]
+    # W podsumowaniu (Priorytety/Ostrzeżenia/Zdane testy) pomijamy osobne metryki
+    # score per urządzenie - reprezentuje je tam jedna zbiorcza metryka "pagespeed_score".
+    summary_metrics = [m for m in all_metrics if m.key not in MERGED_PAGESPEED_SCORE_KEYS]
+
+    critical_errors = [m for m in summary_metrics if m.status == AuditMetric.MetricStatus.ERROR]
+    warnings = [m for m in summary_metrics if m.status == AuditMetric.MetricStatus.WARNING]
+    passed_tests = [m for m in summary_metrics if m.status == AuditMetric.MetricStatus.OK]
 
     stats = {
         "errors_count": len(critical_errors),
         "warnings_count": len(warnings),
         "passed_count": len(passed_tests),
-        "total_count": len(all_metrics),
+        "total_count": len(summary_metrics),
     }
 
     return render(
