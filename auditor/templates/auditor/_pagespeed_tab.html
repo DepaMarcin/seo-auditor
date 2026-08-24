@@ -19,13 +19,6 @@
 {% endfor %}
 {% for metric in metrics %}
 {% if metric.short_key not in cwv_keys %}
-<div style="padding: 0.75rem 0; border-bottom: 1px solid var(--border);">
-    <div class="metric-key">{{ metric.short_key }}</div>
-    <span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span>
-    <p>{{ metric.value.note }}</p>
-    {% if metric.value.recommendation %}
-    <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
-    {% endif %}
-</div>
+{% include "auditor/_metric_row.html" with metric=metric %}
 {% endif %}
 {% endfor %}

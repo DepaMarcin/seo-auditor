@@ -9,7 +9,7 @@ from .scraper import ScraperError, SEOScraper
 logger = logging.getLogger(__name__)
 
 TITLE_MIN_LENGTH = 30
-TITLE_MAX_LENGTH = 60
+TITLE_MAX_LENGTH = 65
 DESCRIPTION_MIN_LENGTH = 70
 DESCRIPTION_MAX_LENGTH = 160
 
@@ -25,8 +25,23 @@ FCP_WARNING = 3.0
 INP_GOOD = 200
 INP_WARNING = 500
 
-# Kluczowe typy Schema.org sprawdzane pod kątem obecności w danych strukturalnych JSON-LD.
-TRACKED_SCHEMA_TYPES = {"Organization", "WebPage", "FAQPage", "Article", "Course"}
+# Oczekiwane typy Schema.org w zależności od wykrytego typu podstrony (auditor.services.scraper).
+# Każda "grupa" to zbiór alternatyw - wystarczy, że wystąpi jeden z typów w grupie.
+PAGE_TYPE_LABELS = {
+    "homepage": "Strona główna",
+    "product": "Strona produktowa",
+    "article": "Artykuł / Blog",
+    "category": "Kategoria / Sklep",
+    "generic": "Strona ogólna",
+}
+
+EXPECTED_SCHEMA_BY_PAGE_TYPE = {
+    "homepage": [{"Organization", "LocalBusiness"}, {"WebSite"}],
+    "product": [{"Product"}],
+    "article": [{"Article", "BlogPosting"}],
+    "category": [{"CollectionPage", "ItemList"}],
+    "generic": [{"WebPage"}],
+}
 
 SCORE_WEIGHTS = {"ok": 100, "warning": 50, "error": 0}
 
@@ -81,7 +96,9 @@ class AuditService:
             self._evaluate_canonical(data),
             self._evaluate_open_graph(data),
             self._evaluate_images(data),
-            self._evaluate_schema(data),
+            self._evaluate_schema_page_type(data),
+            self._evaluate_schema_breadcrumbs(data),
+            self._evaluate_schema_faq(data),
             self._evaluate_heading_order(data),
             self._evaluate_heading_noise(data),
             self._evaluate_image_quality(data),
@@ -92,6 +109,7 @@ class AuditService:
     def _evaluate_title(self, data: dict) -> dict:
         title = data.get("title")
         length = data.get("title_length", 0)
+        current_value = title if title else "(brak tagu <title>)"
         if not title:
             status, note = "error", "Brak tagu <title>."
         elif length < TITLE_MIN_LENGTH or length > TITLE_MAX_LENGTH:
@@ -103,12 +121,14 @@ class AuditService:
         else:
             status, note = "ok", "Długość tytułu jest prawidłowa."
         return self._make_metric(
-            "seo", "title", {"value": title, "length": length, "note": note}, status
+            "seo", "title", {"value": title, "length": length, "note": note}, status,
+            current_value=current_value,
         )
 
     def _evaluate_description(self, data: dict) -> dict:
         description = data.get("meta_description")
         length = data.get("meta_description_length", 0)
+        current_value = description if description else "(brak meta description)"
         if not description:
             status, note = "error", "Brak meta description."
         elif length < DESCRIPTION_MIN_LENGTH or length > DESCRIPTION_MAX_LENGTH:
@@ -120,11 +140,14 @@ class AuditService:
         else:
             status, note = "ok", "Długość meta description jest prawidłowa."
         return self._make_metric(
-            "seo", "meta_description", {"value": description, "length": length, "note": note}, status
+            "seo", "meta_description", {"value": description, "length": length, "note": note}, status,
+            current_value=current_value,
         )
 
     def _evaluate_h1(self, data: dict) -> dict:
+        h1_headings = data.get("headings", {}).get("h1", [])
         h1_count = data.get("h1_count", 0)
+        current_value = "; ".join(h1_headings) if h1_headings else "(brak nagłówka H1)"
         if h1_count == 0:
             status, note = "error", "Brak nagłówka H1."
         elif h1_count > 1:
@@ -134,31 +157,47 @@ class AuditService:
         return self._make_metric(
             "technical",
             "h1_structure",
-            {"count": h1_count, "headings": data.get("headings", {}).get("h1", []), "note": note},
+            {"count": h1_count, "headings": h1_headings, "note": note},
             status,
+            current_value=current_value,
         )
 
     def _evaluate_canonical(self, data: dict) -> dict:
         canonical = data.get("canonical")
+        current_value = canonical if canonical else "(brak znacznika canonical)"
         status = "ok" if canonical else "warning"
         note = "Canonical ustawiony poprawnie." if canonical else "Brak znacznika canonical."
-        return self._make_metric("technical", "canonical", {"value": canonical, "note": note}, status)
+        return self._make_metric(
+            "technical", "canonical", {"value": canonical, "note": note}, status,
+            current_value=current_value,
+        )
 
     def _evaluate_open_graph(self, data: dict) -> dict:
         og = data.get("open_graph", {})
         required = {"title", "description", "image"}
         missing = required - og.keys()
+        current_value = (
+            "; ".join(f"og:{key}={value}" for key, value in og.items())
+            if og
+            else "(brak tagów Open Graph)"
+        )
         status = "ok" if not missing else "warning"
         note = (
             "Wszystkie kluczowe tagi Open Graph obecne."
             if not missing
             else f"Brakujące tagi Open Graph: {', '.join(sorted(missing))}."
         )
-        return self._make_metric("seo", "open_graph", {"value": og, "note": note}, status)
+        return self._make_metric(
+            "seo", "open_graph", {"value": og, "note": note}, status, current_value=current_value
+        )
 
     def _evaluate_images(self, data: dict) -> dict:
         total = data.get("images_total", 0)
         without_alt = data.get("images_without_alt", 0)
+        without_alt_examples = data.get("images_without_alt_examples", [])
+        current_value = (
+            "; ".join(without_alt_examples) if without_alt_examples else "(wszystkie obrazki mają atrybut ALT)"
+        )
         if total == 0:
             status, note = "ok", "Brak obrazków na stronie."
         elif without_alt == 0:
@@ -174,32 +213,92 @@ class AuditService:
                 "total": total,
                 "with_alt": data.get("images_with_alt", 0),
                 "without_alt": without_alt,
+                "without_alt_examples": without_alt_examples,
                 "note": note,
             },
             status,
+            current_value=current_value,
         )
 
     # ------------------------------------------------------------------
     # Nowe testy strukturalne / SEO / GEO / E-E-A-T
     # ------------------------------------------------------------------
-    def _evaluate_schema(self, data: dict) -> dict:
-        schema = data.get("schema", {})
-        types_found = schema.get("types_found", [])
-        matched = sorted(TRACKED_SCHEMA_TYPES & set(types_found))
+    def _evaluate_schema_page_type(self, data: dict) -> dict:
+        """Waliduje, czy podstrona zawiera typy Schema.org oczekiwane dla jej wykrytego
+        typu (Strona główna / Produkt / Artykuł / Kategoria / Ogólna) - zarówno z bloków
+        JSON-LD, jak i Microdata (itemscope/itemtype)."""
+        page_type = data.get("page_type", "generic")
+        page_type_label = PAGE_TYPE_LABELS.get(page_type, PAGE_TYPE_LABELS["generic"])
+        expected_groups = EXPECTED_SCHEMA_BY_PAGE_TYPE.get(page_type, EXPECTED_SCHEMA_BY_PAGE_TYPE["generic"])
+        types_found = set(data.get("schema", {}).get("types_found", []))
 
-        if not types_found:
-            status, note = "error", "Brak danych strukturalnych Schema.org (JSON-LD) na stronie."
-        elif not matched:
+        matched_groups = [group for group in expected_groups if group & types_found]
+        missing_groups = [group for group in expected_groups if not (group & types_found)]
+
+        def describe(group: set[str]) -> str:
+            return " lub ".join(sorted(group))
+
+        expected_desc = "; ".join(describe(g) for g in expected_groups)
+
+        if not missing_groups:
+            status = "ok"
+            note = f"{page_type_label}: wykryto wszystkie oczekiwane typy Schema.org ({expected_desc})."
+        elif matched_groups:
+            status = "warning"
+            missing_desc = "; ".join(describe(g) for g in missing_groups)
+            note = f"{page_type_label}: brakuje części oczekiwanych danych strukturalnych ({missing_desc})."
+        else:
+            status = "error"
+            note = f"{page_type_label}: brak jakichkolwiek oczekiwanych typów Schema.org ({expected_desc})."
+
+        value = {
+            "page_type": page_type,
+            "page_type_label": page_type_label,
+            "types_found": sorted(types_found),
+            "expected_groups": [sorted(g) for g in expected_groups],
+            "missing_groups": [sorted(g) for g in missing_groups],
+            "note": note,
+        }
+        current_value = ", ".join(sorted(types_found)) if types_found else "(brak danych strukturalnych Schema.org)"
+        return self._make_metric("structure", "schema_page_type", value, status, current_value=current_value)
+
+    def _evaluate_schema_breadcrumbs(self, data: dict) -> dict:
+        """Uniwersalna reguła: każda podstrona powinna mieć dane strukturalne BreadcrumbList,
+        niezależnie od jej typu."""
+        types_found = set(data.get("schema", {}).get("types_found", []))
+        has_breadcrumbs = "BreadcrumbList" in types_found
+
+        if has_breadcrumbs:
+            status, note = "ok", "Wykryto dane strukturalne BreadcrumbList."
+        else:
+            status, note = "warning", "Brak danych strukturalnych BreadcrumbList na stronie."
+
+        value = {"has_breadcrumbs": has_breadcrumbs, "note": note}
+        current_value = ", ".join(sorted(types_found)) if types_found else "(brak danych strukturalnych Schema.org)"
+        return self._make_metric("structure", "schema_breadcrumbs", value, status, current_value=current_value)
+
+    def _evaluate_schema_faq(self, data: dict) -> dict:
+        """Uniwersalna reguła: jeśli na stronie wykryto (dynamicznie, po treści) sekcję FAQ,
+        ale w kodzie brakuje danych strukturalnych FAQPage, zgłaszamy ostrzeżenie."""
+        faq_detected = bool(data.get("faq_detected"))
+        types_found = set(data.get("schema", {}).get("types_found", []))
+        has_faq_schema = "FAQPage" in types_found
+
+        if not faq_detected:
+            status, note = "ok", "Nie wykryto sekcji FAQ na stronie."
+        elif has_faq_schema:
+            status, note = "ok", "Wykryto sekcję FAQ oraz odpowiadające jej dane strukturalne FAQPage."
+        else:
             status, note = (
                 "warning",
-                f"Wykryto dane strukturalne ({', '.join(types_found)}), ale żaden z kluczowych typów "
-                f"({', '.join(sorted(TRACKED_SCHEMA_TYPES))}) nie występuje.",
+                "Wykryto sekcję pytań (FAQ) na stronie, ale brakuje danych strukturalnych FAQPage.",
             )
-        else:
-            status, note = "ok", f"Wykryto kluczowe typy Schema.org: {', '.join(matched)}."
 
-        value = {"types_found": types_found, "matched_types": matched, "note": note}
-        return self._make_metric("structure", "schema_org", value, status)
+        value = {"faq_detected": faq_detected, "has_faq_schema": has_faq_schema, "note": note}
+        current_value = (
+            "Wykryto sekcję FAQ w treści strony." if faq_detected else "Nie wykryto sekcji FAQ w treści strony."
+        )
+        return self._make_metric("structure", "schema_faq", value, status, current_value=current_value)
 
     def _evaluate_heading_order(self, data: dict) -> dict:
         before_h1 = data.get("heading_noise", {}).get("headings_before_h1", [])
@@ -209,7 +308,12 @@ class AuditService:
         else:
             status, note = "ok", "Nagłówek H1 pojawia się przed innymi nagłówkami sekcji."
         value = {"headings_before_h1": before_h1, "note": note}
-        return self._make_metric("structure", "heading_order", value, status)
+        current_value = (
+            "; ".join(f"{h['tag'].upper()}: {h['text']}" for h in before_h1)
+            if before_h1
+            else "(H1 jest pierwszym nagłówkiem na stronie)"
+        )
+        return self._make_metric("structure", "heading_order", value, status, current_value=current_value)
 
     def _evaluate_heading_noise(self, data: dict) -> dict:
         noisy = data.get("heading_noise", {}).get("noisy_headings", [])
@@ -219,7 +323,12 @@ class AuditService:
         else:
             status, note = "ok", "Nie wykryto nagłówków H3/H4 o charakterze szumu nawigacyjnego."
         value = {"noisy_headings": noisy, "note": note}
-        return self._make_metric("structure", "heading_noise", value, status)
+        current_value = (
+            "; ".join(f"{h['tag'].upper()}: {h['text']}" for h in noisy)
+            if noisy
+            else "(brak nagłówków o charakterze nawigacyjnym)"
+        )
+        return self._make_metric("structure", "heading_noise", value, status, current_value=current_value)
 
     def _evaluate_image_quality(self, data: dict) -> dict:
         total = data.get("images_total", 0)
@@ -246,7 +355,8 @@ class AuditService:
             "non_ascii_src_examples": examples,
             "note": note,
         }
-        return self._make_metric("structure", "image_quality", value, status)
+        current_value = "; ".join(examples) if examples else "(brak problematycznych plików graficznych)"
+        return self._make_metric("structure", "image_quality", value, status, current_value=current_value)
 
     def _evaluate_eeat_authorship(self, data: dict) -> dict:
         eeat = data.get("eeat", {})
@@ -255,7 +365,12 @@ class AuditService:
         else:
             status, note = "warning", "Brak wyraźnego sygnału autorstwa treści (E-E-A-T)."
         value = {"has_author_signal": eeat.get("has_author_signal", False), "note": note}
-        return self._make_metric("structure", "eeat_authorship", value, status)
+        current_value = (
+            "Wykryto oznaczenie autora treści na stronie."
+            if eeat.get("has_author_signal")
+            else "(brak oznaczenia autora treści)"
+        )
+        return self._make_metric("structure", "eeat_authorship", value, status, current_value=current_value)
 
     def _evaluate_eeat_freshness(self, data: dict) -> dict:
         eeat = data.get("eeat", {})
@@ -265,7 +380,8 @@ class AuditService:
         else:
             status, note = "warning", "Brak znacznika article:modified_time - trudno ocenić aktualność treści."
         value = {"modified_time": modified_time, "note": note}
-        return self._make_metric("structure", "eeat_freshness", value, status)
+        current_value = modified_time if modified_time else "(brak znacznika article:modified_time)"
+        return self._make_metric("structure", "eeat_freshness", value, status, current_value=current_value)
 
     # ------------------------------------------------------------------
     # Google PageSpeed Insights -> metryki wydajności / Core Web Vitals
@@ -447,12 +563,26 @@ class AuditService:
         return self._make_metric("performance", f"{prefix}inp", value, status)
 
     def _make_metric(
-        self, category: str, key: str, value: dict, status: str, generate_recommendation: bool = True
+        self,
+        category: str,
+        key: str,
+        value: dict,
+        status: str,
+        current_value: str | None = None,
+        generate_recommendation: bool = True,
     ) -> dict:
         if generate_recommendation and status in ("warning", "error"):
-            recommendation = self.rag_engine.generate_recommendation(value.get("note", key), category=category)
+            recommendation = self.rag_engine.generate_recommendation(
+                value.get("note", key), category=category, current_value=current_value
+            )
             value = {**value, "recommendation": recommendation}
-        return {"category": category, "key": key, "value": value, "status": status}
+        return {
+            "category": category,
+            "key": key,
+            "value": value,
+            "status": status,
+            "current_value": current_value or "",
+        }
 
     def _calculate_score(self, metrics: list[dict]) -> int:
         if not metrics:

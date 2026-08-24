@@ -31,6 +31,11 @@ class AuditMetric(models.Model):
     key = models.CharField(max_length=100)
     value = models.JSONField(default=dict)
     status = models.CharField(max_length=20, choices=MetricStatus.choices, default=MetricStatus.OK)
+    current_value = models.TextField(
+        blank=True,
+        default="",
+        help_text="Zastany fragment/wartość ze strony powiązana z tą metryką (np. treść <title>, lista URL-i obrazków bez ALT).",
+    )
 
     class Meta:
         ordering = ["category", "key"]

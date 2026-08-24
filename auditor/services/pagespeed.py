@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -16,6 +17,12 @@ STRATEGIES = ("mobile", "desktop")
 # niż standardowe zapytania scrapera, zachowując krótszy limit na samo połączenie.
 DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=15.0)
 RETRY_BACKOFF_SECONDS = 1.0
+
+# Kody błędów, dla których warto ponowić żądanie - PSI bywa niestabilne po stronie
+# Google (400 potrafi wystąpić przejściowo obok "prawdziwego" błędu wejścia).
+RETRYABLE_STATUS_CODES = {400, 404, 500, 502, 503, 504}
+
+_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
 class PageSpeedService:
@@ -41,11 +48,14 @@ class PageSpeedService:
 
     def analyze(self, url: str, strategy: str = "mobile") -> dict:
         """Odpytuje PageSpeed Insights i zwraca ustandaryzowany słownik wyników."""
-        params = {"url": url, "strategy": strategy, "category": "performance"}
+        normalized_url = self._normalize_url(url)
+        params = {"url": normalized_url, "strategy": strategy, "category": "performance"}
         if self.api_key:
             params["key"] = self.api_key
 
         attempts = self.max_retries + 1
+        last_message = f"Nie udało się połączyć z PageSpeed Insights (strategia: {strategy})."
+
         for attempt in range(1, attempts + 1):
             try:
                 with httpx.Client(timeout=self.timeout) as client:
@@ -59,19 +69,27 @@ class PageSpeedService:
                     "(próba %s/%s, strategia: %s) url=%s",
                     attempt, attempts, strategy, url,
                 )
-                if attempt < attempts:
-                    time.sleep(RETRY_BACKOFF_SECONDS)
-                    continue
-                return self._fallback(
+                last_message = (
                     f"PageSpeed Insights nie odpowiedziało w wyznaczonym czasie (strategia: {strategy}). "
                     "Spróbuj ponowić audyt za chwilę."
                 )
+                if attempt < attempts:
+                    time.sleep(RETRY_BACKOFF_SECONDS)
+                    continue
+                return self._fallback(last_message)
             except httpx.HTTPStatusError as exc:
                 # Uwaga: nie wolno logować/zapisywać pełnego wyjątku ani URL-a żądania -
                 # PSI przyjmuje klucz API jako parametr query, więc trafiłby on do bazy,
                 # widoku HTML oraz promptu RAG.
-                message = f"PageSpeed Insights zwróciło błąd HTTP {exc.response.status_code} (strategia: {strategy})."
-                logger.warning("%s url=%s", message, url)
+                status_code = exc.response.status_code
+                message = f"PageSpeed Insights zwróciło błąd HTTP {status_code} (strategia: {strategy})."
+                logger.warning(
+                    "%s próba=%s/%s url=%s", message, attempt, attempts, url
+                )
+                last_message = message
+                if status_code in RETRYABLE_STATUS_CODES and attempt < attempts:
+                    time.sleep(RETRY_BACKOFF_SECONDS)
+                    continue
                 return self._fallback(message)
             except httpx.HTTPError as exc:
                 message = f"Nie udało się połączyć z PageSpeed Insights (strategia: {strategy}): {type(exc).__name__}."
@@ -83,7 +101,17 @@ class PageSpeedService:
                 return self._fallback(message)
 
         # Nieosiągalne w praktyce - zabezpieczenie na wypadek wyczerpania pętli bez zwrotu.
-        return self._fallback(f"Nie udało się połączyć z PageSpeed Insights (strategia: {strategy}).")
+        # Brak wyniku dla jednej strategii (np. desktop) nie może wywalić całego audytu -
+        # zwracamy bezpieczny słownik, druga strategia i pozostałe metryki nadal się wyświetlą.
+        return self._fallback(last_message)
+
+    def _normalize_url(self, url: str) -> str:
+        """PSI odrzuca (HTTP 400) adresy bez schematu lub z otaczającymi białymi znakami -
+        np. "example.com" albo " https://example.com " - normalizujemy je przed wysyłką."""
+        normalized = (url or "").strip()
+        if normalized and not _SCHEME_RE.match(normalized):
+            normalized = f"https://{normalized}"
+        return normalized
 
     def _parse(self, data: dict) -> dict:
         try:

@@ -33,6 +33,9 @@ class RAGEngine:
         self._embeddings = None
         self._llm = None
         self.api_key = getattr(settings, "OPENAI_API_KEY", "") or None
+        # Gdy embeddingi OpenAI raz zawiodą (np. 403 PermissionDenied / model_not_found),
+        # nie próbujemy ich ponownie w ramach tego samego audytu - od razu fallback.
+        self._embeddings_unavailable = False
 
     # ------------------------------------------------------------------
     # Leniwe inicjalizatory
@@ -77,9 +80,24 @@ class RAGEngine:
         texts = [f"{doc.title}\n{doc.content}" for doc in documents]
         metadatas = [{"category": doc.category, "title": doc.title} for doc in documents]
 
-        try:
-            if self.embeddings is not None:
+        # Dedykowany blok na wywołanie OpenAI - brak dostępu do modelu embeddingów
+        # (np. 403 PermissionDeniedError / model_not_found) nie może przerwać indeksowania,
+        # tylko przełączyć na domyślne (wbudowane) embeddingi ChromaDB.
+        vectors = None
+        if self.embeddings is not None and not self._embeddings_unavailable:
+            try:
                 vectors = self.embeddings.embed_documents(texts)
+            except Exception as exc:
+                logger.warning(
+                    "Brak dostępu do embeddingów OpenAI (%s) - przechodzę na domyślne "
+                    "embeddingi ChromaDB.",
+                    exc,
+                )
+                self._embeddings_unavailable = True
+                vectors = None
+
+        try:
+            if vectors is not None:
                 self.chroma_collection.upsert(
                     ids=ids, embeddings=vectors, documents=texts, metadatas=metadatas
                 )
@@ -95,19 +113,39 @@ class RAGEngine:
     # Wyszukiwanie (retrieval)
     # ------------------------------------------------------------------
     def retrieve_knowledge(self, issue_description: str, category: str | None = None, k: int = 3):
-        """Wyszukuje dokumenty wiedzy powiązane z opisem problemu SEO."""
+        """Wyszukuje dokumenty wiedzy powiązane z opisem problemu SEO.
+
+        Trzypoziomowy fallback: embeddingi OpenAI -> wyszukiwanie tekstowe ChromaDB
+        (query_texts) -> filtrowanie po kategorii bezpośrednio w SQLite/Django ORM.
+        Żaden z tych poziomów nie może przerwać audytu ani zwrócić błędu 500.
+        """
         from auditor.models import KnowledgeDocument
 
+        query_kwargs = {"n_results": k}
+        if category:
+            query_kwargs["where"] = {"category": category}
+
+        # Dedykowany blok na embed_query - błąd OpenAI (403/model_not_found) przełącza
+        # na awaryjne wyszukiwanie tekstowe ChromaDB (query_texts), a nie przerywa audytu.
+        query_embedding = None
+        if self.embeddings is not None and not self._embeddings_unavailable:
+            try:
+                query_embedding = self.embeddings.embed_query(issue_description)
+            except Exception as exc:
+                logger.warning(
+                    "Brak dostępu do embeddingów OpenAI (%s) - przechodzę na wyszukiwanie "
+                    "tekstowe w ChromaDB.",
+                    exc,
+                )
+                self._embeddings_unavailable = True
+                query_embedding = None
+
+        if query_embedding is not None:
+            query_kwargs["query_embeddings"] = [query_embedding]
+        else:
+            query_kwargs["query_texts"] = [issue_description]
+
         try:
-            query_kwargs = {"n_results": k}
-            if category:
-                query_kwargs["where"] = {"category": category}
-
-            if self.embeddings is not None:
-                query_kwargs["query_embeddings"] = [self.embeddings.embed_query(issue_description)]
-            else:
-                query_kwargs["query_texts"] = [issue_description]
-
             results = self.chroma_collection.query(**query_kwargs)
             ids = results.get("ids", [[]])[0]
             if ids:
@@ -115,9 +153,11 @@ class RAGEngine:
                 if found:
                     return list(found)
         except Exception:
-            logger.exception("Błąd wyszukiwania w ChromaDB, używam fallbacku słów kluczowych.")
+            logger.exception(
+                "Błąd wyszukiwania w ChromaDB, przechodzę na filtrowanie po kategorii (SQLite)."
+            )
 
-        # Fallback: proste dopasowanie po kategorii
+        # Ostateczny fallback: proste dopasowanie po kategorii w Django ORM/SQLite.
         queryset = KnowledgeDocument.objects.all()
         if category:
             queryset = queryset.filter(category=category)
@@ -126,29 +166,43 @@ class RAGEngine:
     # ------------------------------------------------------------------
     # Generowanie rekomendacji
     # ------------------------------------------------------------------
-    def generate_recommendation(self, issue_description: str, category: str | None = None) -> str:
-        """Generuje rekomendację naprawy problemu SEO w oparciu o wiedzę z bazy (RAG)."""
+    def generate_recommendation(
+        self, issue_description: str, category: str | None = None, current_value: str | None = None
+    ) -> str:
+        """Generuje rekomendację naprawy problemu SEO w oparciu o wiedzę z bazy (RAG).
+
+        `current_value` to zastany fragment/wartość ze strony (np. obecny tekst <title>,
+        lista URL-i obrazków bez ALT) - pozwala AI podać bezpośredni przykład poprawki
+        zamiast ogólnikowej porady.
+        """
         context_docs = self.retrieve_knowledge(issue_description, category=category)
         context_text = "\n\n".join(f"- {doc.title}: {doc.content}" for doc in context_docs)
 
         if self.llm is not None:
             try:
-                return self._generate_with_llm(issue_description, context_text)
+                return self._generate_with_llm(issue_description, context_text, current_value=current_value)
             except Exception:
                 logger.exception("Błąd generowania rekomendacji przez LLM, używam fallbacku.")
 
-        return self._fallback_recommendation(issue_description, context_docs)
+        return self._fallback_recommendation(issue_description, context_docs, current_value=current_value)
 
-    def _generate_with_llm(self, issue_description: str, context_text: str) -> str:
+    def _generate_with_llm(
+        self, issue_description: str, context_text: str, current_value: str | None = None
+    ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         system_prompt = (
-            "Jesteś ekspertem SEO. Na podstawie wykrytego problemu oraz kontekstu "
-            "z bazy wiedzy przygotuj krótką, konkretną rekomendację naprawczą w "
-            "języku polskim (maksymalnie 3 zdania)."
+            "Jesteś ekspertem SEO. Na podstawie wykrytego problemu, zastanego elementu ze "
+            "strony oraz kontekstu z bazy wiedzy przygotuj krótką, konkretną rekomendację "
+            "naprawczą w języku polskim (maksymalnie 4 zdania). Jeśli podano zastany element "
+            "(np. tekst tytułu, meta description, nagłówka), ZAWSZE podaj bezpośredni przykład "
+            "poprawki w formacie: 'Obecnie: [zastany tekst] -> Proponowane: [poprawiona wersja]'. "
+            "Jeśli problem dotyczy brakującego atrybutu alt lub innego znacznika HTML, podaj "
+            "gotowy fragment kodu HTML z prawidłową składnią (w bloku kodu)."
         )
         human_prompt = (
             f"Problem SEO: {issue_description}\n\n"
+            f"Zastany element na stronie: {current_value or 'Brak zastanego fragmentu.'}\n\n"
             f"Kontekst z bazy wiedzy:\n{context_text or 'Brak dodatkowego kontekstu.'}"
         )
 
@@ -157,7 +211,9 @@ class RAGEngine:
         )
         return response.content.strip()
 
-    def _fallback_recommendation(self, issue_description: str, context_docs) -> str:
+    def _fallback_recommendation(self, issue_description: str, context_docs, current_value: str | None = None) -> str:
         if context_docs:
             return context_docs[0].content
+        if current_value:
+            return f"Zalecana weryfikacja: {issue_description} (obecna wartość: {current_value})"
         return f"Zalecana weryfikacja: {issue_description}"
