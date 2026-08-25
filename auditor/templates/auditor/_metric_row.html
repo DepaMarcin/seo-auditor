@@ -7,7 +7,5 @@
     <div class="snippet-label">Zastany element na stronie</div>
     <div class="snippet-box">{{ metric.current_value }}</div>
     {% endif %}
-    {% if metric.value.recommendation %}
-    <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
-    {% endif %}
+    {% include "auditor/_recommendation.html" with metric=metric %}
 </div>

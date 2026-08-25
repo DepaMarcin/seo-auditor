@@ -4,7 +4,7 @@
 
 {% block content %}
 
-{# ---------- SEKCJA 1: wynik główny + statystyki ---------- #}
+{# ---------- SEKCJA 1: Przegląd (wynik, kategorie, podgląd strony) ---------- #}
 <div class="panel">
     <p><a class="link" href="{% url 'auditor:index' %}">&larr; Wszystkie audyty</a></p>
     <h1>{{ audit.url }}</h1>
@@ -12,9 +12,46 @@
         <span class="badge badge-{{ audit.status }}">{{ audit.get_status_display }}</span>
         &nbsp;&middot;&nbsp; {{ audit.created_at|date:"Y-m-d H:i" }}
     </p>
-    <div class="score">{{ audit.score }}<span style="font-size: 1rem; color: var(--muted);">/100</span></div>
 
     {% if audit.status == "completed" %}
+    <h2 class="section-heading" style="margin-top: 1.25rem;">Przegląd</h2>
+    <div class="overview-grid">
+        <div class="overview-col overview-score-col">
+            <div class="score-donut score-donut-{{ score_bucket }}" style="--score: {{ audit.score }};">
+                <div class="score-donut-inner">
+                    <span class="score-donut-value">{{ audit.score }}</span>
+                    <span class="score-donut-label">Wynik SEO</span>
+                </div>
+            </div>
+            <a class="pdf-button" href="{% url 'auditor:download_pdf_report' audit.pk %}" target="_blank" rel="noopener">
+                📄 Pobierz Raport PDF
+            </a>
+        </div>
+
+        <div class="overview-col overview-bars-col">
+            {% for item in category_scores %}
+            <div class="category-bar">
+                <div class="category-bar-header">
+                    <span>{{ item.label }}</span>
+                    <span>{{ item.score }}%</span>
+                </div>
+                <div class="progress-track">
+                    <div class="progress-bar" style="width: {{ item.score }}%;"></div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="overview-col overview-preview-col">
+            <div class="page-preview-card">
+                <div class="page-preview-frame">
+                    <iframe src="{{ audit.url }}" loading="lazy" sandbox="allow-scripts allow-same-origin" title="Podgląd audytowanej strony"></iframe>
+                </div>
+                <a class="link" href="{{ audit.url }}" target="_blank" rel="noopener">Otwórz stronę ↗</a>
+            </div>
+        </div>
+    </div>
+
     <div class="stats-row">
         <div class="stat-tile stat-errors">
             <div class="stat-value">{{ stats.errors_count }}</div>
@@ -29,6 +66,8 @@
             <div class="stat-label">Zdane testy</div>
         </div>
     </div>
+    {% else %}
+    <div class="score">{{ audit.score }}<span style="font-size: 1rem; color: var(--muted);">/100</span></div>
     {% endif %}
 </div>
 
@@ -38,51 +77,77 @@
 </div>
 {% elif audit.status == "completed" %}
 
-{# ---------- SEKCJA 2: priorytety / krytyczne błędy ---------- #}
+{# ---------- SEKCJA 2: Problemy i rekomendacje - Priorytetowe (krytyczne błędy) ---------- #}
 <div class="priority-panel critical">
-    <h2 class="section-heading critical-heading">🔥 Priorytety (Krytyczne błędy)</h2>
+    <h2 class="section-heading critical-heading">🔥 Priorytetowe (Krytyczne błędy)</h2>
     {% if critical_errors %}
-    {% for metric in critical_errors %}
-    <div class="priority-card critical-card">
-        <div class="priority-card-header">
-            <span class="priority-card-title">{{ metric.display_key }}</span>
-            <span class="category-tag">{{ metric.category }}</span>
-        </div>
-        <p class="priority-note">{{ metric.value.note }}</p>
-        {% if metric.current_value %}
-        <div class="snippet-label">Zastany element na stronie</div>
-        <div class="snippet-box">{{ metric.current_value }}</div>
-        {% endif %}
-        {% if metric.value.recommendation %}
-        <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
-        {% endif %}
+    <div class="table-scroll">
+        <table class="findings-table">
+            <thead>
+                <tr>
+                    <th>Typ</th>
+                    <th>Test</th>
+                    <th>Status</th>
+                    <th>Szczegóły i dalsze kroki</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for metric in critical_errors %}
+                <tr>
+                    <td class="col-type">{{ metric.category_label }}</td>
+                    <td class="col-test">{{ metric.display_key }}</td>
+                    <td><span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span></td>
+                    <td class="details-cell">
+                        <p class="priority-note">{{ metric.value.note }}</p>
+                        {% if metric.current_value %}
+                        <div class="snippet-label">Zastany element na stronie</div>
+                        <div class="snippet-box">{{ metric.current_value }}</div>
+                        {% endif %}
+                        {% include "auditor/_recommendation.html" with metric=metric %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
-    {% endfor %}
     {% else %}
     <p class="priority-empty">Brak krytycznych błędów — świetna robota.</p>
     {% endif %}
 </div>
 
-{# ---------- SEKCJA 3: ostrzeżenia ---------- #}
+{# ---------- SEKCJA 3: Problemy i rekomendacje - Wymagające uwagi (ostrzeżenia) ---------- #}
 <div class="priority-panel warning-panel">
-    <h2 class="section-heading warning-heading">⚠️ Warto poprawić (Ostrzeżenia)</h2>
+    <h2 class="section-heading warning-heading">⚠️ Wymagające uwagi (Ostrzeżenia)</h2>
     {% if warnings %}
-    {% for metric in warnings %}
-    <div class="priority-card warning-card">
-        <div class="priority-card-header">
-            <span class="priority-card-title">{{ metric.display_key }}</span>
-            <span class="category-tag">{{ metric.category }}</span>
-        </div>
-        <p class="priority-note">{{ metric.value.note }}</p>
-        {% if metric.current_value %}
-        <div class="snippet-label">Zastany element na stronie</div>
-        <div class="snippet-box">{{ metric.current_value }}</div>
-        {% endif %}
-        {% if metric.value.recommendation %}
-        <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
-        {% endif %}
+    <div class="table-scroll">
+        <table class="findings-table">
+            <thead>
+                <tr>
+                    <th>Typ</th>
+                    <th>Test</th>
+                    <th>Status</th>
+                    <th>Szczegóły i dalsze kroki</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for metric in warnings %}
+                <tr>
+                    <td class="col-type">{{ metric.category_label }}</td>
+                    <td class="col-test">{{ metric.display_key }}</td>
+                    <td><span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span></td>
+                    <td class="details-cell">
+                        <p class="priority-note">{{ metric.value.note }}</p>
+                        {% if metric.current_value %}
+                        <div class="snippet-label">Zastany element na stronie</div>
+                        <div class="snippet-box">{{ metric.current_value }}</div>
+                        {% endif %}
+                        {% include "auditor/_recommendation.html" with metric=metric %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
-    {% endfor %}
     {% else %}
     <p class="priority-empty">Brak ostrzeżeń.</p>
     {% endif %}
@@ -142,9 +207,7 @@
                 <div class="snippet-label">Zastany element na stronie</div>
                 <div class="snippet-box">{{ metric.current_value }}</div>
                 {% endif %}
-                {% if metric.value.recommendation %}
-                <div class="recommendation">💡 {{ metric.value.recommendation }}</div>
-                {% endif %}
+                {% include "auditor/_recommendation.html" with metric=metric %}
             </div>
             {% endfor %}
         </div>

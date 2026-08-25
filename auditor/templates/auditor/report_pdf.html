@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<title>Raport audytu SEO — {{ audit.url }}</title>
+<style>
+    @page { size: A4; margin: 2.2cm 1.8cm; }
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: #14181f;
+        background: #f1f5f9;
+        font-size: 14px;
+        line-height: 1.55;
+    }
+    .page {
+        max-width: 780px;
+        margin: 0 auto;
+        background: #ffffff;
+        padding: 2.5rem 3rem;
+    }
+    .sheet { page-break-after: always; }
+    .sheet:last-of-type { page-break-after: auto; }
+
+    /* --- Okładka --- */
+    .cover {
+        min-height: 900px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+    }
+    .cover-brand { font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: #0f172a; }
+    .cover-hero {
+        margin-top: 4rem;
+        padding: 2.5rem;
+        border-radius: 16px;
+        background: linear-gradient(160deg, #0f172a, #1e293b);
+        color: #fff;
+    }
+    .cover-kicker { color: #38bdf8; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.85rem; }
+    .cover-title { font-size: 2rem; font-weight: 800; margin: 0.6rem 0 0.2rem; }
+    .cover-url { color: #cbd5e1; word-break: break-all; }
+    .cover-score-row { display: flex; gap: 2rem; margin-top: 2rem; flex-wrap: wrap; }
+    .cover-score-box { background: rgba(255,255,255,0.08); border-radius: 10px; padding: 1rem 1.4rem; }
+    .cover-score-box .num { font-size: 2.2rem; font-weight: 800; }
+    .cover-score-box .lbl { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
+    .cover-footer { color: #64748b; font-size: 0.8rem; }
+
+    /* --- Nagłówki i typografia raportu --- */
+    h1.chapter-title {
+        font-size: 1.5rem;
+        margin: 0 0 1.5rem;
+        padding-bottom: 0.6rem;
+        border-bottom: 3px solid #0f172a;
+    }
+    h2.section-title { font-size: 1.05rem; margin: 1.75rem 0 0.75rem; color: #0f172a; }
+    .toc-title { font-size: 1.4rem; margin-bottom: 1.5rem; }
+    .toc-list { list-style: none; padding: 0; margin: 0; }
+    .toc-list li {
+        display: flex;
+        justify-content: space-between;
+        padding: 0.55rem 0;
+        border-bottom: 1px dashed #cbd5e1;
+    }
+
+    /* --- Tabele --- */
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem; }
+    th {
+        background: #0f172a;
+        color: #fff;
+        text-align: left;
+        padding: 0.6rem 0.7rem;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.02em;
+    }
+    td { padding: 0.6rem 0.7rem; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+    tr:nth-child(even) td { background: #f8fafc; }
+    .priority-badge {
+        display: inline-block;
+        min-width: 1.6rem;
+        text-align: center;
+        padding: 0.15rem 0.4rem;
+        border-radius: 999px;
+        font-weight: 700;
+        color: #fff;
+        background: #64748b;
+    }
+    .priority-badge.p-high { background: #ef4444; }
+    .priority-badge.p-mid { background: #eab308; color: #1e293b; }
+    .priority-badge.p-low { background: #22c55e; }
+    .team-tag {
+        display: inline-block;
+        padding: 0.1rem 0.5rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        background: #e2e8f0;
+        color: #334155;
+    }
+
+    /* --- Statusy --- */
+    .status-flag {
+        display: inline-block;
+        padding: 0.15rem 0.6rem;
+        border-radius: 999px;
+        font-size: 0.75rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        color: #fff;
+    }
+    .status-flag.error { background: #ef4444; }
+    .status-flag.warning { background: #eab308; color: #1e293b; }
+    .status-flag.ok { background: #22c55e; }
+
+    /* --- Ramki Ocena / Rekomendacja / Kod (w stylu wzorca agencyjnego) --- */
+    .finding { margin: 1rem 0 1.5rem; page-break-inside: avoid; }
+    .finding-title { font-weight: 700; margin-bottom: 0.35rem; }
+    .callout {
+        border-left: 4px solid #94a3b8;
+        background: #f8fafc;
+        padding: 0.7rem 0.9rem;
+        margin: 0.4rem 0;
+        border-radius: 0 6px 6px 0;
+    }
+    .callout.ocena { border-left-color: #64748b; }
+    .callout.ocena.error { border-left-color: #ef4444; }
+    .callout.ocena.warning { border-left-color: #eab308; }
+    .callout.rekomendacja { border-left-color: #22c55e; background: #f0fdf4; }
+    .callout-label { font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: #64748b; margin-bottom: 0.25rem; }
+    .code-frame-pdf {
+        margin-top: 0.5rem;
+        background: #0f172a;
+        color: #e2e8f0;
+        border-radius: 6px;
+        padding: 0.7rem 0.9rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 0.78rem;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    /* --- Pasek postępu kategorii (na okładce/przeglądzie) --- */
+    .cat-bar-row { margin-bottom: 0.9rem; }
+    .cat-bar-head { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem; }
+    .cat-track { height: 8px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    .cat-fill { height: 100%; background: #0f172a; }
+
+    .print-bar {
+        max-width: 780px;
+        margin: 0 auto 1rem;
+        display: flex;
+        justify-content: flex-end;
+    }
+    .print-bar button {
+        padding: 0.6rem 1.2rem;
+        border-radius: 6px;
+        border: none;
+        background: #0f172a;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    @media print {
+        body { background: #fff; }
+        .no-print { display: none !important; }
+        .page { padding: 0; max-width: none; }
+    }
+</style>
+</head>
+<body>
+
+<div class="print-bar no-print">
+    <button type="button" onclick="window.print()">🖨️ Drukuj / Zapisz jako PDF</button>
+</div>
+
+<!-- OKŁADKA -->
+<div class="page sheet cover">
+    <div>
+        <div class="cover-brand">SEO Auditor</div>
+    </div>
+    <div class="cover-hero">
+        <div class="cover-kicker">Raport z audytu SEO (AI Ready)</div>
+        <div class="cover-title">{{ audit.url }}</div>
+        <div class="cover-url">Wygenerowano: {{ generated_at|date:"d.m.Y H:i" }}</div>
+        <div class="cover-score-row">
+            <div class="cover-score-box">
+                <div class="num">{{ audit.score }}/100</div>
+                <div class="lbl">Wynik ogólny</div>
+            </div>
+            <div class="cover-score-box">
+                <div class="num">{{ stats.errors_count }}</div>
+                <div class="lbl">Krytyczne błędy</div>
+            </div>
+            <div class="cover-score-box">
+                <div class="num">{{ stats.warnings_count }}</div>
+                <div class="lbl">Ostrzeżenia</div>
+            </div>
+            <div class="cover-score-box">
+                <div class="num">{{ stats.passed_count }}</div>
+                <div class="lbl">Zdane testy</div>
+            </div>
+        </div>
+    </div>
+    <div class="cover-footer">Raport wygenerowany automatycznie przez SEO Auditor — silnik audytowy oparty o RAG.</div>
+</div>
+
+<!-- SPIS TREŚCI -->
+<div class="page sheet">
+    <div class="toc-title">Spis treści</div>
+    <ul class="toc-list">
+        <li><span>1. Priorytetowe wdrożenia</span></li>
+        <li><span>2. Analiza Techniczna</span></li>
+        <li><span>3. Meta Tagi</span></li>
+        <li><span>4. Dane Strukturalne Schema.org</span></li>
+        <li><span>5. Widoczność w AI Overviews (GEO)</span></li>
+    </ul>
+
+    <h2 class="section-title">Wyniki wg kategorii</h2>
+    {% for item in category_scores %}
+    <div class="cat-bar-row">
+        <div class="cat-bar-head"><span>{{ item.label }}</span><span>{{ item.score }}%</span></div>
+        <div class="cat-track"><div class="cat-fill" style="width: {{ item.score }}%;"></div></div>
+    </div>
+    {% endfor %}
+</div>
+
+<!-- 1. PRIORYTETOWE WDROŻENIA -->
+<div class="page sheet">
+    <h1 class="chapter-title">1. Priorytetowe wdrożenia</h1>
+    <p>Poniżej przygotowana została lista zadań do wdrożenia, uszeregowana wg priorytetu (1-10) oraz zespołu odpowiedzialnego za realizację.</p>
+    {% if priority_findings %}
+    <table>
+        <thead>
+            <tr>
+                <th>Element</th>
+                <th>Kategoria</th>
+                <th>Priorytet</th>
+                <th>Zespół</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for metric in priority_findings %}
+            <tr>
+                <td>{{ metric.display_key }} — {{ metric.value.note }}</td>
+                <td>{{ metric.category_label }}</td>
+                <td>
+                    <span class="priority-badge {% if metric.priority >= 8 %}p-high{% elif metric.priority >= 5 %}p-mid{% else %}p-low{% endif %}">
+                        {{ metric.priority }}
+                    </span>
+                </td>
+                <td><span class="team-tag">{{ metric.team }}</span></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>Brak zadań priorytetowych — audyt nie wykrył krytycznych błędów ani ostrzeżeń.</p>
+    {% endif %}
+</div>
+
+<!-- 2. ANALIZA TECHNICZNA -->
+<div class="page sheet">
+    <h1 class="chapter-title">2. Analiza Techniczna</h1>
+    <p>Rozdział obejmuje strukturę techniczną strony (H1, canonical) oraz wydajność i Core Web Vitals.</p>
+    {% for metric in technical_metrics %}
+    <div class="finding">
+        <div class="finding-title">{{ metric.display_key }} <span class="status-flag {{ metric.status }}">{{ metric.get_status_display }}</span></div>
+        <div class="callout ocena {{ metric.status }}">
+            <div class="callout-label">Ocena</div>
+            {{ metric.value.note }}
+            {% if metric.current_value %}
+            <div class="code-frame-pdf">{{ metric.current_value }}</div>
+            {% endif %}
+        </div>
+        {% if metric.recommendation_segments %}
+        <div class="callout rekomendacja">
+            <div class="callout-label">Rekomendacja AI</div>
+            {% for segment in metric.recommendation_segments %}
+            {% if segment.type == "code" %}
+            <div class="code-frame-pdf">{{ segment.content }}</div>
+            {% else %}
+            <p style="margin: 0.3rem 0;">{{ segment.content }}</p>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% empty %}
+    <p>Brak metryk w tej kategorii.</p>
+    {% endfor %}
+</div>
+
+<!-- 3. META TAGI -->
+<div class="page sheet">
+    <h1 class="chapter-title">3. Meta Tagi</h1>
+    <p>Analiza znaczników title, meta description oraz Open Graph.</p>
+    {% for metric in meta_tag_metrics %}
+    <div class="finding">
+        <div class="finding-title">{{ metric.display_key }} <span class="status-flag {{ metric.status }}">{{ metric.get_status_display }}</span></div>
+        <div class="callout ocena {{ metric.status }}">
+            <div class="callout-label">Ocena</div>
+            {{ metric.value.note }}
+            {% if metric.current_value %}
+            <div class="code-frame-pdf">{{ metric.current_value }}</div>
+            {% endif %}
+        </div>
+        {% if metric.recommendation_segments %}
+        <div class="callout rekomendacja">
+            <div class="callout-label">Rekomendacja AI</div>
+            {% for segment in metric.recommendation_segments %}
+            {% if segment.type == "code" %}
+            <div class="code-frame-pdf">{{ segment.content }}</div>
+            {% else %}
+            <p style="margin: 0.3rem 0;">{{ segment.content }}</p>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% empty %}
+    <p>Brak metryk w tej kategorii.</p>
+    {% endfor %}
+</div>
+
+<!-- 4. DANE STRUKTURALNE SCHEMA.ORG -->
+<div class="page sheet">
+    <h1 class="chapter-title">4. Dane Strukturalne Schema.org</h1>
+    <p>Ocena obecności i poprawności danych strukturalnych (JSON-LD / Microdata) na podstawie wykrytego typu podstrony oraz uniwersalnych reguł BreadcrumbList i FAQPage.</p>
+    {% for metric in schema_metrics %}
+    <div class="finding">
+        <div class="finding-title">{{ metric.display_key }} <span class="status-flag {{ metric.status }}">{{ metric.get_status_display }}</span></div>
+        <div class="callout ocena {{ metric.status }}">
+            <div class="callout-label">Ocena</div>
+            {{ metric.value.note }}
+            {% if metric.current_value %}
+            <div class="code-frame-pdf">{{ metric.current_value }}</div>
+            {% endif %}
+        </div>
+        {% if metric.recommendation_segments %}
+        <div class="callout rekomendacja">
+            <div class="callout-label">Rekomendacja AI</div>
+            {% for segment in metric.recommendation_segments %}
+            {% if segment.type == "code" %}
+            <div class="code-frame-pdf">{{ segment.content }}</div>
+            {% else %}
+            <p style="margin: 0.3rem 0;">{{ segment.content }}</p>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% empty %}
+    <p>Brak metryk w tej kategorii.</p>
+    {% endfor %}
+</div>
+
+<!-- 5. WIDOCZNOŚĆ W AI OVERVIEWS (GEO) -->
+<div class="page sheet">
+    <h1 class="chapter-title">5. Widoczność w AI Overviews (GEO)</h1>
+    <p>Ocena czynników wpływających na wykorzystanie treści przez modele językowe (LLM) i Google AI Overviews: szum nagłówkowy, kolejność nagłówków, jakość plików graficznych oraz sygnały E-E-A-T (autorstwo, aktualność).</p>
+    {% for metric in geo_metrics %}
+    <div class="finding">
+        <div class="finding-title">{{ metric.display_key }} <span class="status-flag {{ metric.status }}">{{ metric.get_status_display }}</span></div>
+        <div class="callout ocena {{ metric.status }}">
+            <div class="callout-label">Ocena</div>
+            {{ metric.value.note }}
+            {% if metric.current_value %}
+            <div class="code-frame-pdf">{{ metric.current_value }}</div>
+            {% endif %}
+        </div>
+        {% if metric.recommendation_segments %}
+        <div class="callout rekomendacja">
+            <div class="callout-label">Rekomendacja AI</div>
+            {% for segment in metric.recommendation_segments %}
+            {% if segment.type == "code" %}
+            <div class="code-frame-pdf">{{ segment.content }}</div>
+            {% else %}
+            <p style="margin: 0.3rem 0;">{{ segment.content }}</p>
+            {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% empty %}
+    <p>Brak metryk w tej kategorii.</p>
+    {% endfor %}
+    <p style="margin-top: 2rem; color: #64748b; font-size: 0.8rem;">Raport wygenerowany automatycznie przez SEO Auditor na podstawie danych ze scrapera, Google PageSpeed Insights oraz silnika RAG. {{ generated_at|date:"d.m.Y H:i" }}.</p>
+</div>
+
+</body>
+</html>

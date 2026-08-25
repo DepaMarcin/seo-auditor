@@ -1,0 +1,19 @@
+{% comment %}Oczekuje `metric` z ustawionym metric.recommendation_segments (tekst/kod).{% endcomment %}
+{% if metric.recommendation_segments %}
+<div class="recommendation">
+    <div class="recommendation-label">💡 Rekomendacja AI</div>
+    {% for segment in metric.recommendation_segments %}
+    {% if segment.type == "code" %}
+    <div class="code-frame">
+        <div class="code-frame-header">
+            <span>Kod</span>
+            <button type="button" class="copy-btn" data-copy>Kopiuj</button>
+        </div>
+        <pre><code>{{ segment.content }}</code></pre>
+    </div>
+    {% else %}
+    <p>{{ segment.content }}</p>
+    {% endif %}
+    {% endfor %}
+</div>
+{% endif %}
