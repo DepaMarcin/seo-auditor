@@ -5,21 +5,21 @@
     <title>{% block title %}SEO Auditor{% endblock %}</title>
     <style>
         :root {
-            /* --- Light Agency Theme --- */
-            --bg: #F8FAFC;
-            --panel: #FFFFFF;
-            --surface-inset: #F1F5F9;
-            --border: #E2E8F0;
-            --text: #0F172A;
-            --muted: #64748B;
+            /* --- Dark Agency Theme --- */
+            --bg: #0B0F19;
+            --panel: #1E293B;
+            --surface-inset: #0F172A;
+            --border: #334155;
+            --text: #F8FAFC;
+            --muted: #94A3B8;
             --accent: #00E676;
-            --accent-ink: #00994D;
-            --ok: #22c55e;
-            --warning: #eab308;
-            --error: #ef4444;
+            --accent-ink: #00E676;
+            --ok: #10B981;
+            --warning: #F59E0B;
+            --error: #EF4444;
             --dark-surface: #0F172A;
             --dark-surface-text: #F8FAFC;
-            --card-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+            --card-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
         }
         * { box-sizing: border-box; }
         body {
@@ -136,10 +136,10 @@
             font-weight: 600;
             text-transform: uppercase;
         }
-        .badge-pending, .badge-processing { background: rgba(100, 116, 139, 0.15); color: var(--muted); }
-        .badge-completed, .badge-ok { background: rgba(34, 197, 94, 0.15); color: var(--ok); }
+        .badge-pending, .badge-processing { background: rgba(148, 163, 184, 0.15); color: var(--muted); }
+        .badge-completed, .badge-ok { background: rgba(16, 185, 129, 0.15); color: var(--ok); }
         .badge-failed, .badge-error { background: rgba(239, 68, 68, 0.15); color: var(--error); }
-        .badge-warning { background: rgba(234, 179, 8, 0.18); color: #92600a; }
+        .badge-warning { background: rgba(245, 158, 11, 0.18); color: var(--warning); }
         .messages { list-style: none; padding: 0; margin: 0 0 1rem; }
         .messages li { padding: 0.6rem 1rem; border-radius: 6px; background: rgba(239, 68, 68, 0.12); color: var(--error); margin-bottom: 0.5rem; }
         .score { font-size: 2.5rem; font-weight: 700; }
@@ -238,10 +238,26 @@
         .stat-tile .stat-label { color: var(--muted); font-size: 0.8rem; margin-top: 0.25rem; }
         .stat-tile.stat-errors { border-color: rgba(239, 68, 68, 0.4); }
         .stat-tile.stat-errors .stat-value { color: var(--error); }
-        .stat-tile.stat-warnings { border-color: rgba(234, 179, 8, 0.4); }
+        .stat-tile.stat-warnings { border-color: rgba(245, 158, 11, 0.4); }
         .stat-tile.stat-warnings .stat-value { color: var(--warning); }
-        .stat-tile.stat-passed { border-color: rgba(34, 197, 94, 0.4); }
+        .stat-tile.stat-passed { border-color: rgba(16, 185, 129, 0.4); }
         .stat-tile.stat-passed .stat-value { color: var(--ok); }
+
+        /* --- Analiza Widoczności (Senuto): karty TOP3/TOP10/TOP50 + wykres liniowy --- */
+        .senuto-stats-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+            margin: 1rem 0 1.25rem;
+        }
+        .stat-tile.stat-senuto { border-color: rgba(0, 230, 118, 0.3); }
+        .stat-tile.stat-senuto .stat-value { color: var(--accent); }
+        .senuto-chart-wrap {
+            background: var(--surface-inset);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1rem;
+        }
 
         .section-heading {
             font-size: 1.1rem;
@@ -260,11 +276,11 @@
             border-color: rgba(239, 68, 68, 0.3);
         }
         .priority-panel.warning-panel {
-            background: rgba(234, 179, 8, 0.06);
-            border-color: rgba(234, 179, 8, 0.3);
+            background: rgba(245, 158, 11, 0.06);
+            border-color: rgba(245, 158, 11, 0.3);
         }
         .priority-panel .section-heading.critical-heading { color: var(--error); }
-        .priority-panel .section-heading.warning-heading { color: #92600a; }
+        .priority-panel .section-heading.warning-heading { color: var(--warning); }
         .priority-card {
             background: var(--panel);
             border: 1px solid var(--border);
@@ -438,47 +454,71 @@
             pointer-events: none;
         }
 
-        /* --- Tabela "Problemy i rekomendacje" - stały układ kolumn, bez poziomego przewijania --- */
-        .table-scroll { max-width: 100%; overflow-x: auto; }
-        .findings-table {
-            width: 100%;
-            table-layout: fixed;
-            border-collapse: collapse;
-            font-size: 0.9rem;
+        /* --- Modułowe karty metryk (zastępują dawną tabelę "Problemy i rekomendacje") --- */
+        .metric-card-list {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
         }
-        .findings-table th {
-            text-align: left;
-            padding: 0.6rem;
-            color: var(--muted);
-            font-weight: 600;
-            font-size: 0.75rem;
+        .metric-card {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.25rem;
+        }
+        .metric-card-header {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-bottom: 0.9rem;
+            flex-wrap: wrap;
+        }
+        .metric-card-icon { font-size: 1.4rem; line-height: 1; }
+        .metric-card-heading { flex: 1; min-width: 0; }
+        .metric-card-title { font-weight: 700; color: var(--text); }
+        .metric-card-category {
+            font-size: 0.7rem;
             text-transform: uppercase;
-            border-bottom: 1px solid var(--border);
+            letter-spacing: 0.03em;
+            color: var(--muted);
+            margin-top: 0.15rem;
         }
-        .findings-table td {
-            padding: 0.75rem 0.6rem;
-            border-bottom: 1px solid var(--border);
-            vertical-align: top;
-            word-break: break-all;
-            overflow-wrap: anywhere;
+        .status-flag {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 999px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            color: #000000;
+            white-space: nowrap;
         }
-        .findings-table tr:last-child td { border-bottom: none; }
-        .findings-table th:nth-child(1), .findings-table td:nth-child(1) { width: 12%; }
-        .findings-table th:nth-child(2), .findings-table td:nth-child(2) { width: 13%; }
-        .findings-table th:nth-child(3), .findings-table td:nth-child(3) { width: 10%; }
-        .findings-table th:nth-child(4), .findings-table td:nth-child(4) { width: 65%; }
-        .findings-table .details-cell {
-            max-width: 100%;
-            word-break: break-all;
-            white-space: pre-wrap;
-            overflow-wrap: anywhere;
+        .status-flag.status-error { background: var(--error); color: #ffffff; }
+        .status-flag.status-warning { background: var(--warning); }
+        .status-flag.status-ok { background: var(--ok); color: #ffffff; }
+        .metric-card-section { margin-top: 0.9rem; }
+        .metric-card-section:first-of-type { margin-top: 0; }
+        .metric-card-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            color: var(--muted);
+            font-weight: 700;
+            margin-bottom: 0.4rem;
         }
+        .metric-definition p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+        .metric-card-section .snippet-box { margin-top: 0.4rem; }
 
         /* --- Rekomendacje AI + bloki kodu z przyciskiem Kopiuj --- */
         .recommendation {
-            margin-top: 0.4rem;
+            margin-top: 0.9rem;
             padding: 0.6rem 0.8rem;
-            border-left: 3px solid var(--accent);
+            border-left: 4px solid var(--accent);
             background: rgba(0, 230, 118, 0.08);
             font-size: 0.9rem;
             max-width: 100%;
@@ -574,7 +614,7 @@ document.addEventListener("click", function (event) {
             restoreLabel(original);
         }).catch(function () {
             btn.textContent = "Błąd kopiowania";
-            restoreLabel("Kopiuj");
+            restoreLabel("Kopiuj kod");
         });
     } else {
         var range = document.createRange();
@@ -589,7 +629,7 @@ document.addEventListener("click", function (event) {
             btn.textContent = "Błąd kopiowania";
         }
         selection.removeAllRanges();
-        restoreLabel("Kopiuj");
+        restoreLabel("Kopiuj kod");
     }
 });
 </script>

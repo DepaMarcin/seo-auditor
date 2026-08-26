@@ -13,6 +13,12 @@ class Audit(models.Model):
     score = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
+    # Statystyki widoczności domeny z API Senuto (auditor.services.senuto.SenutoService).
+    senuto_top3 = models.IntegerField(default=0)
+    senuto_top10 = models.IntegerField(default=0)
+    senuto_top50 = models.IntegerField(default=0)
+    senuto_history = models.JSONField(default=list, blank=True)
+
     class Meta:
         ordering = ["-created_at"]
 

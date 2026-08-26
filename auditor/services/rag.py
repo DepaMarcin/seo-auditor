@@ -25,7 +25,10 @@ class RAGEngine:
     """
 
     MODEL_NAME = "gpt-4o-mini"
-    EMBEDDING_MODEL = "text-embedding-3-small"
+    # "text-embedding-ada-002" jako domyślny model embeddingów - jest dostępny na
+    # wszystkich kontach/projektach OpenAI, w odróżnieniu od "text-embedding-3-small",
+    # które bez osobno przyznanego dostępu zwraca błąd 403 model_not_found.
+    EMBEDDING_MODEL = "text-embedding-ada-002"
 
     def __init__(self):
         self._chroma_client = None
@@ -33,6 +36,7 @@ class RAGEngine:
         self._embeddings = None
         self._llm = None
         self.api_key = getattr(settings, "OPENAI_API_KEY", "") or None
+        self.embedding_model = getattr(settings, "OPENAI_EMBEDDING_MODEL", "") or self.EMBEDDING_MODEL
         # Gdy embeddingi OpenAI raz zawiodą (np. 403 PermissionDenied / model_not_found),
         # nie próbujemy ich ponownie w ramach tego samego audytu - od razu fallback.
         self._embeddings_unavailable = False
@@ -54,7 +58,7 @@ class RAGEngine:
         if self._embeddings is None and self.api_key:
             from langchain_openai import OpenAIEmbeddings
 
-            self._embeddings = OpenAIEmbeddings(model=self.EMBEDDING_MODEL, api_key=self.api_key)
+            self._embeddings = OpenAIEmbeddings(model=self.embedding_model, api_key=self.api_key)
         return self._embeddings
 
     @property
@@ -88,11 +92,11 @@ class RAGEngine:
             try:
                 vectors = self.embeddings.embed_documents(texts)
             except Exception as exc:
-                logger.warning(
-                    "Brak dostępu do embeddingów OpenAI (%s) - przechodzę na domyślne "
-                    "embeddingi ChromaDB.",
-                    exc,
-                )
+                # Wyciszone celowo do poziomu debug: brak dostępu do embeddingów OpenAI
+                # (np. 403 model_not_found) to oczekiwany, obsłużony przypadek - nie błąd
+                # wymagający uwagi - dlatego cicho przechodzimy na domyślne embeddingi ChromaDB.
+                logger.debug("Embeddingi OpenAI niedostępne (%s) - używam domyślnych embeddingów ChromaDB.",
+                             type(exc).__name__)
                 self._embeddings_unavailable = True
                 vectors = None
 
@@ -132,11 +136,9 @@ class RAGEngine:
             try:
                 query_embedding = self.embeddings.embed_query(issue_description)
             except Exception as exc:
-                logger.warning(
-                    "Brak dostępu do embeddingów OpenAI (%s) - przechodzę na wyszukiwanie "
-                    "tekstowe w ChromaDB.",
-                    exc,
-                )
+                # Wyciszone celowo do poziomu debug - patrz komentarz w index_knowledge_base().
+                logger.debug("Embeddingi OpenAI niedostępne (%s) - używam wyszukiwania tekstowego w ChromaDB.",
+                             type(exc).__name__)
                 self._embeddings_unavailable = True
                 query_embedding = None
 

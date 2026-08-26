@@ -127,9 +127,19 @@ STATIC_URL = 'static/'
 
 OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY', '')
 
+# Model embeddingów OpenAI - "text-embedding-ada-002" jako domyślny, ponieważ jest
+# dostępny na wszystkich kontach/projektach OpenAI (w przeciwieństwie do nowszych
+# modeli "text-embedding-3-*", które wymagają osobnego przyznania dostępu i bez niego
+# zwracają błąd 403 model_not_found). Nazwę można nadpisać przez zmienną środowiskową.
+OPENAI_EMBEDDING_MODEL = os.environ.get('OPENAI_EMBEDDING_MODEL', 'text-embedding-ada-002')
+
 # Google PageSpeed Insights (auditor.services.pagespeed.PageSpeedService)
 
 PAGESPEED_API_KEY = os.environ.get('PAGESPEED_API_KEY', '')
+
+# Senuto API - statystyki widoczności domeny (auditor.services.senuto.SenutoService)
+
+SENUTO_API_KEY = os.environ.get('SENUTO_API_KEY', '')
 
 
 # Email

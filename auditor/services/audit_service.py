@@ -5,6 +5,7 @@ import logging
 from .pagespeed import PageSpeedService
 from .rag import RAGEngine
 from .scraper import ScraperError, SEOScraper
+from .senuto import SenutoService
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +55,12 @@ class AuditService:
         scraper: SEOScraper | None = None,
         rag_engine: RAGEngine | None = None,
         pagespeed_service: PageSpeedService | None = None,
+        senuto_service: SenutoService | None = None,
     ):
         self.scraper = scraper or SEOScraper()
         self.rag_engine = rag_engine or RAGEngine()
         self.pagespeed_service = pagespeed_service or PageSpeedService()
+        self.senuto_service = senuto_service or SenutoService()
 
     def run_audit(self, audit):
         from auditor.models import Audit
@@ -80,9 +83,24 @@ class AuditService:
         for metric in metrics:
             audit.metrics.create(**metric)
 
+        senuto_stats = self.senuto_service.get_visibility_stats(audit.url)
+        audit.senuto_top3 = senuto_stats["top3"]
+        audit.senuto_top10 = senuto_stats["top10"]
+        audit.senuto_top50 = senuto_stats["top50"]
+        audit.senuto_history = senuto_stats["history"]
+
         audit.score = self._calculate_score(metrics)
         audit.status = Audit.Status.COMPLETED
-        audit.save(update_fields=["score", "status"])
+        audit.save(
+            update_fields=[
+                "score",
+                "status",
+                "senuto_top3",
+                "senuto_top10",
+                "senuto_top50",
+                "senuto_history",
+            ]
+        )
         return audit
 
     # ------------------------------------------------------------------

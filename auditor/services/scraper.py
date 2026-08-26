@@ -25,6 +25,12 @@ HX_NOISE_KEYWORDS = (
     "subskrybuj",
 )
 
+# Walidacji atrybutu ALT podlegają wyłącznie standardowe rastrowe pliki graficzne.
+# Grafiki wektorowe (SVG) są zwykle ikonami/elementami UI, dla których wymóg ALT
+# nie ma sensu biznesowego i sztucznie zawyżałby liczbę wykrytych błędów.
+RASTER_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+_DECORATIVE_HINT_RE = re.compile(r"\bicons?\b|\bplaceholder\b|\bdecorative\b", re.I)
+
 # ------------------------------------------------------------------
 # Klasyfikacja typu podstrony (używana do walidacji oczekiwanych typów Schema.org)
 # ------------------------------------------------------------------
@@ -157,17 +163,21 @@ class SEOScraper:
     # Analiza obrazków: ALT, title, ASCII w src
     # ------------------------------------------------------------------
     def _analyze_images(self, images: list) -> dict:
-        with_alt = [img for img in images if img.get("alt", "").strip()]
-        without_alt = [img for img in images if not img.get("alt", "").strip()]
-        with_title = [img for img in images if img.get("title", "").strip()]
-        without_title = [img for img in images if not img.get("title", "").strip()]
+        validatable = [img for img in images if self._is_validatable_image(img)]
+
+        with_alt = [img for img in validatable if img.get("alt", "").strip()]
+        without_alt = [img for img in validatable if not img.get("alt", "").strip()]
+        with_title = [img for img in validatable if img.get("title", "").strip()]
+        without_title = [img for img in validatable if not img.get("title", "").strip()]
         non_ascii_src = [
-            img["src"] for img in images if img.get("src") and not img["src"].isascii()
+            img["src"] for img in validatable if img.get("src") and not img["src"].isascii()
         ]
         without_alt_src = [img["src"] for img in without_alt if img.get("src")]
 
         return {
-            "total": len(images),
+            "total": len(validatable),
+            "total_all_images": len(images),
+            "skipped_non_raster": len(images) - len(validatable),
             "with_alt": len(with_alt),
             "without_alt": len(without_alt),
             "without_alt_examples": without_alt_src[:10],
@@ -176,6 +186,30 @@ class SEOScraper:
             "non_ascii_src_count": len(non_ascii_src),
             "non_ascii_src_examples": non_ascii_src[:5],
         }
+
+    def _is_validatable_image(self, img) -> bool:
+        """Czy obrazek podlega walidacji ALT/title - tylko standardowe pliki rastrowe
+        (JPG/PNG/WEBP/GIF), z pominięciem SVG oraz dekoracyjnych ikon/elementów UI."""
+        src = (img.get("src") or "").strip().lower()
+        if not src:
+            return False
+
+        path = src.split("?", 1)[0].split("#", 1)[0]
+        if not path.endswith(RASTER_IMAGE_EXTENSIONS):
+            return False
+
+        if img.get("role") == "presentation" or img.get("aria-hidden") == "true":
+            return False
+
+        class_attr = img.get("class") or []
+        if isinstance(class_attr, str):
+            class_attr = class_attr.split()
+        if _DECORATIVE_HINT_RE.search(" ".join(class_attr)):
+            return False
+        if _DECORATIVE_HINT_RE.search(img.get("id") or ""):
+            return False
+
+        return True
 
     # ------------------------------------------------------------------
     # Dane strukturalne Schema.org (JSON-LD + Microdata)

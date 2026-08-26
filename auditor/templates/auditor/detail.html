@@ -77,83 +77,62 @@
 </div>
 {% elif audit.status == "completed" %}
 
-{# ---------- SEKCJA 2: Problemy i rekomendacje - Priorytetowe (krytyczne błędy) ---------- #}
+{# ---------- SEKCJA 2: Analiza Widoczności (Senuto) ---------- #}
+<div class="panel">
+    <h2 class="section-heading">📈 Analiza Widoczności (Senuto)</h2>
+    <div class="senuto-stats-row">
+        <div class="stat-tile stat-senuto">
+            <div class="stat-value">{{ audit.senuto_top3 }}</div>
+            <div class="stat-label">Fraz w TOP 3</div>
+        </div>
+        <div class="stat-tile stat-senuto">
+            <div class="stat-value">{{ audit.senuto_top10 }}</div>
+            <div class="stat-label">Fraz w TOP 10</div>
+        </div>
+        <div class="stat-tile stat-senuto">
+            <div class="stat-value">{{ audit.senuto_top50 }}</div>
+            <div class="stat-label">Fraz w TOP 50</div>
+        </div>
+    </div>
+    {% if audit.senuto_history %}
+    {{ audit.senuto_history|json_script:"senuto-history-data" }}
+    <div class="senuto-chart-wrap">
+        <canvas id="senuto-visibility-chart"></canvas>
+    </div>
+    {% else %}
+    <p class="priority-empty">Brak danych widoczności Senuto dla tej domeny.</p>
+    {% endif %}
+</div>
+
+{# ---------- SEKCJA 3: Problemy i rekomendacje - Priorytetowe (krytyczne błędy) ---------- #}
 <div class="priority-panel critical">
     <h2 class="section-heading critical-heading">🔥 Priorytetowe (Krytyczne błędy)</h2>
     {% if critical_errors %}
-    <div class="table-scroll">
-        <table class="findings-table">
-            <thead>
-                <tr>
-                    <th>Typ</th>
-                    <th>Test</th>
-                    <th>Status</th>
-                    <th>Szczegóły i dalsze kroki</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for metric in critical_errors %}
-                <tr>
-                    <td class="col-type">{{ metric.category_label }}</td>
-                    <td class="col-test">{{ metric.display_key }}</td>
-                    <td><span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span></td>
-                    <td class="details-cell">
-                        <p class="priority-note">{{ metric.value.note }}</p>
-                        {% if metric.current_value %}
-                        <div class="snippet-label">Zastany element na stronie</div>
-                        <div class="snippet-box">{{ metric.current_value }}</div>
-                        {% endif %}
-                        {% include "auditor/_recommendation.html" with metric=metric %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="metric-card-list">
+        {% for metric in critical_errors %}
+        {% include "auditor/_metric_card.html" with metric=metric %}
+        {% endfor %}
     </div>
     {% else %}
     <p class="priority-empty">Brak krytycznych błędów — świetna robota.</p>
     {% endif %}
 </div>
 
-{# ---------- SEKCJA 3: Problemy i rekomendacje - Wymagające uwagi (ostrzeżenia) ---------- #}
+{# ---------- SEKCJA 4: Problemy i rekomendacje - Wymagające uwagi (ostrzeżenia) ---------- #}
 <div class="priority-panel warning-panel">
     <h2 class="section-heading warning-heading">⚠️ Wymagające uwagi (Ostrzeżenia)</h2>
     {% if warnings %}
-    <div class="table-scroll">
-        <table class="findings-table">
-            <thead>
-                <tr>
-                    <th>Typ</th>
-                    <th>Test</th>
-                    <th>Status</th>
-                    <th>Szczegóły i dalsze kroki</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for metric in warnings %}
-                <tr>
-                    <td class="col-type">{{ metric.category_label }}</td>
-                    <td class="col-test">{{ metric.display_key }}</td>
-                    <td><span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span></td>
-                    <td class="details-cell">
-                        <p class="priority-note">{{ metric.value.note }}</p>
-                        {% if metric.current_value %}
-                        <div class="snippet-label">Zastany element na stronie</div>
-                        <div class="snippet-box">{{ metric.current_value }}</div>
-                        {% endif %}
-                        {% include "auditor/_recommendation.html" with metric=metric %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="metric-card-list">
+        {% for metric in warnings %}
+        {% include "auditor/_metric_card.html" with metric=metric %}
+        {% endfor %}
     </div>
     {% else %}
     <p class="priority-empty">Brak ostrzeżeń.</p>
     {% endif %}
 </div>
 
-{# ---------- SEKCJA 4: szczegółowy raport (surowe dane wg kategorii) ---------- #}
+{# ---------- SEKCJA 5: szczegółowy raport (surowe dane wg kategorii) ---------- #}
 <div class="report-section">
     <h2 class="section-heading">📊 Szczegółowy raport</h2>
 
@@ -226,7 +205,7 @@
     {% endfor %}
 </div>
 
-{# ---------- SEKCJA 5: zdane testy (zwinięte) ---------- #}
+{# ---------- SEKCJA 6: zdane testy (zwinięte) ---------- #}
 <div class="report-section">
     <details class="passed-tests">
         <summary class="section-heading" style="display: inline-block;">✅ Zdane testy ({{ stats.passed_count }})</summary>
@@ -242,6 +221,42 @@
         </div>
     </details>
 </div>
+
+{% if audit.senuto_history %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+    var dataEl = document.getElementById("senuto-history-data");
+    var canvas = document.getElementById("senuto-visibility-chart");
+    if (!dataEl || !canvas || typeof Chart === "undefined") return;
+
+    var history = JSON.parse(dataEl.textContent);
+    new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: {
+            labels: history.map(function (point) { return point.date; }),
+            datasets: [{
+                label: "Widoczność",
+                data: history.map(function (point) { return point.visibility; }),
+                borderColor: "#00E676",
+                backgroundColor: "rgba(0, 230, 118, 0.15)",
+                pointBackgroundColor: "#00E676",
+                tension: 0.3,
+                fill: true,
+            }],
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { labels: { color: "#94A3B8" } } },
+            scales: {
+                x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
+                y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
+            },
+        },
+    });
+})();
+</script>
+{% endif %}
 
 {% else %}
 <div class="panel">
