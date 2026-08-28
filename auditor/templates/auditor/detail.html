@@ -81,20 +81,20 @@
 <div class="panel">
     <h2 class="section-heading">📈 Analiza Widoczności (Senuto)</h2>
     <div class="senuto-stats-row">
-        <div class="stat-tile stat-senuto">
+        <button type="button" class="stat-tile stat-senuto senuto-tab metric-btn" data-metric="top3" data-label="Widoczność w TOP 3">
             <div class="stat-value">{{ audit.senuto_top3 }}</div>
             <div class="stat-label">Fraz w TOP 3</div>
-        </div>
-        <div class="stat-tile stat-senuto">
+        </button>
+        <button type="button" class="stat-tile stat-senuto senuto-tab metric-btn active" data-metric="top10" data-label="Widoczność w TOP 10">
             <div class="stat-value">{{ audit.senuto_top10 }}</div>
             <div class="stat-label">Fraz w TOP 10</div>
-        </div>
-        <div class="stat-tile stat-senuto">
+        </button>
+        <button type="button" class="stat-tile stat-senuto senuto-tab metric-btn" data-metric="top50" data-label="Widoczność w TOP 50">
             <div class="stat-value">{{ audit.senuto_top50 }}</div>
             <div class="stat-label">Fraz w TOP 50</div>
-        </div>
+        </button>
     </div>
-    {% if audit.senuto_history %}
+    {% if audit.senuto_history.dates %}
     {{ audit.senuto_history|json_script:"senuto-history-data" }}
     <div class="senuto-chart-wrap">
         <canvas id="senuto-visibility-chart"></canvas>
@@ -222,7 +222,7 @@
     </details>
 </div>
 
-{% if audit.senuto_history %}
+{% if audit.senuto_history.dates %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>
 (function () {
@@ -231,13 +231,17 @@
     if (!dataEl || !canvas || typeof Chart === "undefined") return;
 
     var history = JSON.parse(dataEl.textContent);
-    new Chart(canvas.getContext("2d"), {
+    var tabs = document.querySelectorAll(".senuto-tab");
+    var initialTab = document.querySelector(".senuto-tab.active") || tabs[0];
+    var initialMetric = initialTab ? initialTab.dataset.metric : "top10";
+
+    var myChart = new Chart(canvas.getContext("2d"), {
         type: "line",
         data: {
-            labels: history.map(function (point) { return point.date; }),
+            labels: history.dates,
             datasets: [{
-                label: "Widoczność",
-                data: history.map(function (point) { return point.visibility; }),
+                label: initialTab ? initialTab.dataset.label : "Widoczność w TOP 10",
+                data: history[initialMetric] || [],
                 borderColor: "#00E676",
                 backgroundColor: "rgba(0, 230, 118, 0.15)",
                 pointBackgroundColor: "#00E676",
@@ -247,12 +251,27 @@
         },
         options: {
             responsive: true,
+            animation: { duration: 400, easing: "easeInOutQuart" },
             plugins: { legend: { labels: { color: "#94A3B8" } } },
             scales: {
                 x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
                 y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
             },
         },
+    });
+
+    tabs.forEach(function (tab) {
+        tab.addEventListener("click", function () {
+            var metric = tab.dataset.metric;
+            if (!history[metric]) return;
+
+            tabs.forEach(function (t) { t.classList.remove("active"); });
+            tab.classList.add("active");
+
+            myChart.data.datasets[0].data = history[metric];
+            myChart.data.datasets[0].label = tab.dataset.label;
+            myChart.update();
+        });
     });
 })();
 </script>

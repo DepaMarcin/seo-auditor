@@ -17,7 +17,9 @@ class Audit(models.Model):
     senuto_top3 = models.IntegerField(default=0)
     senuto_top10 = models.IntegerField(default=0)
     senuto_top50 = models.IntegerField(default=0)
-    senuto_history = models.JSONField(default=list, blank=True)
+    # Ustrukturyzowana historia widoczności do przełączanego wykresu Chart.js:
+    # {"dates": [...], "top3": [...], "top10": [...], "top50": [...]}.
+    senuto_history = models.JSONField(default=dict, blank=True)
 
     class Meta:
         ordering = ["-created_at"]

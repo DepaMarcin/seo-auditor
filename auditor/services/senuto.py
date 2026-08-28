@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import traceback
+from datetime import date, timedelta
 from urllib.parse import urlparse
 
 import httpx
@@ -10,12 +12,21 @@ from django.conf import settings
 
 logger = logging.getLogger(__name__)
 
-API_BASE_URL = "https://api.senuto.com/api/v2"
+# Zweryfikowane na podstawie oficjalnej kolekcji Postman API Senuto
+# (https://docs-api.senuto.com/) - baza URL NIE zawiera segmentu "/v2".
+API_BASE_URL = "https://api.senuto.com/api"
 DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
-# Id kraju wymagany przez API Senuto dla wszystkich zapytań o widoczność - 208 to
-# rynek polski (PL).
-COUNTRY_ID_PL = 208
+# Id kraju wymagany przez API Senuto dla wszystkich zapytań o widoczność - zgodnie
+# z GET /visibility_analysis/app/getCountriesList, Polska ma id = 1 (NIE 208).
+COUNTRY_ID_PL = 1
+
+# "topLevelDomain" analizuje cały serwis (nie tylko konkretną subdomenę/ścieżkę) -
+# to odpowiada temu, jak audytujemy domenę w tym projekcie.
+FETCH_MODE = "topLevelDomain"
+
+# Zakres historii widoczności pobierany do wykresu w detail.html.
+HISTORY_DAYS = 90
 
 _SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
@@ -87,50 +98,100 @@ class SenutoService:
                     "Senuto zwróciło błąd HTTP %s dla domeny %s. Odpowiedź serwera: %s",
                     status_code, domain, raw_body,
                 )
+            self._log_exception("httpx.HTTPStatusError", domain, exc)
             return self._fallback()
-        except httpx.HTTPError:
-            logger.warning("Nie udało się połączyć z API Senuto dla domeny %s.", domain, exc_info=True)
+        except httpx.HTTPError as exc:
+            logger.warning("Nie udało się połączyć z API Senuto dla domeny %s.", domain)
+            self._log_exception("httpx.HTTPError", domain, exc)
             return self._fallback()
-        except (KeyError, TypeError, ValueError):
-            logger.warning("Nie udało się sparsować odpowiedzi API Senuto dla domeny %s.", domain, exc_info=True)
+        except (KeyError, TypeError, ValueError) as exc:
+            logger.warning("Nie udało się sparsować odpowiedzi API Senuto dla domeny %s.", domain)
+            self._log_exception("błąd parsowania odpowiedzi", domain, exc)
             return self._fallback()
-        except Exception:
-            # Ostatnia linia obrony - żaden nieprzewidziany błąd integracji z Senuto
-            # nie może uniemożliwić wygenerowania reszty audytu SEO.
-            logger.warning("Nieoczekiwany błąd podczas pobierania danych Senuto dla %s.", domain, exc_info=True)
+        except Exception as exc:
+            # Uwaga: ten blok NIE zwraca zerowego słownika po cichu - każdy nieoczekiwany
+            # wyjątek jest w pełni wypisywany (print + logger.error z pełnym tracebackiem),
+            # żeby żaden błąd integracji z Senuto nie pozostał niezauważony. Audyt mimo to
+            # nie jest przerywany - dane widoczności są traktowane jako dodatek, nie warunek
+            # konieczny do ukończenia audytu SEO.
+            logger.warning("Nieoczekiwany błąd podczas pobierania danych Senuto dla %s.", domain)
+            self._log_exception("nieoczekiwany wyjątek", domain, exc)
             return self._fallback()
+
+    def _log_exception(self, label: str, domain: str, exc: Exception) -> None:
+        """Wypisuje pełny wyjątek (print) i loguje pełny traceback (logger.error), żeby
+        żaden błąd integracji z Senuto nie został po cichu połknięty przez fallback."""
+        tb = traceback.format_exc()
+        print(f"[SenutoService] {label} dla domeny {domain}: {exc!r}\n{tb}")
+        logger.error(tb)
 
     def _headers(self) -> dict:
-        # Dokumentacja Senuto posługuje się nagłówkiem "Api-Token", część wdrożeń API v2
-        # akceptuje też standardowy "Authorization: Bearer" - wysyłamy oba, żeby
-        # integracja działała niezależnie od tego, którego wariantu wymaga konkretne konto.
-        return {
-            "Api-Token": self.api_key,
-            "Authorization": f"Bearer {self.api_key}",
-        }
+        # Zgodnie z oficjalną kolekcją Postman API Senuto: jedyny obsługiwany schemat
+        # to "Authorization: Bearer <token>" (auth.type == "bearer" w kolekcji).
+        return {"Authorization": f"Bearer {self.api_key}"}
 
     def _fetch_visibility_summary(self, client: httpx.Client, domain: str) -> dict:
-        endpoint = f"{API_BASE_URL}/visibility_analysis/domain_visibility"
-        response = client.get(endpoint, params={"domain": domain, "country_id": COUNTRY_ID_PL})
+        endpoint = f"{API_BASE_URL}/visibility_analysis/reports/dashboard/getDomainStatistics"
+        params = {"domain": domain, "fetch_mode": FETCH_MODE, "country_id": COUNTRY_ID_PL}
+        response = client.get(endpoint, params=params)
         self._log_response(domain, response)
         response.raise_for_status()
         data = response.json()
+        if not data.get("success", True):
+            raise ValueError(f"Senuto: odpowiedź z success=false ({data.get('message')!r})")
+
+        statistics = data.get("data", {}).get("statistics", {})
         return {
-            "top3": data.get("top3_count") or 0,
-            "top10": data.get("top10_count") or 0,
-            "top50": data.get("top50_count") or 0,
+            "top3": round(statistics.get("top3", {}).get("recent_value") or 0),
+            "top10": round(statistics.get("top10", {}).get("recent_value") or 0),
+            "top50": round(statistics.get("top50", {}).get("recent_value") or 0),
         }
 
-    def _fetch_visibility_history(self, client: httpx.Client, domain: str) -> list[dict]:
-        endpoint = f"{API_BASE_URL}/visibility_analysis/domain_history"
-        response = client.get(endpoint, params={"domain": domain, "country_id": COUNTRY_ID_PL})
+    def _fetch_visibility_history(self, client: httpx.Client, domain: str) -> dict:
+        """Pobiera historię liczby fraz w TOP3/TOP10/TOP50 dla całego dostępnego zakresu
+        czasowego, w ustrukturyzowanej postaci gotowej do przełączania serii na wykresie
+        Chart.js: {"dates": [...], "top3": [...], "top10": [...], "top50": [...]}."""
+        endpoint = f"{API_BASE_URL}/visibility_analysis/reports/domain_positions/getPositionsHistoryChartDataForAllTypes"
+        date_max = date.today()
+        date_min = date_max - timedelta(days=HISTORY_DAYS)
+        params = {
+            "domain": domain,
+            "fetch_mode": FETCH_MODE,
+            "date_min": date_min.isoformat(),
+            "date_max": date_max.isoformat(),
+        }
+        response = client.get(endpoint, params=params)
         self._log_response(domain, response)
         response.raise_for_status()
         data = response.json()
-        return [
-            {"date": point.get("date"), "visibility": point.get("visibility") or 0}
-            for point in data.get("history", [])
-        ]
+        if not data.get("success", True):
+            raise ValueError(f"Senuto: odpowiedź z success=false ({data.get('message')!r})")
+
+        entries = data.get("data") or []
+        main_entry = next((entry for entry in entries if entry.get("main_domain")), None) or (
+            entries[0] if entries else None
+        )
+        if not main_entry:
+            return self._empty_history()
+
+        # Uwaga: metryki są zagnieżdżone pod kluczem segmentu ("all", "my_brand",
+        # "non_brand", "brand", ...) - "all" to zagregowane dane całej domeny,
+        # niezależnie od podziału na frazy markowe/niemarkowe.
+        segment = main_entry.get("data", {}).get("all", {})
+        top3_series = segment.get("keywords_top3", {})
+        top10_series = segment.get("keywords_top10", {})
+        top50_series = segment.get("keywords_top50", {})
+
+        dates = sorted(set(top3_series) | set(top10_series) | set(top50_series))
+        return {
+            "dates": dates,
+            "top3": [round(top3_series.get(day) or 0) for day in dates],
+            "top10": [round(top10_series.get(day) or 0) for day in dates],
+            "top50": [round(top50_series.get(day) or 0) for day in dates],
+        }
+
+    def _empty_history(self) -> dict:
+        return {"dates": [], "top3": [], "top10": [], "top50": []}
 
     def _log_response(self, clean_domain: str, response: httpx.Response) -> None:
         """Logowanie diagnostyczne każdego zapytania do Senuto - domena, kod statusu
@@ -175,5 +236,5 @@ class SenutoService:
             "top3": 0,
             "top10": 0,
             "top50": 0,
-            "history": [],
+            "history": self._empty_history(),
         }

@@ -252,6 +252,19 @@
         }
         .stat-tile.stat-senuto { border-color: rgba(0, 230, 118, 0.3); }
         .stat-tile.stat-senuto .stat-value { color: var(--accent); }
+        /* Kafelki TOP3/TOP10/TOP50 są jednocześnie przyciskami przełączającymi serię
+           na wykresie widoczności - stąd reset stylów natywnego <button> i stan .active. */
+        .senuto-tab {
+            cursor: pointer;
+            display: block;
+            width: 100%;
+            font: inherit;
+            color: inherit;
+            transition: border-color 0.15s ease;
+        }
+        .senuto-tab:hover { border-color: var(--accent); }
+        .senuto-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .senuto-tab.active { border: 2px solid #00E676; }
         .senuto-chart-wrap {
             background: var(--surface-inset);
             border: 1px solid var(--border);
