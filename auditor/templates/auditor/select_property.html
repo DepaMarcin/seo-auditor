@@ -1,0 +1,27 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Wybierz usługę GA4 — {{ audit.url }}{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <p><a class="link" href="{% url 'auditor:detail' audit.pk %}">&larr; Wróć do audytu</a></p>
+    <h1>Wybierz usługę Google Analytics 4</h1>
+    <p class="priority-empty">
+        To konto Google ma dostęp do kilku usług GA4. Wybierz tę, która odpowiada domenie
+        <strong>{{ audit.url }}</strong>, żeby pobrać dane o ruchu organicznym.
+    </p>
+
+    <form method="post" class="ga4-select-form">
+        {% csrf_token %}
+        <select name="property_id" required>
+            <option value="" disabled {% if not has_auto_selected %}selected{% endif %}>-- wybierz usługę --</option>
+            {% for prop in properties %}
+            <option value="{{ prop.property_id }}" {% if prop.auto_selected %}selected{% endif %}>
+                {{ prop.display_name }} - Properties/{{ prop.property_id }}
+            </option>
+            {% endfor %}
+        </select>
+        <button type="submit">Połącz wybraną usługę</button>
+    </form>
+</div>
+{% endblock %}

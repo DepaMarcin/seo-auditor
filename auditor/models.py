@@ -21,6 +21,12 @@ class Audit(models.Model):
     # {"dates": [...], "top3": [...], "top10": [...], "top50": [...]}.
     senuto_history = models.JSONField(default=dict, blank=True)
 
+    # Integracja Google Analytics 4 przez OAuth 2.0 (auditor.services.ga4_service.GA4OAuthService).
+    ga4_property_id = models.CharField(max_length=50, blank=True, null=True)
+    ga4_refresh_token = models.TextField(blank=True, null=True)
+    ga4_organic_sessions = models.IntegerField(default=0)
+    ga4_history = models.JSONField(default=dict)
+
     class Meta:
         ordering = ["-created_at"]
 

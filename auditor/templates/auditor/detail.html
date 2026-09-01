@@ -104,7 +104,35 @@
     {% endif %}
 </div>
 
-{# ---------- SEKCJA 3: Problemy i rekomendacje - Priorytetowe (krytyczne błędy) ---------- #}
+{# ---------- SEKCJA 3: Ruch organiczny (Google Analytics 4) ---------- #}
+<div class="panel">
+    <h2 class="section-heading">🌱 Ruch organiczny (Google Analytics 4)</h2>
+    {% if not audit.ga4_refresh_token %}
+    <div class="ga4-connect-box">
+        <p class="priority-empty">
+            Połącz to konto Google Analytics 4, żeby zobaczyć dzienny ruch organiczny obok danych widoczności Senuto.
+        </p>
+        <a class="pdf-button" href="{% url 'auditor:start_ga4_auth' audit.pk %}">
+            🔗 Połącz z Google Analytics
+        </a>
+    </div>
+    {% elif audit.ga4_history.dates %}
+    <div class="senuto-stats-row">
+        <div class="stat-tile stat-senuto">
+            <div class="stat-value">{{ audit.ga4_organic_sessions }}</div>
+            <div class="stat-label">Sesji organicznych (30 dni)</div>
+        </div>
+    </div>
+    {{ audit.ga4_history|json_script:"ga4-history-data" }}
+    <div class="senuto-chart-wrap">
+        <canvas id="ga4-organic-chart"></canvas>
+    </div>
+    {% else %}
+    <p class="priority-empty">Połączono z Google Analytics, ale nie udało się jeszcze pobrać danych o ruchu organicznym.</p>
+    {% endif %}
+</div>
+
+{# ---------- SEKCJA 4: Problemy i rekomendacje - Priorytetowe (krytyczne błędy) ---------- #}
 <div class="priority-panel critical">
     <h2 class="section-heading critical-heading">🔥 Priorytetowe (Krytyczne błędy)</h2>
     {% if critical_errors %}
@@ -118,7 +146,7 @@
     {% endif %}
 </div>
 
-{# ---------- SEKCJA 4: Problemy i rekomendacje - Wymagające uwagi (ostrzeżenia) ---------- #}
+{# ---------- SEKCJA 5: Problemy i rekomendacje - Wymagające uwagi (ostrzeżenia) ---------- #}
 <div class="priority-panel warning-panel">
     <h2 class="section-heading warning-heading">⚠️ Wymagające uwagi (Ostrzeżenia)</h2>
     {% if warnings %}
@@ -132,7 +160,7 @@
     {% endif %}
 </div>
 
-{# ---------- SEKCJA 5: szczegółowy raport (surowe dane wg kategorii) ---------- #}
+{# ---------- SEKCJA 6: szczegółowy raport (surowe dane wg kategorii) ---------- #}
 <div class="report-section">
     <h2 class="section-heading">📊 Szczegółowy raport</h2>
 
@@ -205,7 +233,7 @@
     {% endfor %}
 </div>
 
-{# ---------- SEKCJA 6: zdane testy (zwinięte) ---------- #}
+{# ---------- SEKCJA 7: zdane testy (zwinięte) ---------- #}
 <div class="report-section">
     <details class="passed-tests">
         <summary class="section-heading" style="display: inline-block;">✅ Zdane testy ({{ stats.passed_count }})</summary>
@@ -222,8 +250,11 @@
     </details>
 </div>
 
-{% if audit.senuto_history.dates %}
+{% if audit.senuto_history.dates or audit.ga4_refresh_token and audit.ga4_history.dates %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+{% endif %}
+
+{% if audit.senuto_history.dates %}
 <script>
 (function () {
     var dataEl = document.getElementById("senuto-history-data");
@@ -272,6 +303,42 @@
             myChart.data.datasets[0].label = tab.dataset.label;
             myChart.update();
         });
+    });
+})();
+</script>
+{% endif %}
+
+{% if audit.ga4_refresh_token and audit.ga4_history.dates %}
+<script>
+(function () {
+    var dataEl = document.getElementById("ga4-history-data");
+    var canvas = document.getElementById("ga4-organic-chart");
+    if (!dataEl || !canvas || typeof Chart === "undefined") return;
+
+    var history = JSON.parse(dataEl.textContent);
+    new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: {
+            labels: history.dates,
+            datasets: [{
+                label: "Sesje organiczne (GA4)",
+                data: history.sessions,
+                borderColor: "#4285F4",
+                backgroundColor: "rgba(66, 133, 244, 0.15)",
+                pointBackgroundColor: "#4285F4",
+                tension: 0.3,
+                fill: true,
+            }],
+        },
+        options: {
+            responsive: true,
+            animation: { duration: 400, easing: "easeInOutQuart" },
+            plugins: { legend: { labels: { color: "#94A3B8" } } },
+            scales: {
+                x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
+                y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
+            },
+        },
     });
 })();
 </script>

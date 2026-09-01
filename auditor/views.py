@@ -1,11 +1,20 @@
+import json
+import logging
 import re
+from urllib.parse import urlparse
 
+from django.conf import settings
 from django.contrib import messages
+from django.http import HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from google_auth_oauthlib.flow import Flow
 
 from .models import Audit, AuditMetric
 from .services.audit_service import SCORE_WEIGHTS, AuditService
+from .services.ga4_service import GA4OAuthService
+
+logger = logging.getLogger(__name__)
 
 
 def index(request):
@@ -21,6 +30,198 @@ def index(request):
 
     audits = Audit.objects.all()
     return render(request, "auditor/index.html", {"audits": audits})
+
+
+# ----------------------------------------------------------------------
+# Google Analytics 4 - integracja OAuth 2.0 ("Zaloguj się przez Google")
+# ----------------------------------------------------------------------
+
+def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
+    """Inicjuje przepływ OAuth 2.0 z Google dla danego audytu: buduje `Flow` z pliku
+    `client_secret.json`, zapisuje w sesji, którego audytu dotyczy autoryzacja
+    (`pending_audit_id`) oraz stan CSRF (`ga4_oauth_state`), po czym przekierowuje
+    użytkownika na ekran logowania/zgody Google."""
+    audit = get_object_or_404(Audit, pk=pk)
+
+    try:
+        flow = Flow.from_client_secrets_file(
+            str(settings.GA4_CLIENT_SECRETS_FILE),
+            scopes=settings.GA4_SCOPES,
+            redirect_uri=settings.GA4_REDIRECT_URI,
+        )
+        authorization_url, state = flow.authorization_url(
+            access_type="offline",
+            prompt="consent",
+            include_granted_scopes="true",
+        )
+    except FileNotFoundError:
+        logger.error("Brak pliku client_secret.json (oczekiwana ścieżka: %s).", settings.GA4_CLIENT_SECRETS_FILE)
+        messages.error(request, "Konfiguracja Google Analytics jest niekompletna - brak pliku client_secret.json.")
+        return redirect("auditor:detail", pk=audit.pk)
+    except Exception:
+        logger.exception("Nie udało się zainicjować przepływu OAuth Google dla audytu %s.", audit.pk)
+        messages.error(request, "Nie udało się rozpocząć logowania przez Google. Spróbuj ponownie.")
+        return redirect("auditor:detail", pk=audit.pk)
+
+    request.session["pending_audit_id"] = audit.pk
+    request.session["ga4_oauth_state"] = state
+    # google-auth-oauthlib generuje PKCE `code_verifier` przy tworzeniu URL-a autoryzacji
+    # (flow.authorization_url), ale to inny obiekt `Flow` obsługuje callback (inny request/
+    # proces) - bez zapisania go w sesji i odtworzenia w ga4_callback, flow.fetch_token()
+    # kończy się błędem "InvalidGrantError: Missing code verifier".
+    request.session["code_verifier"] = flow.code_verifier
+
+    return redirect(authorization_url)
+
+
+def _load_google_client_config() -> tuple[str, str]:
+    """Odczytuje `client_id`/`client_secret` bezpośrednio z pliku `client_secret.json`,
+    bez budowania pełnego obiektu `Flow` - potrzebne do odtworzenia `Credentials`
+    z zapisanego wcześniej `refresh_token` (patrz `_build_credentials_from_refresh_token`)."""
+    with open(settings.GA4_CLIENT_SECRETS_FILE, encoding="utf-8") as fh:
+        raw_config = json.load(fh)
+    config = raw_config.get("web") or raw_config.get("installed") or {}
+    return config["client_id"], config["client_secret"]
+
+
+def _build_credentials_from_refresh_token(audit: Audit):
+    """Odtwarza `google.oauth2.credentials.Credentials` z `audit.ga4_refresh_token`,
+    żeby móc odpytać GA4 bez ponownego przechodzenia przez ekran zgody Google."""
+    client_id, client_secret = _load_google_client_config()
+    return GA4OAuthService().build_credentials_from_refresh_token(
+        refresh_token=audit.ga4_refresh_token,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
+
+
+def _brand_token(url: str) -> str:
+    """Wyciąga rdzeń nazwy domeny (bez schematu, "www." i TLD) do prostego
+    dopasowania z nazwą wyświetlaną usługi GA4, np. "https://www.harbingers.io/"
+    -> "harbingers", żeby móc podpowiedzieć właściwą usługę na liście wyboru."""
+    normalized = url if "://" in url else f"https://{url}"
+    domain = urlparse(normalized).netloc.lower()
+    if domain.startswith("www."):
+        domain = domain[len("www."):]
+    return domain.split(".")[0] if domain else ""
+
+
+def ga4_callback(request: HttpRequest) -> HttpResponse:
+    """Odbiera kod autoryzacyjny z Google, wymienia go na `credentials` (w tym
+    `refresh_token`), zapisuje token w powiązanym `Audit`, pobiera z Google Admin API
+    listę wszystkich usług (properties) GA4 dostępnych dla zalogowanego konta i
+    przekierowuje na stronę wyboru usługi (`select_ga4_property`) - konto Google może
+    mieć dostęp do wielu usług GA4 i backend nie ma jak automatycznie ustalić, która
+    z nich odpowiada audytowanej domenie."""
+    audit_id = request.session.get("pending_audit_id")
+    state = request.session.get("ga4_oauth_state")
+    if not audit_id:
+        messages.error(request, "Sesja autoryzacji Google wygasła. Spróbuj połączyć konto ponownie.")
+        return redirect("auditor:index")
+
+    audit = get_object_or_404(Audit, pk=audit_id)
+
+    try:
+        flow = Flow.from_client_secrets_file(
+            str(settings.GA4_CLIENT_SECRETS_FILE),
+            scopes=settings.GA4_SCOPES,
+            state=state,
+            redirect_uri=settings.GA4_REDIRECT_URI,
+        )
+        # Odtwarzamy PKCE code_verifier zapisany w start_ga4_auth - `flow` tworzony tutaj
+        # to nowy obiekt (inny request niż ten, który wygenerował authorization_url), więc
+        # bez tego flow.fetch_token() rzuca InvalidGrantError: "Missing code verifier".
+        flow.code_verifier = request.session.get("code_verifier")
+        flow.fetch_token(authorization_response=request.build_absolute_uri())
+        credentials = flow.credentials
+    except Exception:
+        logger.exception("Błąd podczas wymiany kodu autoryzacyjnego Google na token (audyt %s).", audit_id)
+        messages.error(request, "Nie udało się połączyć z Google Analytics. Spróbuj ponownie.")
+        return redirect("auditor:detail", pk=audit.pk)
+    finally:
+        request.session.pop("pending_audit_id", None)
+        request.session.pop("ga4_oauth_state", None)
+        request.session.pop("code_verifier", None)
+
+    if credentials.refresh_token:
+        audit.ga4_refresh_token = credentials.refresh_token
+        audit.save(update_fields=["ga4_refresh_token"])
+    else:
+        logger.warning(
+            "Google nie zwróciło refresh_token dla audytu %s - konto mogło już wcześniej wyrazić zgodę.", audit.pk
+        )
+
+    try:
+        properties = GA4OAuthService().list_accessible_properties(credentials)
+    except Exception:
+        logger.exception("Nie udało się pobrać listy usług GA4 dla audytu %s.", audit.pk)
+        properties = []
+
+    if not properties:
+        messages.warning(
+            request,
+            "Połączono z Google Analytics, ale to konto nie ma dostępu do żadnej usługi GA4.",
+        )
+        return redirect("auditor:detail", pk=audit.pk)
+
+    request.session[f"ga4_properties_{audit.pk}"] = properties
+    messages.success(request, "Połączono z Google. Wybierz teraz usługę Google Analytics 4.")
+    return redirect("auditor:select_ga4_property", pk=audit.pk)
+
+
+def select_ga4_property(request: HttpRequest, pk: int) -> HttpResponse:
+    """Krok pośredni po autoryzacji Google: prezentuje listę usług (properties) GA4
+    dostępnych dla zalogowanego konta (pobraną w `ga4_callback` i zapisaną w sesji) i
+    pozwala użytkownikowi ręcznie wskazać, która z nich odpowiada audytowanej domenie.
+
+    Po zatwierdzeniu formularza (POST) zapisuje wybrany `ga4_property_id`, odtwarza
+    `Credentials` z zapisanego `ga4_refresh_token` i przez `AuditService.sync_ga4_data`
+    pobiera oraz zapisuje statystyki ruchu organicznego z GA4.
+    """
+    audit = get_object_or_404(Audit, pk=pk)
+    session_key = f"ga4_properties_{audit.pk}"
+
+    if request.method == "POST":
+        property_id = request.POST.get("property_id", "").strip()
+        if not property_id:
+            messages.error(request, "Wybierz usługę Google Analytics 4 z listy.")
+            return redirect("auditor:select_ga4_property", pk=audit.pk)
+
+        if not audit.ga4_refresh_token:
+            messages.error(request, "Brak zapisanego połączenia z Google - połącz konto ponownie.")
+            return redirect("auditor:detail", pk=audit.pk)
+
+        try:
+            credentials = _build_credentials_from_refresh_token(audit)
+        except (FileNotFoundError, KeyError):
+            logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
+            messages.error(request, "Konfiguracja Google Analytics jest niekompletna. Spróbuj połączyć konto ponownie.")
+            return redirect("auditor:detail", pk=audit.pk)
+
+        AuditService().sync_ga4_data(audit, credentials, property_id)
+        request.session.pop(session_key, None)
+        messages.success(request, "Wybrano usługę GA4 i pobrano dane o ruchu organicznym.")
+        return redirect("auditor:detail", pk=audit.pk)
+
+    properties = request.session.get(session_key, [])
+    if not properties:
+        messages.error(request, "Lista usług GA4 wygasła. Połącz konto Google ponownie.")
+        return redirect("auditor:detail", pk=audit.pk)
+
+    # Zaznaczamy co najwyżej JEDNĄ opcję (pierwsze dopasowanie) - <select> z wieloma
+    # atrybutami "selected" jednocześnie jest niepoprawnym/mylącym znacznikiem HTML.
+    brand_token = _brand_token(audit.url)
+    has_auto_selected = False
+    for prop in properties:
+        is_match = not has_auto_selected and bool(brand_token) and brand_token in prop["display_name"].lower()
+        prop["auto_selected"] = is_match
+        has_auto_selected = has_auto_selected or is_match
+
+    return render(
+        request,
+        "auditor/select_property.html",
+        {"audit": audit, "properties": properties, "has_auto_selected": has_auto_selected},
+    )
 
 
 CORE_WEB_VITALS_KEYS = {"pagespeed_score", "lcp", "cls", "fcp", "inp"}

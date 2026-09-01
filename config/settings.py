@@ -141,6 +141,18 @@ PAGESPEED_API_KEY = os.environ.get('PAGESPEED_API_KEY', '')
 
 SENUTO_API_KEY = os.environ.get('SENUTO_API_KEY', '')
 
+# Google Analytics 4 - integracja OAuth 2.0 "Zaloguj się przez Google"
+# (auditor.services.ga4_service.GA4OAuthService, auditor.views.start_ga4_auth/ga4_callback).
+GA4_CLIENT_SECRETS_FILE = BASE_DIR / 'client_secret.json'
+GA4_SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
+GA4_REDIRECT_URI = os.environ.get('GA4_REDIRECT_URI', 'http://127.0.0.1:8000/ga4/callback/')
+
+if DEBUG:
+    # google-auth-oauthlib domyślnie wymaga HTTPS w authorization_response. Lokalny
+    # serwer deweloperski Django (http://127.0.0.1:8000) tego nie spełnia, dlatego
+    # WYŁĄCZNIE w trybie DEBUG (nigdy na produkcji) wyłączamy tę weryfikację.
+    os.environ.setdefault('OAUTHLIB_INSECURE_TRANSPORT', '1')
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration

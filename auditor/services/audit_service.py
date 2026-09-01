@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
+from .ga4_service import GA4OAuthService
 from .pagespeed import PageSpeedService
 from .rag import RAGEngine
 from .scraper import ScraperError, SEOScraper
 from .senuto import SenutoService
+
+if TYPE_CHECKING:
+    from google.oauth2.credentials import Credentials
+
+    from auditor.models import Audit
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +63,13 @@ class AuditService:
         rag_engine: RAGEngine | None = None,
         pagespeed_service: PageSpeedService | None = None,
         senuto_service: SenutoService | None = None,
+        ga4_service: GA4OAuthService | None = None,
     ):
         self.scraper = scraper or SEOScraper()
         self.rag_engine = rag_engine or RAGEngine()
         self.pagespeed_service = pagespeed_service or PageSpeedService()
         self.senuto_service = senuto_service or SenutoService()
+        self.ga4_service = ga4_service or GA4OAuthService()
 
     def run_audit(self, audit):
         from auditor.models import Audit
@@ -101,6 +110,31 @@ class AuditService:
                 "senuto_history",
             ]
         )
+        return audit
+
+    # ------------------------------------------------------------------
+    # Google Analytics 4 (OAuth 2.0) -> ruch organiczny
+    # ------------------------------------------------------------------
+    def sync_ga4_data(self, audit: "Audit", credentials: "Credentials", property_id: str, days: int = 30) -> "Audit":
+        """Pobiera z GA4 dzienną historię sesji z ruchu organicznego dla `property_id`
+        i zapisuje wyniki na `audit` przez Django ORM (`auditor.services.ga4_service.GA4OAuthService`).
+
+        Wywoływana z `auditor.views.ga4_callback` po zakończeniu przepływu OAuth 2.0 -
+        NIE jest częścią `run_audit()`, ponieważ wymaga wcześniej uzyskanych `credentials`
+        (użytkownik musi najpierw przejść przez ekran zgody Google). Błąd komunikacji
+        z GA4 nie usuwa już zapisanego `ga4_refresh_token` - użytkownik może spróbować
+        odświeżyć dane później bez ponownego logowania się przez Google.
+        """
+        try:
+            stats = self.ga4_service.fetch_organic_traffic(credentials, property_id, days=days)
+        except Exception:
+            logger.exception("Nie udało się pobrać danych GA4 dla audytu %s (property_id=%s).", audit.pk, property_id)
+            return audit
+
+        audit.ga4_property_id = property_id
+        audit.ga4_organic_sessions = stats["total_sessions"]
+        audit.ga4_history = stats["history"]
+        audit.save(update_fields=["ga4_property_id", "ga4_organic_sessions", "ga4_history"])
         return audit
 
     # ------------------------------------------------------------------
