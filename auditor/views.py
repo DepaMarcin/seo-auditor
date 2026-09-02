@@ -380,8 +380,33 @@ def _score_bucket(score):
     return "error"
 
 
+def _handle_ga4_lead_event_selection(request: HttpRequest, audit: Audit) -> None:
+    """Zapisuje wybrane przez użytkownika zdarzenie lead/konwersja GA4 i odświeża
+    pełną analitykę (dane wielokanałowe + automatyczne wnioski SEO) - wywoływane z
+    formularza POST w `audit_detail`. Pusty wybór czyści `ga4_selected_lead_event`."""
+    event_name = request.POST.get("ga4_selected_lead_event", "").strip()
+
+    if not audit.ga4_refresh_token or not audit.ga4_property_id:
+        messages.error(request, "Połącz najpierw konto Google Analytics, żeby wybrać zdarzenie.")
+        return
+
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+    except (FileNotFoundError, KeyError):
+        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
+        messages.error(request, "Sesja Google wygasła. Połącz konto ponownie.")
+        return
+
+    AuditService().refresh_ga4_lead_event(audit, credentials, event_name or None)
+    messages.success(request, "Zaktualizowano analitykę GA4.")
+
+
 def audit_detail(request, pk):
     audit = get_object_or_404(Audit, pk=pk)
+
+    if request.method == "POST" and "ga4_selected_lead_event" in request.POST:
+        _handle_ga4_lead_event_selection(request, audit)
+        return redirect("auditor:detail", pk=audit.pk)
 
     all_metrics = _annotate_metric_labels(list(audit.metrics.all()))
 
@@ -417,6 +442,26 @@ def audit_detail(request, pk):
         "total_count": len(summary_metrics),
     }
 
+    # Lista zdarzeń GA4 do formularza wyboru leadu/konwersji - pobierana na żywo tylko
+    # gdy usługa jest już połączona; błąd (np. wygasły token) nie blokuje reszty strony,
+    # formularz wyboru zdarzenia po prostu wtedy nie pokaże żadnych opcji.
+    ga4_available_events: list[str] = []
+    if audit.ga4_refresh_token and audit.ga4_property_id:
+        try:
+            credentials = _build_credentials_from_refresh_token(audit)
+            ga4_available_events = GA4OAuthService().get_available_events(credentials, audit.ga4_property_id)
+        except (FileNotFoundError, KeyError):
+            logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s (lista zdarzeń GA4).", audit.pk)
+
+    # Zbiorcza flaga: czy na stronie w ogóle trzeba wczytać Chart.js (Senuto i/lub GA4
+    # mają jakiekolwiek dane do narysowania). Liczona tutaj, a nie jako złożony warunek
+    # and/or w szablonie, żeby uniknąć pomyłek z precedencją operatorów w templatce.
+    show_charts_js = bool(
+        audit.senuto_history.get("dates")
+        or (audit.ga4_refresh_token and audit.ga4_history.get("dates"))
+        or (audit.ga4_refresh_token and audit.ga4_channels_history.get("dates"))
+    )
+
     return render(
         request,
         "auditor/detail.html",
@@ -436,6 +481,8 @@ def audit_detail(request, pk):
             "stats": stats,
             "category_scores": _compute_category_scores(audit) if audit.status == "completed" else [],
             "score_bucket": _score_bucket(audit.score),
+            "ga4_available_events": ga4_available_events,
+            "show_charts_js": show_charts_js,
         },
     )
 

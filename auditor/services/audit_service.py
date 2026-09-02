@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from .ga4_insights import analyze_channel_trends
 from .ga4_service import GA4OAuthService
 from .pagespeed import PageSpeedService
 from .rag import RAGEngine
@@ -134,8 +135,56 @@ class AuditService:
         audit.ga4_property_id = property_id
         audit.ga4_organic_sessions = stats["total_sessions"]
         audit.ga4_history = stats["history"]
-        audit.save(update_fields=["ga4_property_id", "ga4_organic_sessions", "ga4_history"])
+
+        # Dane wielokanałowe (12 mies.) i automatyczne wnioski SEO liczymy od razu przy
+        # podłączeniu usługi, żeby sekcja analizy była widoczna zanim użytkownik wybierze
+        # zdarzenie lead/konwersja (patrz `refresh_ga4_lead_event`).
+        self._refresh_ga4_insights(audit, credentials, property_id)
+
+        audit.save(
+            update_fields=[
+                "ga4_property_id",
+                "ga4_organic_sessions",
+                "ga4_history",
+                "ga4_channels_history",
+                "ga4_insights",
+            ]
+        )
         return audit
+
+    def refresh_ga4_lead_event(
+        self, audit: "Audit", credentials: "Credentials", event_name: str | None
+    ) -> "Audit":
+        """Zapisuje wybrane przez użytkownika zdarzenie lead/konwersja i przelicza
+        wnioski SEO ponownie (w tym trend tego zdarzenia z ruchu organicznego).
+
+        Wywoływana z formularza wyboru zdarzenia w `auditor.views.audit_detail`.
+        `event_name=None` czyści wybór (wnioski są wtedy liczone bez trendu leadów).
+        """
+        audit.ga4_selected_lead_event = event_name
+        self._refresh_ga4_insights(audit, credentials, audit.ga4_property_id, event_name=event_name)
+        audit.save(update_fields=["ga4_selected_lead_event", "ga4_channels_history", "ga4_insights"])
+        return audit
+
+    def _refresh_ga4_insights(
+        self, audit: "Audit", credentials: "Credentials", property_id: str, event_name: str | None = "__unset__"
+    ) -> None:
+        """Pobiera roczne dane wielokanałowe GA4 oraz (jeśli wybrano) trend zdarzenia
+        lead/konwersja z ruchu organicznego, po czym wylicza `ga4_insights` przez
+        `auditor.services.ga4_insights.analyze_channel_trends`. Ustawia pola na `audit`
+        w pamięci - zapis do bazy (`audit.save()`) leży po stronie wywołującego."""
+        if event_name == "__unset__":
+            event_name = audit.ga4_selected_lead_event
+
+        channels_data = self.ga4_service.fetch_yearly_channel_data(credentials, property_id)
+        audit.ga4_channels_history = channels_data
+
+        lead_history = None
+        if event_name:
+            conversions = self.ga4_service.fetch_event_conversions(credentials, property_id, event_name)
+            lead_history = conversions["history"]
+
+        audit.ga4_insights = analyze_channel_trends(channels_data, lead_history)
 
     # ------------------------------------------------------------------
     # Analiza danych ze scrapera -> metryki

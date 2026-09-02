@@ -27,6 +27,11 @@ class Audit(models.Model):
     ga4_organic_sessions = models.IntegerField(default=0)
     ga4_history = models.JSONField(default=dict)
 
+    # Analiza trendów wielokanałowych i leadów/konwersji (auditor.services.ga4_insights).
+    ga4_selected_lead_event = models.CharField(max_length=100, blank=True, null=True)
+    ga4_channels_history = models.JSONField(default=dict)  # Dane 12-miesięczne dla wszystkich kanałów
+    ga4_insights = models.JSONField(default=dict)  # Wyliczone wnioski i algorytmy trendu
+
     class Meta:
         ordering = ["-created_at"]
 

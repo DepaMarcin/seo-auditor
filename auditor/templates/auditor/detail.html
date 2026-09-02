@@ -127,6 +127,44 @@
     <div class="senuto-chart-wrap">
         <canvas id="ga4-organic-chart"></canvas>
     </div>
+
+    {% if audit.ga4_channels_history.dates %}
+    <h3 class="ga4-subheading">Ruch wg kanału (ostatnie 12 miesięcy)</h3>
+    {{ audit.ga4_channels_history|json_script:"ga4-channels-data" }}
+    <div class="senuto-chart-wrap" style="margin-top: 0.5rem;">
+        <canvas id="ga4-channels-chart"></canvas>
+    </div>
+    {% endif %}
+
+    {% if audit.ga4_insights.summary_points %}
+    <div class="ga4-insights-box{% if audit.ga4_insights.cannibalization_warning %} ga4-insights-warning{% endif %}">
+        <div class="ga4-insights-heading">🧠 Automatyczne Wnioski SEO</div>
+        <ul class="ga4-insights-list">
+            {% for point in audit.ga4_insights.summary_points %}
+            <li>{{ point }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
+
+    <h3 class="ga4-subheading">Śledzenie leadów / konwersji</h3>
+    <form method="post" class="ga4-select-form ga4-lead-form">
+        {% csrf_token %}
+        <select name="ga4_selected_lead_event">
+            <option value="">-- brak śledzonego zdarzenia --</option>
+            {% for event_name in ga4_available_events %}
+            <option value="{{ event_name }}" {% if event_name == audit.ga4_selected_lead_event %}selected{% endif %}>
+                {{ event_name }}
+            </option>
+            {% endfor %}
+        </select>
+        <button type="submit">Śledź jako lead/konwersję</button>
+    </form>
+    {% if not ga4_available_events %}
+    <p class="priority-empty" style="margin-top: 0.5rem;">
+        Nie udało się pobrać listy zdarzeń z GA4 (spróbuj odświeżyć stronę).
+    </p>
+    {% endif %}
     {% else %}
     <p class="priority-empty">Połączono z Google Analytics, ale nie udało się jeszcze pobrać danych o ruchu organicznym.</p>
     {% endif %}
@@ -250,7 +288,7 @@
     </details>
 </div>
 
-{% if audit.senuto_history.dates or audit.ga4_refresh_token and audit.ga4_history.dates %}
+{% if show_charts_js %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 {% endif %}
 
@@ -336,6 +374,51 @@
             plugins: { legend: { labels: { color: "#94A3B8" } } },
             scales: {
                 x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
+                y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
+            },
+        },
+    });
+})();
+</script>
+{% endif %}
+
+{% if audit.ga4_refresh_token and audit.ga4_channels_history.dates %}
+<script>
+(function () {
+    var dataEl = document.getElementById("ga4-channels-data");
+    var canvas = document.getElementById("ga4-channels-chart");
+    if (!dataEl || !canvas || typeof Chart === "undefined") return;
+
+    var data = JSON.parse(dataEl.textContent);
+    var palette = ["#94A3B8", "#F59E0B", "#A78BFA", "#F472B6", "#38BDF8", "#FB923C", "#34D399", "#FACC15"];
+    var paletteIndex = 0;
+    var datasets = [];
+
+    Object.keys(data.channels).forEach(function (channel) {
+        var isOrganic = channel === "Organic Search";
+        var color = isOrganic ? "#00E676" : palette[paletteIndex++ % palette.length];
+        datasets.push({
+            label: channel,
+            data: data.channels[channel],
+            borderColor: color,
+            backgroundColor: "transparent",
+            borderWidth: isOrganic ? 3 : 1.25,
+            pointRadius: 0,
+            tension: 0.25,
+            order: isOrganic ? 0 : 1,
+        });
+    });
+
+    new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: { labels: data.dates, datasets: datasets },
+        options: {
+            responsive: true,
+            interaction: { mode: "index", intersect: false },
+            animation: { duration: 400 },
+            plugins: { legend: { labels: { color: "#94A3B8", boxWidth: 12 } } },
+            scales: {
+                x: { ticks: { color: "#94A3B8", maxTicksLimit: 12 }, grid: { color: "#334155" } },
                 y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
             },
         },
