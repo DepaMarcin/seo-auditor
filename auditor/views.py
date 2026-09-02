@@ -456,10 +456,12 @@ def audit_detail(request, pk):
     # Zbiorcza flaga: czy na stronie w ogóle trzeba wczytać Chart.js (Senuto i/lub GA4
     # mają jakiekolwiek dane do narysowania). Liczona tutaj, a nie jako złożony warunek
     # and/or w szablonie, żeby uniknąć pomyłek z precedencją operatorów w templatce.
+    ga4_lead_insights = audit.ga4_insights.get("lead_insights") or {}
     show_charts_js = bool(
         audit.senuto_history.get("dates")
         or (audit.ga4_refresh_token and audit.ga4_history.get("dates"))
-        or (audit.ga4_refresh_token and audit.ga4_channels_history.get("dates"))
+        or (audit.ga4_refresh_token and audit.ga4_channels_history.get("months"))
+        or (audit.ga4_refresh_token and ga4_lead_insights.get("history", {}).get("months"))
     )
 
     return render(
@@ -482,6 +484,7 @@ def audit_detail(request, pk):
             "category_scores": _compute_category_scores(audit) if audit.status == "completed" else [],
             "score_bucket": _score_bucket(audit.score),
             "ga4_available_events": ga4_available_events,
+            "ga4_lead_insights": ga4_lead_insights,
             "show_charts_js": show_charts_js,
         },
     )

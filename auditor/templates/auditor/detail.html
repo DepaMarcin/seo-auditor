@@ -128,8 +128,12 @@
         <canvas id="ga4-organic-chart"></canvas>
     </div>
 
-    {% if audit.ga4_channels_history.dates %}
+    {% if audit.ga4_channels_history.months %}
     <h3 class="ga4-subheading">Ruch wg kanału (ostatnie 12 miesięcy)</h3>
+    <p class="priority-empty" style="margin: 0 0 0.5rem;">
+        Domyślnie widoczny jest tylko ruch organiczny - zaznacz dodatkowe kanały, żeby je porównać.
+    </p>
+    <div class="ga4-channel-toggles" id="ga4-channel-toggles"></div>
     {{ audit.ga4_channels_history|json_script:"ga4-channels-data" }}
     <div class="senuto-chart-wrap" style="margin-top: 0.5rem;">
         <canvas id="ga4-channels-chart"></canvas>
@@ -165,6 +169,28 @@
         Nie udało się pobrać listy zdarzeń z GA4 (spróbuj odświeżyć stronę).
     </p>
     {% endif %}
+
+    {% if audit.ga4_selected_lead_event and ga4_lead_insights.history.months %}
+    {# ---------- Osobna, niezależna sekcja: wykres i wnioski dla leadów/konwersji ---------- #}
+    <div class="ga4-leads-section">
+        <h3 class="ga4-subheading">Leady / konwersje: {{ audit.ga4_selected_lead_event }} (ostatnie 12 miesięcy)</h3>
+        {{ ga4_lead_insights.history|json_script:"ga4-leads-data" }}
+        <div class="senuto-chart-wrap">
+            <canvas id="ga4-leads-chart"></canvas>
+        </div>
+        {% if ga4_lead_insights.summary_points %}
+        <div class="ga4-insights-box ga4-insights-leads">
+            <div class="ga4-insights-heading">🎯 Wnioski o leadach</div>
+            <ul class="ga4-insights-list">
+                {% for point in ga4_lead_insights.summary_points %}
+                <li>{{ point }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+
     {% else %}
     <p class="priority-empty">Połączono z Google Analytics, ale nie udało się jeszcze pobrać danych o ruchu organicznym.</p>
     {% endif %}
@@ -382,43 +408,106 @@
 </script>
 {% endif %}
 
-{% if audit.ga4_refresh_token and audit.ga4_channels_history.dates %}
+{% if audit.ga4_refresh_token and audit.ga4_channels_history.months %}
 <script>
 (function () {
     var dataEl = document.getElementById("ga4-channels-data");
     var canvas = document.getElementById("ga4-channels-chart");
+    var togglesEl = document.getElementById("ga4-channel-toggles");
     if (!dataEl || !canvas || typeof Chart === "undefined") return;
 
     var data = JSON.parse(dataEl.textContent);
-    var palette = ["#94A3B8", "#F59E0B", "#A78BFA", "#F472B6", "#38BDF8", "#FB923C", "#34D399", "#FACC15"];
+    // Paleta dla kanałów innych niż Organic Search (ten zawsze ma neonową zieleń) -
+    // kolejność kanałów pochodzi z backendu (auditor.services.ga4_service.ALLOWED_CHANNELS).
+    var palette = ["#F59E0B", "#A78BFA", "#38BDF8", "#F472B6", "#FB923C"];
     var paletteIndex = 0;
-    var datasets = [];
 
-    Object.keys(data.channels).forEach(function (channel) {
+    var datasets = Object.keys(data.channels).map(function (channel) {
         var isOrganic = channel === "Organic Search";
         var color = isOrganic ? "#00E676" : palette[paletteIndex++ % palette.length];
-        datasets.push({
+        return {
             label: channel,
             data: data.channels[channel],
             borderColor: color,
             backgroundColor: "transparent",
-            borderWidth: isOrganic ? 3 : 1.25,
+            borderWidth: isOrganic ? 3 : 1.5,
             pointRadius: 0,
             tension: 0.25,
-            order: isOrganic ? 0 : 1,
-        });
+            // Domyślnie widoczny jest WYŁĄCZNIE ruch organiczny - pozostałe kanały
+            // użytkownik włącza ręcznie zaznaczając checkbox nad wykresem.
+            hidden: !isOrganic,
+        };
     });
 
-    new Chart(canvas.getContext("2d"), {
+    var chart = new Chart(canvas.getContext("2d"), {
         type: "line",
-        data: { labels: data.dates, datasets: datasets },
+        data: { labels: data.months, datasets: datasets },
         options: {
             responsive: true,
             interaction: { mode: "index", intersect: false },
             animation: { duration: 400 },
-            plugins: { legend: { labels: { color: "#94A3B8", boxWidth: 12 } } },
+            // Wyłączona domyślna legenda Chart.js - zastąpiona własnymi checkboxami
+            // nad wykresem (patrz pętla poniżej), żeby wymusić "wyłącznie Organic
+            // Search domyślnie widoczny" zamiast standardowego "wszystko widoczne".
+            plugins: { legend: { display: false } },
             scales: {
-                x: { ticks: { color: "#94A3B8", maxTicksLimit: 12 }, grid: { color: "#334155" } },
+                x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
+                y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
+            },
+        },
+    });
+
+    if (togglesEl) {
+        datasets.forEach(function (dataset, index) {
+            var toggle = document.createElement("label");
+            toggle.className = "ga4-channel-toggle";
+            toggle.style.setProperty("--toggle-color", dataset.borderColor);
+
+            var checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.checked = !dataset.hidden;
+            checkbox.addEventListener("change", function () {
+                chart.setDatasetVisibility(index, checkbox.checked);
+                chart.update();
+            });
+
+            var text = document.createElement("span");
+            text.textContent = dataset.label;
+
+            toggle.appendChild(checkbox);
+            toggle.appendChild(text);
+            togglesEl.appendChild(toggle);
+        });
+    }
+})();
+</script>
+{% endif %}
+
+{% if audit.ga4_selected_lead_event and ga4_lead_insights.history.months %}
+<script>
+(function () {
+    var dataEl = document.getElementById("ga4-leads-data");
+    var canvas = document.getElementById("ga4-leads-chart");
+    if (!dataEl || !canvas || typeof Chart === "undefined") return;
+
+    var data = JSON.parse(dataEl.textContent);
+    new Chart(canvas.getContext("2d"), {
+        type: "bar",
+        data: {
+            labels: data.months,
+            datasets: [{
+                label: "{{ audit.ga4_selected_lead_event|escapejs }}",
+                data: data.events,
+                backgroundColor: "#4285F4",
+                borderRadius: 4,
+            }],
+        },
+        options: {
+            responsive: true,
+            animation: { duration: 400 },
+            plugins: { legend: { labels: { color: "#94A3B8" } } },
+            scales: {
+                x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
                 y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
             },
         },
