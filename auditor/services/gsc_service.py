@@ -141,7 +141,15 @@ class GSCService:
         pełnych miesięcy, bieżący niepełny miesiąc jest pomijany) i Okres B (te same
         miesiące kalendarzowe rok wcześniej). Usługę Search Console dopasowuje do
         `audit_url` przez `find_best_gsc_site` (patrz tam - obsługuje sc-domain:,
-        http/https, z/bez www). Łączy wyniki po kluczu i wylicza deltę.
+        http/https, z/bez www).
+
+        UWAGA: "total_clicks_current"/"total_clicks_previous" pochodzą z OSOBNEGO
+        zapytania bez wymiarów (`dimensions=[]`, patrz `_fetch_site_totals`), a NIE z
+        sumy wierszy pogrupowanych wg `dimension` - Google Search Console ukrywa
+        (nie zwraca w ogóle) rzadkie/anonimowe frazy w rozbiciu `dimensions=["query"]`
+        ze względów prywatności, więc suma samych wierszy zaniżałaby rzeczywisty ruch
+        całej witryny (np. pokazywałaby ~500 zamiast realnych ~1500 kliknięć).
+        Rozbicie wg `dimension` służy WYŁĄCZNIE do wyliczenia TOP 10 Wzrostów/Spadków.
 
         Zwraca:
         {
@@ -161,6 +169,8 @@ class GSCService:
                 return self._fallback()
             rows_current = self._query_rows(service, site_url, dimension, period_a_start, period_a_end)
             rows_previous = self._query_rows(service, site_url, dimension, period_b_start, period_b_end)
+            totals_current = self._fetch_site_totals(service, site_url, period_a_start, period_a_end)
+            totals_previous = self._fetch_site_totals(service, site_url, period_b_start, period_b_end)
         except Exception:
             logger.exception("Błąd podczas pobierania danych Search Console (%s) dla %s.", dimension, audit_url)
             return self._fallback()
@@ -182,8 +192,13 @@ class GSCService:
         top_gainers = sorted((d for d in deltas if d["delta"] > 0), key=lambda d: d["delta"], reverse=True)[:TOP_N]
         top_losers = sorted((d for d in deltas if d["delta"] < 0), key=lambda d: d["delta"])[:TOP_N]
 
-        total_current = round(sum(current_by_key.values()))
-        total_previous = round(sum(previous_by_key.values()))
+        total_current = totals_current["clicks"]
+        total_previous = totals_previous["clicks"]
+        print(
+            f"[GSC] Sumy witrynowe ({dimension}) dla {site_url}: "
+            f"obecnie={total_current} kliknięć / {totals_current['impressions']} wyświetleń, "
+            f"rok temu={total_previous} kliknięć / {totals_previous['impressions']} wyświetleń."
+        )
 
         return {
             "total_clicks_current": total_current,
@@ -202,6 +217,23 @@ class GSCService:
         }
         response = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
         return response.get("rows", [])
+
+    def _fetch_site_totals(self, service, site_url: str, start: date, end: date) -> dict:
+        """Pobiera DOKŁADNĄ, całkowitą liczbę kliknięć i wyświetleń dla całej usługi w
+        danym okresie - zapytanie BEZ żadnych wymiarów (`dimensions=[]`) zwraca jeden
+        zagregowany wiersz obejmujący cały ruch witryny, w tym anonimowe/rzadkie frazy
+        pomijane przez Google w rozbiciu `dimensions=["query"]`. To jedyne rzetelne
+        źródło nagłówkowej liczby kliknięć (patrz `_fetch_yoy_dimension_performance`)."""
+        body = {"startDate": start.isoformat(), "endDate": end.isoformat(), "dimensions": []}
+        response = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
+        rows = response.get("rows", [])
+        if not rows:
+            return {"clicks": 0, "impressions": 0}
+        row = rows[0]
+        return {
+            "clicks": round(row.get("clicks", 0)),
+            "impressions": round(row.get("impressions", 0)),
+        }
 
     def _pct_change(self, previous: float, current: float) -> float | None:
         if not previous:

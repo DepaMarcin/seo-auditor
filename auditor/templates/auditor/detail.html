@@ -78,6 +78,18 @@
 </div>
 {% elif audit.status == "completed" %}
 
+{# ---------- Przełącznik zakładek: Widoczność i Ruch / Audyt Techniczny & PageSpeed ---------- #}
+<div class="detail-tabs" role="tablist">
+    <button type="button" class="detail-tab-btn active" data-tab-target="tab-panel-visibility" role="tab" aria-selected="true">
+        📈 Widoczność i Ruch
+    </button>
+    <button type="button" class="detail-tab-btn" data-tab-target="tab-panel-technical" role="tab" aria-selected="false">
+        🛠️ Audyt Techniczny &amp; PageSpeed
+    </button>
+</div>
+
+<div id="tab-panel-visibility" class="detail-tab-panel">
+
 {# ---------- SEKCJA 2: Analiza Widoczności (Senuto) ---------- #}
 <div class="panel">
     <h2 class="section-heading">📈 Analiza Widoczności (Senuto)</h2>
@@ -332,6 +344,11 @@
     {% endif %}
 </div>
 
+</div>
+{# ---------- /tab-panel-visibility ---------- #}
+
+<div id="tab-panel-technical" class="detail-tab-panel hidden">
+
 {# ---------- SEKCJA 5: Problemy i rekomendacje - Priorytetowe (krytyczne błędy) ---------- #}
 <div class="priority-panel critical">
     <h2 class="section-heading critical-heading">🔥 Priorytetowe (Krytyczne błędy)</h2>
@@ -449,6 +466,9 @@
         </div>
     </details>
 </div>
+
+</div>
+{# ---------- /tab-panel-technical ---------- #}
 
 {% if show_charts_js %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -651,6 +671,28 @@
 })();
 </script>
 {% endif %}
+
+<script>
+(function () {
+    var tabButtons = document.querySelectorAll(".detail-tab-btn");
+    var tabPanels = document.querySelectorAll(".detail-tab-panel");
+
+    tabButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+            var targetId = button.dataset.tabTarget;
+
+            tabPanels.forEach(function (panel) {
+                panel.classList.toggle("hidden", panel.id !== targetId);
+            });
+            tabButtons.forEach(function (otherButton) {
+                var isActive = otherButton === button;
+                otherButton.classList.toggle("active", isActive);
+                otherButton.setAttribute("aria-selected", isActive ? "true" : "false");
+            });
+        });
+    });
+})();
+</script>
 
 {% else %}
 <div class="panel">
