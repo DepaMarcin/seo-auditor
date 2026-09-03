@@ -217,9 +217,10 @@
         </span>
     </div>
 
+    <h3 class="ga4-subheading">🔑 Frazy kluczowe</h3>
     <div class="gsc-tables-grid">
         <div>
-            <h3 class="ga4-subheading" style="color: var(--ok);">📈 Top 10 Wzrostów (3M YoY)</h3>
+            <h3 class="ga4-subheading" style="color: var(--ok);">📈 Top 10 Wzrostów (3M R/R)</h3>
             <div class="table-scroll">
                 <table class="gsc-table">
                     <thead>
@@ -241,7 +242,7 @@
             </div>
         </div>
         <div>
-            <h3 class="ga4-subheading" style="color: var(--error);">📉 Top 10 Spadków (3M YoY)</h3>
+            <h3 class="ga4-subheading" style="color: var(--error);">📉 Top 10 Spadków (3M R/R)</h3>
             <div class="table-scroll">
                 <table class="gsc-table">
                     <thead>
@@ -263,6 +264,66 @@
             </div>
         </div>
     </div>
+    {% if audit.gsc_query_commentary %}
+    <div class="ga4-insights-box">
+        <div class="ga4-insights-heading">🧠 Wnioski o frazach</div>
+        <p class="gsc-commentary-text">{{ audit.gsc_query_commentary }}</p>
+    </div>
+    {% endif %}
+
+    <h3 class="ga4-subheading">📄 Podstrony</h3>
+    <div class="gsc-tables-grid">
+        <div>
+            <h3 class="ga4-subheading" style="color: var(--ok);">📈 Top 10 Wzrostów (3M R/R)</h3>
+            <div class="table-scroll">
+                <table class="gsc-table">
+                    <thead>
+                        <tr><th>Podstrona</th><th>Kliknięcia teraz</th><th>Kliknięcia rok temu</th><th>Różnica</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for row in audit.gsc_top_page_gainers %}
+                        <tr>
+                            <td>{{ row.page }}</td>
+                            <td>{{ row.clicks_current|intcomma }}</td>
+                            <td>{{ row.clicks_previous|intcomma }}</td>
+                            <td class="gsc-delta-positive">+{{ row.delta|intcomma }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="4" class="priority-empty">Brak danych.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div>
+            <h3 class="ga4-subheading" style="color: var(--error);">📉 Top 10 Spadków (3M R/R)</h3>
+            <div class="table-scroll">
+                <table class="gsc-table">
+                    <thead>
+                        <tr><th>Podstrona</th><th>Kliknięcia teraz</th><th>Kliknięcia rok temu</th><th>Różnica</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for row in audit.gsc_top_page_losers %}
+                        <tr>
+                            <td>{{ row.page }}</td>
+                            <td>{{ row.clicks_current|intcomma }}</td>
+                            <td>{{ row.clicks_previous|intcomma }}</td>
+                            <td class="gsc-delta-negative">{{ row.delta|intcomma }}</td>
+                        </tr>
+                        {% empty %}
+                        <tr><td colspan="4" class="priority-empty">Brak danych.</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% if audit.gsc_page_commentary %}
+    <div class="ga4-insights-box">
+        <div class="ga4-insights-heading">🧠 Wnioski o podstronach</div>
+        <p class="gsc-commentary-text">{{ audit.gsc_page_commentary }}</p>
+    </div>
+    {% endif %}
     {% else %}
     <p class="priority-empty">
         Nie znaleziono usługi Google Search Console dla tej domeny (lub brak zarejestrowanych kliknięć w

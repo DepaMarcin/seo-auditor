@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
-from urllib.parse import urlparse
 
 from .ga4_insights import analyze_channel_trends
 from .ga4_service import GA4OAuthService
+from .gsc_insights import generate_page_commentary, generate_query_commentary
 from .gsc_service import GSCService
 from .pagespeed import PageSpeedService
 from .rag import RAGEngine
@@ -165,27 +165,27 @@ class AuditService:
     # Google Search Console (OAuth 2.0) -> analiza fraz kluczowych 3M YoY
     # ------------------------------------------------------------------
     def sync_gsc_data(self, audit: "Audit", credentials: "Credentials") -> "Audit":
-        """Znajduje usługę Search Console odpowiadającą domenie audytu i - jeśli się
-        to uda - pobiera oraz zapisuje porównanie fraz kluczowych 3M YoY (ostatnie 3
-        pełne miesiące vs analogiczne 3 miesiące rok temu). Brak dostępu do Search
-        Console (domena niezarejestrowana, refresh_token sprzed dodania tego scope'u,
-        błąd API) nie jest traktowany jak błąd audytu - pola GSC zostają przy
-        wartościach domyślnych (0 / puste listy)."""
-        domain = self._extract_domain(audit.url)
-        site_url = self.gsc_service.resolve_site_url(credentials, domain)
-        if not site_url:
-            logger.info(
-                "Nie znaleziono usługi Search Console dla domeny %s (audyt %s) - "
-                "pomijam analizę fraz kluczowych.", domain, audit.pk,
-            )
-            return audit
+        """Pobiera i zapisuje porównanie 3M R/R (ostatnie 3 pełne miesiące vs
+        analogiczne 3 miesiące rok temu) zarówno dla fraz kluczowych, jak i
+        podstron, wraz z automatycznymi komentarzami tekstowymi
+        (`auditor.services.gsc_insights`). Dopasowanie usługi Search Console do
+        `audit.url` (obsługujące sc-domain:, http/https, z/bez "www.") leży po
+        stronie `GSCService` (patrz `gsc_service.find_best_gsc_site`). Brak dostępu
+        do Search Console (domena niezarejestrowana, refresh_token sprzed dodania
+        tego scope'u, błąd API) nie jest traktowany jak błąd audytu - pola GSC
+        zostają przy wartościach domyślnych (0 / puste listy / pusty tekst)."""
+        query_stats = self.gsc_service.fetch_yoy_query_performance(credentials, audit.url)
+        page_stats = self.gsc_service.fetch_yoy_page_performance(credentials, audit.url)
 
-        stats = self.gsc_service.fetch_yoy_query_performance(credentials, site_url)
-        audit.gsc_total_clicks_current = stats["total_clicks_current"]
-        audit.gsc_total_clicks_previous = stats["total_clicks_previous"]
-        audit.gsc_yoy_change_percent = stats["yoy_change_percent"]
-        audit.gsc_top_gainers = stats["top_gainers"]
-        audit.gsc_top_losers = stats["top_losers"]
+        audit.gsc_total_clicks_current = query_stats["total_clicks_current"]
+        audit.gsc_total_clicks_previous = query_stats["total_clicks_previous"]
+        audit.gsc_yoy_change_percent = query_stats["yoy_change_percent"]
+        audit.gsc_top_gainers = query_stats["top_gainers"]
+        audit.gsc_top_losers = query_stats["top_losers"]
+        audit.gsc_top_page_gainers = page_stats["top_gainers"]
+        audit.gsc_top_page_losers = page_stats["top_losers"]
+        audit.gsc_query_commentary = generate_query_commentary(query_stats)
+        audit.gsc_page_commentary = generate_page_commentary(page_stats)
         audit.save(
             update_fields=[
                 "gsc_total_clicks_current",
@@ -193,16 +193,13 @@ class AuditService:
                 "gsc_yoy_change_percent",
                 "gsc_top_gainers",
                 "gsc_top_losers",
+                "gsc_top_page_gainers",
+                "gsc_top_page_losers",
+                "gsc_query_commentary",
+                "gsc_page_commentary",
             ]
         )
         return audit
-
-    def _extract_domain(self, url: str) -> str:
-        """Wyciąga czystą domenę (bez schematu i "www.") z adresu audytu - do
-        dopasowania właściwej usługi Search Console (patrz `GSCService.resolve_site_url`)."""
-        normalized = url if "://" in url else f"https://{url}"
-        domain = urlparse(normalized).netloc.lower()
-        return domain[len("www."):] if domain.startswith("www.") else domain
 
     def refresh_ga4_lead_event(
         self, audit: "Audit", credentials: "Credentials", event_name: str | None
@@ -221,8 +218,10 @@ class AuditService:
     def _refresh_ga4_insights(
         self, audit: "Audit", credentials: "Credentials", property_id: str, event_name: str | None = "__unset__"
     ) -> None:
-        """Pobiera roczne dane wielokanałowe GA4 oraz (jeśli wybrano) trend zdarzenia
-        lead/konwersja z ruchu organicznego, po czym wylicza `ga4_insights` przez
+        """Pobiera 12-miesięczne dane wielokanałowe GA4 (do wykresu), zagregowane
+        sumy 3M R/R per kanał (do "Automatycznych Wniosków SEO") oraz - jeśli
+        wybrano - miesięczną i 3M R/R historię zdarzenia lead/konwersja z ruchu
+        organicznego, po czym wylicza `ga4_insights` przez
         `auditor.services.ga4_insights.analyze_channel_trends`. Ustawia pola na `audit`
         w pamięci - zapis do bazy (`audit.save()`) leży po stronie wywołującego."""
         if event_name == "__unset__":
@@ -236,7 +235,10 @@ class AuditService:
             conversions = self.ga4_service.fetch_event_conversions(credentials, property_id, event_name)
             lead_history = conversions["history"]
 
-        audit.ga4_insights = analyze_channel_trends(channels_data, lead_history)
+        summary_3m = self.ga4_service.fetch_3m_yoy_summary(credentials, property_id, lead_event_name=event_name)
+        audit.ga4_insights = analyze_channel_trends(
+            summary_3m["channels"], lead_history=lead_history, lead_totals_3m=summary_3m["leads"]
+        )
 
     # ------------------------------------------------------------------
     # Analiza danych ze scrapera -> metryki

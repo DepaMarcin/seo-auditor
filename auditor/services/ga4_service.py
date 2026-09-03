@@ -17,6 +17,8 @@ from google.analytics.data_v1beta.types import (
 )
 from google.oauth2.credentials import Credentials
 
+from .date_ranges import expected_year_months, last_n_full_months_range, same_months_last_year
+
 logger = logging.getLogger(__name__)
 
 # Zgodnie z wymaganą metryką "sessionDefaultChannelGroup == 'Organic Search'" -
@@ -25,6 +27,10 @@ ORGANIC_CHANNEL_GROUP = "Organic Search"
 
 # Liczba pełnych miesięcy prezentowanych na wykresach wielokanałowym i leadów.
 CHANNEL_HISTORY_MONTHS = 12
+
+# Liczba miesięcy porównania rok-do-roku dla "Automatycznych Wniosków SEO"
+# (ostatnie 3 pełne miesiące vs analogiczne 3 miesiące rok temu).
+YOY_COMPARISON_MONTHS = 3
 
 # Wyłącznie te kanały pokazujemy na wykresie ruchu wielokanałowego - reszta (Referral,
 # Email, Organic Social/Video/Shopping, Paid Social/Video/Other, Display, ...) jest
@@ -144,7 +150,7 @@ class GA4OAuthService:
                 continue
             series_by_channel.setdefault(channel, {})[raw_month] = sessions_value
 
-        expected_months = self._expected_year_months(CHANNEL_HISTORY_MONTHS)
+        expected_months = expected_year_months(CHANNEL_HISTORY_MONTHS)
         months = [self._format_year_month(m) for m in expected_months]
         channels = {
             channel: [series_by_channel.get(channel, {}).get(m, 0) for m in expected_months]
@@ -230,7 +236,7 @@ class GA4OAuthService:
                 logger.warning("Pominięto nieprawidłowy wiersz konwersji GA4: %r", raw_month)
                 continue
 
-        expected_months = self._expected_year_months(CHANNEL_HISTORY_MONTHS)
+        expected_months = expected_year_months(CHANNEL_HISTORY_MONTHS)
         months = [self._format_year_month(m) for m in expected_months]
         events = [by_month.get(m, 0) for m in expected_months]
 
@@ -238,6 +244,123 @@ class GA4OAuthService:
             "total_events": sum(events),
             "history": {"months": months, "events": events},
         }
+
+    def fetch_channel_totals(
+        self, credentials: Credentials, property_id: str, start_date: date, end_date: date
+    ) -> dict[str, int]:
+        """Zwraca sumę sesji wg kanału (ograniczoną do `ALLOWED_CHANNELS`) dla
+        wskazanego zakresu dat - JEDNO zapytanie bez wymiaru dni/miesięcy, więc GA4
+        zwraca od razu zagregowany total per kanał dla całego okresu. Używane do
+        porównań rok-do-roku (patrz `fetch_3m_yoy_summary`), niezależnie od 12-mies.
+        danych do wykresu (`fetch_yearly_channel_data`)."""
+        try:
+            client = BetaAnalyticsDataClient(credentials=credentials)
+            request = RunReportRequest(
+                property=f"properties/{property_id}",
+                date_ranges=[DateRange(start_date=start_date.isoformat(), end_date=end_date.isoformat())],
+                dimensions=[Dimension(name="sessionDefaultChannelGroup")],
+                metrics=[Metric(name="sessions")],
+            )
+            response = client.run_report(request)
+        except Exception:
+            logger.exception(
+                "Błąd podczas pobierania sumarycznych sesji GA4 wg kanału dla property_id=%s (%s - %s).",
+                property_id, start_date, end_date,
+            )
+            return {}
+
+        allowed = set(ALLOWED_CHANNELS)
+        totals: dict[str, int] = {}
+        for row in response.rows:
+            channel = row.dimension_values[0].value
+            if channel not in allowed:
+                continue
+            try:
+                totals[channel] = int(row.metric_values[0].value)
+            except (IndexError, ValueError):
+                continue
+        return totals
+
+    def fetch_event_total(
+        self, credentials: Credentials, property_id: str, event_name: str, start_date: date, end_date: date
+    ) -> int:
+        """Zwraca łączną liczbę wystąpień `event_name` przypisanych do kanału Organic
+        Search dla wskazanego zakresu dat - jedna zagregowana wartość, bez podziału
+        na dni/miesiące. Używane do porównania rok-do-roku trendu leadów (patrz
+        `fetch_3m_yoy_summary`)."""
+        try:
+            client = BetaAnalyticsDataClient(credentials=credentials)
+            request = RunReportRequest(
+                property=f"properties/{property_id}",
+                date_ranges=[DateRange(start_date=start_date.isoformat(), end_date=end_date.isoformat())],
+                metrics=[Metric(name="eventCount")],
+                dimension_filter=FilterExpression(
+                    and_group=FilterExpressionList(
+                        expressions=[
+                            FilterExpression(
+                                filter=Filter(
+                                    field_name="sessionDefaultChannelGroup",
+                                    string_filter=Filter.StringFilter(value=ORGANIC_CHANNEL_GROUP),
+                                )
+                            ),
+                            FilterExpression(
+                                filter=Filter(
+                                    field_name="eventName",
+                                    string_filter=Filter.StringFilter(value=event_name),
+                                )
+                            ),
+                        ]
+                    )
+                ),
+            )
+            response = client.run_report(request)
+        except Exception:
+            logger.exception(
+                "Błąd podczas pobierania sumy zdarzeń GA4 (event=%s) dla property_id=%s (%s - %s).",
+                event_name, property_id, start_date, end_date,
+            )
+            return 0
+
+        if not response.rows:
+            return 0
+        try:
+            return int(response.rows[0].metric_values[0].value)
+        except (IndexError, ValueError):
+            return 0
+
+    def fetch_3m_yoy_summary(
+        self, credentials: Credentials, property_id: str, lead_event_name: str | None = None
+    ) -> dict:
+        """Pobiera zagregowane dane rok-do-roku dla ostatnich {YOY_COMPARISON_MONTHS}
+        pełnych miesięcy vs analogiczne {YOY_COMPARISON_MONTHS} miesiące rok temu:
+        sesje wg kanału oraz - opcjonalnie - liczbę wybranego zdarzenia lead/konwersja
+        z ruchu organicznego. Dane wejściowe dla
+        `auditor.services.ga4_insights.analyze_channel_trends`.
+
+        Zwraca:
+        {
+            "channels": {"current": {"Organic Search": int, ...}, "previous": {...}},
+            "leads": {"current": int, "previous": int} | None,
+        }
+        """
+        period_a_start, period_a_end = last_n_full_months_range(YOY_COMPARISON_MONTHS)
+        period_b_start, period_b_end = same_months_last_year(period_a_start, period_a_end)
+
+        channels_current = self.fetch_channel_totals(credentials, property_id, period_a_start, period_a_end)
+        channels_previous = self.fetch_channel_totals(credentials, property_id, period_b_start, period_b_end)
+
+        leads = None
+        if lead_event_name:
+            leads = {
+                "current": self.fetch_event_total(
+                    credentials, property_id, lead_event_name, period_a_start, period_a_end
+                ),
+                "previous": self.fetch_event_total(
+                    credentials, property_id, lead_event_name, period_b_start, period_b_end
+                ),
+            }
+
+        return {"channels": {"current": channels_current, "previous": channels_previous}, "leads": leads}
 
     def list_accessible_properties(self, credentials: Credentials) -> list[dict]:
         """Zwraca listę wszystkich usług (properties) GA4 dostępnych dla zalogowanego
@@ -290,28 +413,6 @@ class GA4OAuthService:
         np. "202509" -> "WRZ 2025"."""
         year, month = raw_year_month[:4], int(raw_year_month[4:6])
         return f"{_POLISH_MONTH_ABBR.get(month, raw_year_month[4:6])} {year}"
-
-    def _expected_year_months(self, count: int) -> list[str]:
-        """Zwraca `count` kolejnych kluczy "YYYYMM" (chronologicznie), kończących się na
-        OSTATNIM PEŁNYM miesiącu (bieżący, trwający miesiąc jest pomijany celowo - jego
-        niepełne dane sztucznie zaniżałyby ostatni punkt wykresu i psuły porównania m/m,
-        np. 2 dni września potraktowane jak cały miesiąc). Gwarantuje pełną, wyrównaną
-        oś 12 miesięcy nawet gdy w którymś miesiącu GA4 nie zwróciło żadnego wiersza."""
-        today = date.today()
-        year, month = today.year, today.month
-        month -= 1
-        if month == 0:
-            month = 12
-            year -= 1
-
-        keys = []
-        for _ in range(count):
-            keys.append(f"{year:04d}{month:02d}")
-            month -= 1
-            if month == 0:
-                month = 12
-                year -= 1
-        return list(reversed(keys))
 
     def _fallback(self) -> dict:
         return {"total_sessions": 0, "history": {"dates": [], "sessions": []}}

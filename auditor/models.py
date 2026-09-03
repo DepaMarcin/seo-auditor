@@ -39,6 +39,11 @@ class Audit(models.Model):
     gsc_yoy_change_percent = models.FloatField(default=0.0)
     gsc_top_gainers = models.JSONField(default=list)
     gsc_top_losers = models.JSONField(default=list)
+    gsc_top_page_gainers = models.JSONField(default=list)
+    gsc_top_page_losers = models.JSONField(default=list)
+    # Automatyczne komentarze tekstowe PL generowane przez auditor.services.gsc_insights.
+    gsc_query_commentary = models.TextField(blank=True, default="")
+    gsc_page_commentary = models.TextField(blank=True, default="")
 
     class Meta:
         ordering = ["-created_at"]
