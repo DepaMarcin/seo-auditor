@@ -376,6 +376,47 @@
             background: rgba(66, 133, 244, 0.08);
         }
 
+        /* --- Analiza Fraz Kluczowych (Google Search Console) - karta 3M YoY + tabele --- */
+        .gsc-summary-card {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+            padding: 1rem 1.25rem;
+            background: var(--surface-inset);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            margin-bottom: 1.25rem;
+        }
+        .gsc-summary-numbers { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+        .gsc-summary-current { font-size: 1.6rem; font-weight: 700; color: var(--text); }
+        .gsc-summary-vs { color: var(--muted); font-size: 0.85rem; }
+        .gsc-summary-previous { font-size: 1.1rem; color: var(--muted); }
+        .gsc-summary-label { color: var(--muted); font-size: 0.8rem; }
+        .gsc-tables-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.25rem;
+        }
+        .gsc-table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .gsc-table th {
+            text-align: left;
+            padding: 0.5rem 0.6rem;
+            color: var(--muted);
+            font-weight: 600;
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            border-bottom: 1px solid var(--border);
+        }
+        .gsc-table td {
+            padding: 0.5rem 0.6rem;
+            border-bottom: 1px solid var(--border);
+            word-break: break-word;
+        }
+        .gsc-table tr:last-child td { border-bottom: none; }
+        .gsc-delta-positive { color: var(--ok); font-weight: 700; }
+        .gsc-delta-negative { color: var(--error); font-weight: 700; }
+
         .section-heading {
             font-size: 1.1rem;
             margin: 0 0 1rem;

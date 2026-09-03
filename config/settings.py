@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.humanize',
     'auditor',
 ]
 
@@ -144,7 +145,12 @@ SENUTO_API_KEY = os.environ.get('SENUTO_API_KEY', '')
 # Google Analytics 4 - integracja OAuth 2.0 "Zaloguj się przez Google"
 # (auditor.services.ga4_service.GA4OAuthService, auditor.views.start_ga4_auth/ga4_callback).
 GA4_CLIENT_SECRETS_FILE = BASE_DIR / 'client_secret.json'
-GA4_SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
+# Zakres GA4 (Analytics Data API) + GSC (Search Console API, auditor.services.gsc_service.GSCService) -
+# oba proszone w jednym ekranie zgody Google, żeby nie wymagać osobnego logowania dla GSC.
+GA4_SCOPES = [
+    'https://www.googleapis.com/auth/analytics.readonly',
+    'https://www.googleapis.com/auth/webmasters.readonly',
+]
 GA4_REDIRECT_URI = os.environ.get('GA4_REDIRECT_URI', 'http://127.0.0.1:8000/ga4/callback/')
 
 if DEBUG:

@@ -32,6 +32,14 @@ class Audit(models.Model):
     ga4_channels_history = models.JSONField(default=dict)  # Dane 12-miesięczne dla wszystkich kanałów
     ga4_insights = models.JSONField(default=dict)  # Wyliczone wnioski i algorytmy trendu
 
+    # Analiza fraz kluczowych Google Search Console - 3 miesiące teraz vs 3 miesiące
+    # rok temu (auditor.services.gsc_service.GSCService).
+    gsc_total_clicks_current = models.IntegerField(default=0)
+    gsc_total_clicks_previous = models.IntegerField(default=0)
+    gsc_yoy_change_percent = models.FloatField(default=0.0)
+    gsc_top_gainers = models.JSONField(default=list)
+    gsc_top_losers = models.JSONField(default=list)
+
     class Meta:
         ordering = ["-created_at"]
 

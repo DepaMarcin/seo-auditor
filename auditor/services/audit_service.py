@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from .ga4_insights import analyze_channel_trends
 from .ga4_service import GA4OAuthService
+from .gsc_service import GSCService
 from .pagespeed import PageSpeedService
 from .rag import RAGEngine
 from .scraper import ScraperError, SEOScraper
@@ -65,12 +67,14 @@ class AuditService:
         pagespeed_service: PageSpeedService | None = None,
         senuto_service: SenutoService | None = None,
         ga4_service: GA4OAuthService | None = None,
+        gsc_service: GSCService | None = None,
     ):
         self.scraper = scraper or SEOScraper()
         self.rag_engine = rag_engine or RAGEngine()
         self.pagespeed_service = pagespeed_service or PageSpeedService()
         self.senuto_service = senuto_service or SenutoService()
         self.ga4_service = ga4_service or GA4OAuthService()
+        self.gsc_service = gsc_service or GSCService()
 
     def run_audit(self, audit):
         from auditor.models import Audit
@@ -150,7 +154,55 @@ class AuditService:
                 "ga4_insights",
             ]
         )
+
+        # GSC używa tych samych `credentials` (scope webmasters.readonly jest proszony
+        # łącznie z analytics.readonly, patrz settings.GA4_SCOPES) - błąd/brak dostępu
+        # nie przerywa audytu, pola GSC zostają wtedy przy wartościach domyślnych.
+        self.sync_gsc_data(audit, credentials)
         return audit
+
+    # ------------------------------------------------------------------
+    # Google Search Console (OAuth 2.0) -> analiza fraz kluczowych 3M YoY
+    # ------------------------------------------------------------------
+    def sync_gsc_data(self, audit: "Audit", credentials: "Credentials") -> "Audit":
+        """Znajduje usługę Search Console odpowiadającą domenie audytu i - jeśli się
+        to uda - pobiera oraz zapisuje porównanie fraz kluczowych 3M YoY (ostatnie 3
+        pełne miesiące vs analogiczne 3 miesiące rok temu). Brak dostępu do Search
+        Console (domena niezarejestrowana, refresh_token sprzed dodania tego scope'u,
+        błąd API) nie jest traktowany jak błąd audytu - pola GSC zostają przy
+        wartościach domyślnych (0 / puste listy)."""
+        domain = self._extract_domain(audit.url)
+        site_url = self.gsc_service.resolve_site_url(credentials, domain)
+        if not site_url:
+            logger.info(
+                "Nie znaleziono usługi Search Console dla domeny %s (audyt %s) - "
+                "pomijam analizę fraz kluczowych.", domain, audit.pk,
+            )
+            return audit
+
+        stats = self.gsc_service.fetch_yoy_query_performance(credentials, site_url)
+        audit.gsc_total_clicks_current = stats["total_clicks_current"]
+        audit.gsc_total_clicks_previous = stats["total_clicks_previous"]
+        audit.gsc_yoy_change_percent = stats["yoy_change_percent"]
+        audit.gsc_top_gainers = stats["top_gainers"]
+        audit.gsc_top_losers = stats["top_losers"]
+        audit.save(
+            update_fields=[
+                "gsc_total_clicks_current",
+                "gsc_total_clicks_previous",
+                "gsc_yoy_change_percent",
+                "gsc_top_gainers",
+                "gsc_top_losers",
+            ]
+        )
+        return audit
+
+    def _extract_domain(self, url: str) -> str:
+        """Wyciąga czystą domenę (bez schematu i "www.") z adresu audytu - do
+        dopasowania właściwej usługi Search Console (patrz `GSCService.resolve_site_url`)."""
+        normalized = url if "://" in url else f"https://{url}"
+        domain = urlparse(normalized).netloc.lower()
+        return domain[len("www."):] if domain.startswith("www.") else domain
 
     def refresh_ga4_lead_event(
         self, audit: "Audit", credentials: "Credentials", event_name: str | None
