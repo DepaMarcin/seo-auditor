@@ -57,6 +57,10 @@ class AuditMetric(models.Model):
         OK = "ok", "OK"
         WARNING = "warning", "Ostrzeżenie"
         ERROR = "error", "Błąd"
+        # Test formalnie "zdany" (nie liczy się jako problem), ale opcjonalny w danym
+        # kontekście strony - np. EEAT+ (autor, data aktualizacji) na stronach
+        # ofertowych/głównych, gdzie wymóg dotyczy przede wszystkim treści blogowych.
+        INFO = "info", "Informacyjne (Opcjonalne)"
 
     audit = models.ForeignKey(Audit, on_delete=models.CASCADE, related_name="metrics")
     category = models.CharField(max_length=50)

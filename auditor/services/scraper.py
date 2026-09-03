@@ -1,13 +1,27 @@
 from __future__ import annotations
 
+import copy
 import json
 import re
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
+from uuid import uuid4
 
 import httpx
 from bs4 import BeautifulSoup
 
 HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
+# Próg (liczba słów widocznego tekstu) i minimalna liczba <script>, poniżej/powyżej
+# których strona jest podejrzewana o renderowanie wyłącznie po stronie klienta (CSR) -
+# treść "pusta" bez wykonania JS jest niewidoczna dla części robotów/modeli LLM.
+JS_CSR_WORD_COUNT_THRESHOLD = 80
+JS_CSR_MIN_SCRIPT_COUNT = 3
+
+# Limit wagi pliku graficznego (KB), powyżej którego zgłaszamy problem z kompresją.
+IMAGE_SIZE_LIMIT_KB = 100
+# Ile obrazków sprawdzamy realnie (żądaniami HEAD) - reszta jest pomijana, żeby nie
+# wydłużać audytu w nieskończoność na stronach z dziesiątkami zdjęć.
+IMAGE_SIZE_CHECK_LIMIT = 8
 
 _SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
 
@@ -75,6 +89,10 @@ class SEOScraper:
         self.headers = {
             "User-Agent": user_agent or "SEOAuditorBot/1.0 (+https://example.com)"
         }
+        # Ustawiane przez fetch() - liczba przekierowań (301/302) napotkanych po drodze
+        # do finalnego URL-a. Domyślnie 0, żeby parse() wywołane samodzielnie (np. w
+        # testach, bez wcześniejszego fetch()) miało bezpieczną wartość.
+        self._last_redirect_count = 0
 
     def scrape(self, url: str) -> dict:
         normalized_url = self._normalize_url(url)
@@ -89,6 +107,10 @@ class SEOScraper:
             response.raise_for_status()
         except httpx.HTTPError as exc:
             raise ScraperError(f"Nie udało się pobrać {url}: {exc}") from exc
+        # httpx z follow_redirects=True zachowuje pełną historię przekierowań w
+        # response.history - odczytujemy ją tutaj (zero dodatkowych zapytań), żeby
+        # parse() mogło zgłosić test "Przekierowania 301/302".
+        self._last_redirect_count = len(response.history)
         return response.text
 
     def _normalize_url(self, url: str) -> str:
@@ -122,12 +144,15 @@ class SEOScraper:
             if tag["property"].startswith("og:") and tag.get("content")
         }
 
-        images = self._analyze_images(soup.find_all("img"))
+        images = self._analyze_images(soup.find_all("img"), url)
         schema = self._extract_schema(soup)
         page_type = self._detect_page_type(url, soup)
         faq_detected = self._detect_faq_section(soup)
         heading_noise = self._analyze_heading_noise(soup)
         eeat = self._analyze_eeat_signals(soup)
+        meta_keywords_present = bool(self._get_meta_content(soup, "keywords"))
+        internal_links_count = self._count_internal_links(soup, url)
+        js_rendering = self._analyze_js_rendering(soup)
 
         return {
             "url": url,
@@ -135,6 +160,7 @@ class SEOScraper:
             "title_length": len(title) if title else 0,
             "meta_description": meta_description,
             "meta_description_length": len(meta_description) if meta_description else 0,
+            "meta_keywords_present": meta_keywords_present,
             "headings": headings,
             "h1_count": len(headings["h1"]),
             "canonical": canonical,
@@ -147,11 +173,15 @@ class SEOScraper:
             "images_without_title": images["without_title"],
             "images_non_ascii_src_count": images["non_ascii_src_count"],
             "images_non_ascii_src_examples": images["non_ascii_src_examples"],
+            "images_checkable_srcs": images["checkable_srcs"],
             "schema": schema,
             "page_type": page_type,
             "faq_detected": faq_detected,
             "heading_noise": heading_noise,
             "eeat": eeat,
+            "internal_links_count": internal_links_count,
+            "js_rendering": js_rendering,
+            "redirect_count": self._last_redirect_count,
         }
 
     def _get_meta_content(self, soup: BeautifulSoup, name: str) -> str | None:
@@ -162,7 +192,7 @@ class SEOScraper:
     # ------------------------------------------------------------------
     # Analiza obrazków: ALT, title, ASCII w src
     # ------------------------------------------------------------------
-    def _analyze_images(self, images: list) -> dict:
+    def _analyze_images(self, images: list, page_url: str = "") -> dict:
         validatable = [img for img in images if self._is_validatable_image(img)]
 
         with_alt = [img for img in validatable if img.get("alt", "").strip()]
@@ -173,6 +203,14 @@ class SEOScraper:
             img["src"] for img in validatable if img.get("src") and not img["src"].isascii()
         ]
         without_alt_src = [img["src"] for img in without_alt if img.get("src")]
+        # Bezwzględne adresy próbki obrazków do sprawdzenia wagi pliku (patrz
+        # `SEOScraper.check_image_sizes`) - ograniczone do IMAGE_SIZE_CHECK_LIMIT,
+        # żeby audyt nie wysyłał dziesiątek żądań HEAD na stronach z wieloma zdjęciami.
+        checkable_srcs = [
+            urljoin(page_url, img["src"])
+            for img in validatable[:IMAGE_SIZE_CHECK_LIMIT]
+            if img.get("src")
+        ]
 
         return {
             "total": len(validatable),
@@ -185,6 +223,7 @@ class SEOScraper:
             "without_title": len(without_title),
             "non_ascii_src_count": len(non_ascii_src),
             "non_ascii_src_examples": non_ascii_src[:5],
+            "checkable_srcs": checkable_srcs,
         }
 
     def _is_validatable_image(self, img) -> bool:
@@ -378,3 +417,145 @@ class SEOScraper:
             "modified_time": modified_tag.get("content") if modified_tag else None,
             "published_time": published_tag.get("content") if published_tag else None,
         }
+
+    # ------------------------------------------------------------------
+    # Linkowanie wewnętrzne
+    # ------------------------------------------------------------------
+    def _count_internal_links(self, soup: BeautifulSoup, url: str) -> int:
+        """Liczy odnośniki <a href> prowadzące do tej samej domeny (lub adresy
+        względne) - pomija kotwice (#), mailto:, tel: i javascript:."""
+        domain = urlparse(url).netloc.lower()
+        if domain.startswith("www."):
+            domain = domain[len("www."):]
+
+        count = 0
+        for tag in soup.find_all("a", href=True):
+            if self._is_internal_link(tag["href"], domain):
+                count += 1
+        return count
+
+    def _is_internal_link(self, href: str, domain: str) -> bool:
+        href = (href or "").strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            return False
+
+        netloc = urlparse(href).netloc.lower()
+        if not netloc:
+            return True  # adres względny -> ta sama domena
+
+        if netloc.startswith("www."):
+            netloc = netloc[len("www."):]
+        return netloc == domain
+
+    # ------------------------------------------------------------------
+    # Renderowanie JavaScript (heurystyka SSR vs CSR)
+    # ------------------------------------------------------------------
+    def _analyze_js_rendering(self, soup: BeautifulSoup) -> dict:
+        """Heurystyka SSR vs CSR: liczy widoczny tekst strony (bez kodu <script>/
+        <style>) i zestawia go z liczbą znaczników <script>. Bardzo mało tekstu przy
+        wielu skryptach (typowy wzorzec pustego <div id="root">/"app"> wypełnianego
+        dopiero przez JS w przeglądarce) sugeruje renderowanie wyłącznie po stronie
+        klienta (CSR) - taka treść jest niewidoczna dla części robotów wyszukiwarek
+        i modeli LLM, które nie wykonują JavaScriptu."""
+        script_count = len(soup.find_all("script"))
+
+        # Kopia niezależna od `soup` używanego przez resztę parse() - decompose()
+        # nieodwracalnie usuwa węzły, więc operujemy na osobnym drzewie.
+        text_only = copy.deepcopy(soup)
+        for tag in text_only(["script", "style", "noscript"]):
+            tag.decompose()
+        visible_text = text_only.get_text(separator=" ", strip=True)
+        word_count = len(visible_text.split())
+
+        likely_csr = word_count < JS_CSR_WORD_COUNT_THRESHOLD and script_count >= JS_CSR_MIN_SCRIPT_COUNT
+        return {
+            "word_count": word_count,
+            "script_count": script_count,
+            "likely_csr": likely_csr,
+        }
+
+    # ------------------------------------------------------------------
+    # Dodatkowe, w pełni opcjonalne sprawdzenia sieciowe - każde jest wywoływane
+    # osobno (patrz AuditService.run_audit) i niezależnie zabezpieczone: błąd
+    # pojedynczego sprawdzenia (timeout, 404, brak nagłówka) nigdy nie przerywa
+    # audytu ani nie wpływa na pozostałe sprawdzenia.
+    # ------------------------------------------------------------------
+    def check_robots_txt(self, base_url: str) -> dict:
+        """Sprawdza obecność i podstawową treść pliku /robots.txt pod audytowaną
+        domeną - osobne, krótkie zapytanie GET."""
+        robots_url = self._build_absolute_url(base_url, "/robots.txt")
+        try:
+            response = httpx.get(robots_url, headers=self.headers, timeout=min(self.timeout, 10.0))
+        except httpx.HTTPError:
+            return {"checked": True, "exists": False, "disallows_all": False}
+
+        if response.status_code != 200:
+            return {"checked": True, "exists": False, "disallows_all": False}
+
+        return {
+            "checked": True,
+            "exists": True,
+            "disallows_all": self._robots_disallows_everything(response.text),
+        }
+
+    def _robots_disallows_everything(self, content: str) -> bool:
+        """Czy robots.txt blokuje CAŁĄ witrynę dla wszystkich robotów
+        ("User-agent: *" + "Disallow: /") - typowy, poważny błąd konfiguracji."""
+        wildcard_user_agent = False
+        for raw_line in content.splitlines():
+            line = raw_line.strip().lower()
+            if line.startswith("user-agent:"):
+                wildcard_user_agent = line.split(":", 1)[1].strip() == "*"
+            elif wildcard_user_agent and line.startswith("disallow:"):
+                if line.split(":", 1)[1].strip() == "/":
+                    return True
+        return False
+
+    def check_custom_404_page(self, base_url: str) -> dict:
+        """Odpytuje jawnie nieistniejący adres pod audytowaną domeną, żeby sprawdzić,
+        czy serwer poprawnie zwraca kod 404 (a nie "miękkie 404" - status 200 z
+        generyczną stroną, mylące dla robotów indeksujących)."""
+        probe_path = f"/seo-auditor-404-check-{uuid4().hex[:10]}"
+        probe_url = self._build_absolute_url(base_url, probe_path)
+        try:
+            response = httpx.get(
+                probe_url, headers=self.headers, timeout=min(self.timeout, 10.0), follow_redirects=True
+            )
+        except httpx.HTTPError:
+            return {"checked": False, "returns_404": False, "status_code": None}
+
+        return {
+            "checked": True,
+            "returns_404": response.status_code == 404,
+            "status_code": response.status_code,
+        }
+
+    def check_image_sizes(self, image_urls: list[str]) -> dict:
+        """Sprawdza wagę (KB) próbki obrazków przez żądania HEAD (bez pobierania
+        całej zawartości pliku). Obrazki bez nagłówka Content-Length lub z
+        nieudanym żądaniem są pomijane - nie liczą się ani jako "OK", ani jako
+        "zbyt ciężkie". Błąd pojedynczego obrazka nigdy nie przerywa sprawdzenia
+        pozostałych."""
+        oversized = []
+        checked_count = 0
+        for image_url in image_urls:
+            try:
+                response = httpx.head(
+                    image_url, headers=self.headers, timeout=min(self.timeout, 8.0), follow_redirects=True
+                )
+                content_length = response.headers.get("content-length")
+                if content_length is None:
+                    continue
+                size_kb = int(content_length) / 1024
+            except (httpx.HTTPError, ValueError):
+                continue
+
+            checked_count += 1
+            if size_kb > IMAGE_SIZE_LIMIT_KB:
+                oversized.append({"src": image_url, "size_kb": round(size_kb)})
+
+        return {"checked_count": checked_count, "oversized": oversized}
+
+    def _build_absolute_url(self, base_url: str, path: str) -> str:
+        parsed = urlparse(base_url)
+        return f"{parsed.scheme}://{parsed.netloc}{path}"

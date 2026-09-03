@@ -349,122 +349,78 @@
 
 <div id="tab-panel-technical" class="detail-tab-panel hidden">
 
-{# ---------- SEKCJA 5: Problemy i rekomendacje - Priorytetowe (krytyczne błędy) ---------- #}
-<div class="priority-panel critical">
-    <h2 class="section-heading critical-heading">🔥 Priorytetowe (Krytyczne błędy)</h2>
-    {% if critical_errors %}
-    <div class="metric-card-list">
-        {% for metric in critical_errors %}
-        {% include "auditor/_metric_card.html" with metric=metric %}
-        {% endfor %}
+{# ---------- Health Score: ogólna ocena techniczna + zliczenie błędów/ostrzeżeń/zgodnych ---------- #}
+<div class="panel health-score-panel">
+    <div class="score-donut score-donut-{{ score_bucket }}" style="--score: {{ audit.score }};">
+        <div class="score-donut-inner">
+            <span class="score-donut-value">{{ audit.score }}</span>
+            <span class="score-donut-label">Ocena techniczna</span>
+        </div>
     </div>
-    {% else %}
-    <p class="priority-empty">Brak krytycznych błędów — świetna robota.</p>
-    {% endif %}
+    <div class="health-score-stats">
+        <div class="stat-tile stat-errors">
+            <div class="stat-value">{{ stats.errors_count }}</div>
+            <div class="stat-label">Błędy Krytyczne</div>
+        </div>
+        <div class="stat-tile stat-warnings">
+            <div class="stat-value">{{ stats.warnings_count }}</div>
+            <div class="stat-label">Do Poprawy</div>
+        </div>
+        <div class="stat-tile stat-passed">
+            <div class="stat-value">{{ stats.compliant_count }}</div>
+            <div class="stat-label">Zgodne ze Standardem</div>
+        </div>
+    </div>
 </div>
 
-{# ---------- SEKCJA 6: Problemy i rekomendacje - Wymagające uwagi (ostrzeżenia) ---------- #}
-<div class="priority-panel warning-panel">
-    <h2 class="section-heading warning-heading">⚠️ Wymagające uwagi (Ostrzeżenia)</h2>
-    {% if warnings %}
-    <div class="metric-card-list">
-        {% for metric in warnings %}
-        {% include "auditor/_metric_card.html" with metric=metric %}
-        {% endfor %}
-    </div>
-    {% else %}
-    <p class="priority-empty">Brak ostrzeżeń.</p>
-    {% endif %}
-</div>
-
-{# ---------- SEKCJA 7: szczegółowy raport (surowe dane wg kategorii) ---------- #}
-<div class="report-section">
-    <h2 class="section-heading">📊 Szczegółowy raport</h2>
-
-    <div class="panel">
-        <h2>Performance</h2>
-
-        <div class="score-preview">
-            <div class="score-preview-item">
-                <div class="cwv-label">📱 Mobile</div>
-                <div class="cwv-value">{% if mobile_score is not None %}{{ mobile_score }}/100{% else %}—{% endif %}</div>
+{# ---------- 4 akordeony zgodne ze strukturą pełnego Audytu SEO (AI Ready) ---------- #}
+<div class="tech-accordion-list">
+    {% for group in technical_accordions %}
+    <details class="tech-accordion" {% if forloop.first %}open{% endif %}>
+        <summary class="tech-accordion-summary">
+            <span>{{ group.label }}</span>
+            <span class="tech-accordion-count">{{ group.metrics|length }}</span>
+        </summary>
+        <div class="tech-accordion-body">
+            {% if group.metrics %}
+            <div class="test-card-list">
+                {% for metric in group.metrics %}
+                {% include "auditor/_test_card.html" with metric=metric %}
+                {% endfor %}
             </div>
-            <div class="score-preview-item">
-                <div class="cwv-label">🖥️ Desktop</div>
-                <div class="cwv-value">{% if desktop_score is not None %}{{ desktop_score }}/100{% else %}—{% endif %}</div>
-            </div>
-        </div>
-
-        <div class="tabs">
-            <input type="radio" id="tab-mobile" name="pagespeed-tabs" class="tab-input" checked>
-            <label for="tab-mobile" class="tab-label">📱 Mobile</label>
-            <input type="radio" id="tab-desktop" name="pagespeed-tabs" class="tab-input">
-            <label for="tab-desktop" class="tab-label">🖥️ Desktop</label>
-
-            <div class="tab-panel" id="panel-mobile">
-                {% include "auditor/_pagespeed_tab.html" with metrics=mobile_metrics %}
-            </div>
-            <div class="tab-panel" id="panel-desktop">
-                {% include "auditor/_pagespeed_tab.html" with metrics=desktop_metrics %}
-            </div>
-        </div>
-
-        {% if other_performance_metrics %}
-        <div style="margin-top: 0.5rem;">
-            {% for metric in other_performance_metrics %}
-            {% include "auditor/_metric_row.html" with metric=metric %}
-            {% endfor %}
-        </div>
-        {% endif %}
-    </div>
-
-    <div class="panel">
-        <h2>Struktura &amp; GEO / E-E-A-T</h2>
-        {% if structure_metrics %}
-        <div class="structure-grid">
-            {% for metric in structure_metrics %}
-            <div class="structure-card status-{{ metric.status }}">
-                <div class="metric-key">{{ metric.key }}</div>
-                <span class="badge badge-{{ metric.status }}">{{ metric.get_status_display }}</span>
-                <p>{{ metric.value.note }}</p>
-                {% if metric.current_value %}
-                <div class="snippet-label">Zastany element na stronie</div>
-                <div class="snippet-box">{{ metric.current_value }}</div>
-                {% endif %}
-                {% include "auditor/_recommendation.html" with metric=metric %}
-            </div>
-            {% endfor %}
-        </div>
-        {% else %}
-        <p>Brak danych.</p>
-        {% endif %}
-    </div>
-
-    {% for category, metrics in metrics_by_category.items %}
-    <div class="panel">
-        <h2>{{ category }}</h2>
-        {% for metric in metrics %}
-        {% include "auditor/_metric_row.html" with metric=metric %}
-        {% endfor %}
-    </div>
-    {% endfor %}
-</div>
-
-{# ---------- SEKCJA 8: zdane testy (zwinięte) ---------- #}
-<div class="report-section">
-    <details class="passed-tests">
-        <summary class="section-heading" style="display: inline-block;">✅ Zdane testy ({{ stats.passed_count }})</summary>
-        <div class="passed-list">
-            {% for metric in passed_tests %}
-            <div class="passed-item">
-                <span>{{ metric.display_key }}</span>
-                <span class="passed-category">{{ metric.category }}</span>
-            </div>
-            {% empty %}
-            <p class="priority-empty">Brak zdanych testów.</p>
-            {% endfor %}
+            {% else %}
+            <p class="priority-empty">Brak testów w tej kategorii.</p>
+            {% endif %}
         </div>
     </details>
+    {% if group.id == "content" %}
+    {# ---------- Akordeon 3/4: Dane Strukturalne (Schema.org) - dedykowana tabela statusów ---------- #}
+    <details class="tech-accordion">
+        <summary class="tech-accordion-summary">
+            <span>🧬 Dane Strukturalne</span>
+            <span class="tech-accordion-count">{{ schema_status_table|length }}</span>
+        </summary>
+        <div class="tech-accordion-body">
+            <div class="table-scroll">
+                <table class="gsc-table">
+                    <thead>
+                        <tr><th>Typ Schema.org</th><th>Zastosowanie</th><th>Status</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for row in schema_status_table %}
+                        <tr>
+                            <td>{{ row.name }}</td>
+                            <td>{{ row.description }}</td>
+                            <td>{{ row.status_icon }} {{ row.status_label }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </details>
+    {% endif %}
+    {% endfor %}
 </div>
 
 </div>

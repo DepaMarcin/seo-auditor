@@ -54,7 +54,16 @@ EXPECTED_SCHEMA_BY_PAGE_TYPE = {
     "generic": [{"WebPage"}],
 }
 
-SCORE_WEIGHTS = {"ok": 100, "warning": 50, "error": 0}
+# Testy EEAT+ (autorstwo, data aktualizacji) opisują wymóg dotyczący przede
+# wszystkim treści blogowych/poradnikowych (YMYL) - na stronach głównych, klastrach
+# szkół/placówek i stronach usługowych/ofertowych ich brak jest OPCJONALNY
+# (status INFO), a nie realnym problemem do naprawy (patrz _evaluate_eeat_*).
+EEAT_REQUIRED_PAGE_TYPES = {"article"}
+
+# Minimalna liczba linków wewnętrznych, poniżej której zgłaszamy ostrzeżenie.
+INTERNAL_LINKING_MIN = 3
+
+SCORE_WEIGHTS = {"ok": 100, "info": 100, "warning": 50, "error": 0}
 
 
 class AuditService:
@@ -92,6 +101,7 @@ class AuditService:
 
         metrics = self._build_metrics(data)
         metrics.extend(self._build_pagespeed_metrics(audit.url))
+        metrics.extend(self._build_extra_checks_metrics(audit.url, data))
 
         audit.metrics.all().delete()
         for metric in metrics:
@@ -259,6 +269,10 @@ class AuditService:
             self._evaluate_image_quality(data),
             self._evaluate_eeat_authorship(data),
             self._evaluate_eeat_freshness(data),
+            self._evaluate_meta_keywords(data),
+            self._evaluate_internal_linking(data),
+            self._evaluate_js_rendering(data),
+            self._evaluate_redirects(data),
         ]
 
     def _evaluate_title(self, data: dict) -> dict:
@@ -514,29 +528,206 @@ class AuditService:
         return self._make_metric("structure", "image_quality", value, status, current_value=current_value)
 
     def _evaluate_eeat_authorship(self, data: dict) -> dict:
+        """EEAT+ jest kontekstowy wg typu podstrony: brak sygnału autorstwa na
+        stronach głównych/ofertowych/usługowych (wszystko poza `article`) NIE jest
+        błędem ani ostrzeżeniem - to opcjonalny element, wymagany przede wszystkim
+        dla treści blogowych/poradnikowych (YMYL), stąd status INFO zamiast WARNING."""
         eeat = data.get("eeat", {})
-        if eeat.get("has_author_signal"):
+        page_type = data.get("page_type", "generic")
+        has_signal = eeat.get("has_author_signal", False)
+
+        if has_signal:
             status, note = "ok", 'Wykryto sygnał autorstwa treści (rel="author" / oznaczenie autora).'
+        elif page_type not in EEAT_REQUIRED_PAGE_TYPES:
+            status, note = "info", "Element wymagany głównie dla artykułów blogowych i treści wiedzy (YMYL)."
         else:
             status, note = "warning", "Brak wyraźnego sygnału autorstwa treści (E-E-A-T)."
-        value = {"has_author_signal": eeat.get("has_author_signal", False), "note": note}
+
+        value = {"has_author_signal": has_signal, "page_type": page_type, "note": note}
         current_value = (
-            "Wykryto oznaczenie autora treści na stronie."
-            if eeat.get("has_author_signal")
-            else "(brak oznaczenia autora treści)"
+            "Wykryto oznaczenie autora treści na stronie." if has_signal else "(brak oznaczenia autora treści)"
         )
         return self._make_metric("structure", "eeat_authorship", value, status, current_value=current_value)
 
     def _evaluate_eeat_freshness(self, data: dict) -> dict:
+        """Analogicznie do autorstwa: brak znacznika aktualizacji treści (Live Update
+        Badge) poza artykułami jest statusem INFO, nie WARNING - patrz
+        `_evaluate_eeat_authorship`."""
         eeat = data.get("eeat", {})
+        page_type = data.get("page_type", "generic")
         modified_time = eeat.get("modified_time")
+
         if modified_time:
             status, note = "ok", f"Wykryto znacznik aktualizacji treści (article:modified_time: {modified_time})."
+        elif page_type not in EEAT_REQUIRED_PAGE_TYPES:
+            status, note = "info", "Element wymagany głównie dla artykułów blogowych i treści wiedzy (YMYL)."
         else:
             status, note = "warning", "Brak znacznika article:modified_time - trudno ocenić aktualność treści."
-        value = {"modified_time": modified_time, "note": note}
+
+        value = {"modified_time": modified_time, "page_type": page_type, "note": note}
         current_value = modified_time if modified_time else "(brak znacznika article:modified_time)"
         return self._make_metric("structure", "eeat_freshness", value, status, current_value=current_value)
+
+    def _evaluate_meta_keywords(self, data: dict) -> dict:
+        present = data.get("meta_keywords_present", False)
+        if present:
+            status, note = "warning", (
+                'Wykryto zbędny znacznik <meta name="keywords"> - Google i inne wyszukiwarki '
+                "od dawna go ignorują, a jego obecność może ujawniać konkurencji strategię słów kluczowych."
+            )
+        else:
+            status, note = "ok", "Brak zbędnego znacznika Meta Keywords."
+        current_value = 'Wykryto znacznik <meta name="keywords">.' if present else "(brak znacznika Meta Keywords)"
+        return self._make_metric(
+            "seo", "meta_keywords", {"present": present, "note": note}, status, current_value=current_value
+        )
+
+    def _evaluate_internal_linking(self, data: dict) -> dict:
+        count = data.get("internal_links_count", 0)
+        if count == 0:
+            status, note = "error", (
+                "Brak jakichkolwiek linków wewnętrznych - utrudnia to robotom wyszukiwarek "
+                "odkrywanie pozostałych podstron serwisu."
+            )
+        elif count < INTERNAL_LINKING_MIN:
+            status, note = "warning", (
+                f"Wykryto tylko {count} link(i) wewnętrzne - zalecane jest rozbudowanie linkowania "
+                "między powiązanymi tematycznie podstronami."
+            )
+        else:
+            status, note = "ok", f"Wykryto {count} linków wewnętrznych - architektura nawigacji wygląda prawidłowo."
+        current_value = f"{count} linków wewnętrznych na stronie"
+        return self._make_metric(
+            "technical", "internal_linking", {"count": count, "note": note}, status, current_value=current_value
+        )
+
+    def _evaluate_js_rendering(self, data: dict) -> dict:
+        js = data.get("js_rendering", {})
+        likely_csr = js.get("likely_csr", False)
+        word_count = js.get("word_count", 0)
+        script_count = js.get("script_count", 0)
+
+        if likely_csr:
+            status, note = "warning", (
+                f"Widoczny tekst strony jest bardzo krótki ({word_count} słów) przy dużej liczbie "
+                f"skryptów ({script_count}) - treść może być renderowana wyłącznie po stronie klienta "
+                "(CSR), niewidoczna dla części robotów wyszukiwarek i modeli LLM, które nie wykonują JavaScript."
+            )
+        else:
+            status, note = "ok", (
+                f"Strona zawiera wystarczającą ilość widocznego tekstu ({word_count} słów) dostępnego "
+                "bez wykonywania JavaScript (SSR/statyczny HTML)."
+            )
+        current_value = f"{word_count} słów widocznego tekstu, {script_count} znaczników <script>"
+        return self._make_metric(
+            "technical", "javascript_rendering", {**js, "note": note}, status, current_value=current_value
+        )
+
+    def _evaluate_redirects(self, data: dict) -> dict:
+        count = data.get("redirect_count", 0)
+        if count == 0:
+            status, note = "ok", "Adres audytowanej strony nie wymagał żadnego przekierowania."
+        elif count == 1:
+            status, note = "ok", (
+                "Wykryto jedno przekierowanie do finalnego adresu - typowa sytuacja "
+                "(np. http→https albo z/bez www)."
+            )
+        else:
+            status, note = "warning", (
+                f"Wykryto łańcuch {count} przekierowań (301/302) - zbyt długie łańcuchy spowalniają "
+                "indeksację oraz ładowanie strony."
+            )
+        current_value = f"{count} przekierowań w łańcuchu do finalnego adresu"
+        return self._make_metric(
+            "technical", "redirect_chain", {"count": count, "note": note}, status, current_value=current_value
+        )
+
+    # ------------------------------------------------------------------
+    # Dodatkowe, opcjonalne sprawdzenia sieciowe (robots.txt, dedykowana strona 404,
+    # waga plików graficznych) - każde wywoływane i zabezpieczane niezależnie, żeby
+    # błąd jednego z nich nigdy nie przerwał audytu ani nie wpłynął na pozostałe.
+    # ------------------------------------------------------------------
+    def _build_extra_checks_metrics(self, url: str, data: dict) -> list[dict]:
+        try:
+            robots = self.scraper.check_robots_txt(url)
+        except Exception:
+            logger.exception("Błąd podczas sprawdzania robots.txt dla %s.", url)
+            robots = {"checked": False, "exists": False, "disallows_all": False}
+
+        try:
+            http_errors = self.scraper.check_custom_404_page(url)
+        except Exception:
+            logger.exception("Błąd podczas sprawdzania dedykowanej strony 404 dla %s.", url)
+            http_errors = {"checked": False, "returns_404": False, "status_code": None}
+
+        try:
+            image_sizes = self.scraper.check_image_sizes(data.get("images_checkable_srcs", []))
+        except Exception:
+            logger.exception("Błąd podczas sprawdzania wagi obrazków dla %s.", url)
+            image_sizes = {"checked_count": 0, "oversized": []}
+
+        return [
+            self._evaluate_robots_txt(robots),
+            self._evaluate_http_errors(http_errors),
+            self._evaluate_image_compression(image_sizes),
+        ]
+
+    def _evaluate_robots_txt(self, robots: dict) -> dict:
+        if not robots.get("exists"):
+            status, note = "warning", "Nie znaleziono pliku robots.txt pod adresem /robots.txt."
+            current_value = "(brak pliku robots.txt)"
+        elif robots.get("disallows_all"):
+            status, note = "error", (
+                'Plik robots.txt blokuje indeksację CAŁEJ witryny dla wszystkich robotów '
+                '("User-agent: *" + "Disallow: /").'
+            )
+            current_value = "User-agent: *\nDisallow: /"
+        else:
+            status, note = "ok", "Plik robots.txt istnieje i nie blokuje całej witryny."
+            current_value = "Plik robots.txt jest dostępny pod /robots.txt."
+        return self._make_metric(
+            "technical", "robots_txt", {**robots, "note": note}, status, current_value=current_value
+        )
+
+    def _evaluate_http_errors(self, http_errors: dict) -> dict:
+        status_code = http_errors.get("status_code")
+        if not http_errors.get("checked"):
+            status, note = "warning", "Nie udało się zweryfikować obsługi błędów 404 (błąd połączenia)."
+            current_value = "(nie udało się sprawdzić)"
+        elif http_errors.get("returns_404"):
+            status, note = "ok", "Serwer poprawnie zwraca kod HTTP 404 dla nieistniejących adresów."
+            current_value = f"Status HTTP dla nieistniejącego adresu: {status_code}"
+        else:
+            status, note = "warning", (
+                f'Nieistniejący adres zwrócił status {status_code} zamiast 404 (tzw. "miękkie 404") - '
+                "może to dezorientować roboty wyszukiwarek co do tego, które adresy naprawdę istnieją."
+            )
+            current_value = f"Status HTTP dla nieistniejącego adresu: {status_code}"
+        return self._make_metric(
+            "technical", "http_errors", {**http_errors, "note": note}, status, current_value=current_value
+        )
+
+    def _evaluate_image_compression(self, image_sizes: dict) -> dict:
+        oversized = image_sizes.get("oversized", [])
+        checked_count = image_sizes.get("checked_count", 0)
+
+        if checked_count == 0:
+            status, note = "ok", "Nie znaleziono obrazków możliwych do zweryfikowania (lub serwer nie zwrócił wagi plików)."
+            current_value = "(brak danych o wadze plików graficznych)"
+        elif oversized:
+            examples = ", ".join(f"{item['src'].rsplit('/', 1)[-1]} ({item['size_kb']} KB)" for item in oversized[:3])
+            status, note = "warning", (
+                f"{len(oversized)}/{checked_count} sprawdzonych obrazków przekracza 100 KB "
+                f"(np. {examples}) - warto je skompresować lub przekonwertować do formatu WebP/AVIF."
+            )
+            current_value = "; ".join(f"{item['src']} — {item['size_kb']} KB" for item in oversized)
+        else:
+            status, note = "ok", f"Wszystkie sprawdzone obrazki ({checked_count}) mieszczą się w limicie 100 KB."
+            current_value = f"Sprawdzono {checked_count} obrazków - wszystkie poniżej 100 KB."
+
+        return self._make_metric(
+            "performance", "image_compression", {**image_sizes, "note": note}, status, current_value=current_value
+        )
 
     # ------------------------------------------------------------------
     # Google PageSpeed Insights -> metryki wydajności / Core Web Vitals

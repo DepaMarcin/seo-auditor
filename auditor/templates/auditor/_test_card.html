@@ -1,0 +1,38 @@
+{% comment %}
+Karta testu z zasadą "Progressive Disclosure": domyślnie widoczna jest tylko nazwa,
+badge statusu i 1-zdaniowy stan zastany. Definicja ("Co to jest?"), pełny kod/wykaz
+błędu i szczegółowa "Rekomendacja AI" chowają się pod <details> "Rozwiń rekomendację
+i kod". Oczekuje `metric` z pełną adnotacją (_annotate_metric_labels).
+{% endcomment %}
+<div class="test-card status-{{ metric.status }}">
+    <div class="test-card-header">
+        <span class="test-card-title">{{ metric.display_key }}</span>
+        <span class="status-flag status-{{ metric.status }}">
+            {% if metric.status == "info" %}Opcjonalne{% else %}{{ metric.get_status_display }}{% endif %}
+        </span>
+    </div>
+    <p class="test-card-summary">{{ metric.value.note }}</p>
+
+    {% if metric.definition or metric.current_value or metric.recommendation_segments %}
+    <details class="test-card-details">
+        <summary>Rozwiń rekomendację i kod</summary>
+        <div class="test-card-details-body">
+            {% if metric.definition %}
+            <div class="metric-card-section metric-definition">
+                <div class="metric-card-label">Co to jest?</div>
+                <p>{{ metric.definition }}</p>
+            </div>
+            {% endif %}
+
+            {% if metric.current_value %}
+            <div class="metric-card-section">
+                <div class="metric-card-label">Stan zastany (szczegóły)</div>
+                <div class="snippet-box">{{ metric.current_value }}</div>
+            </div>
+            {% endif %}
+
+            {% include "auditor/_recommendation.html" with metric=metric %}
+        </div>
+    </details>
+    {% endif %}
+</div>

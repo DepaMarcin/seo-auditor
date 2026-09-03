@@ -156,13 +156,27 @@ class AuditDetailViewTests(TestCase):
         self.assertEqual(stats["warnings_count"], len(response.context["warnings"]))
         self.assertEqual(stats["passed_count"], len(response.context["passed_tests"]))
 
-    def test_mobile_and_desktop_scores_available_in_context(self):
+    def test_merged_pagespeed_score_in_technical_accordion(self):
+        """Zbiorcza metryka "pagespeed_score" (z osadzonymi wynikami mobile/desktop
+        w `value`) trafia do akordeonu "Obrazy, Wydajność & Bezpieczeństwo" zakładki
+        Audyt Techniczny - dedykowane klucze kontekstu mobile_score/desktop_score
+        nie istnieją już (zastąpione jednolitym grupowaniem akordeonowym); metryki
+        score per urządzenie (mobile_/desktop_pagespeed_score) są z tej listy celowo
+        wykluczone (MERGED_PAGESPEED_SCORE_KEYS), żeby nie dublować tej samej
+        informacji, która i tak jest osadzona w `value` metryki zbiorczej."""
         url = reverse("auditor:detail", kwargs={"pk": self.audit.pk})
 
         response = self.client.get(url)
 
-        self.assertEqual(response.context["mobile_score"], 90)
-        self.assertEqual(response.context["desktop_score"], 95)
+        images_performance_group = next(
+            g for g in response.context["technical_accordions"] if g["id"] == "images_performance"
+        )
+        pagespeed_metric = next(
+            (m for m in images_performance_group["metrics"] if m.key == "pagespeed_score"), None
+        )
+        self.assertIsNotNone(pagespeed_metric)
+        self.assertEqual(pagespeed_metric.value.get("mobile_score"), 90)
+        self.assertEqual(pagespeed_metric.value.get("desktop_score"), 95)
 
     def test_html_contains_recommendation_text(self):
         url = reverse("auditor:detail", kwargs={"pk": self.audit.pk})
@@ -170,7 +184,17 @@ class AuditDetailViewTests(TestCase):
         response = self.client.get(url)
 
         self.assertContains(response, "Dodaj meta description.")
-        self.assertContains(response, "Brak danych strukturalnych BreadcrumbList na stronie.")
+
+    def test_schema_status_table_shows_breadcrumblist_row(self):
+        """schema_breadcrumbs nie jest już renderowany jako zwykła karta testu z
+        surowym `note` - trafia do dedykowanej tabeli statusów Schema.org (patrz
+        `_build_schema_status_table`), pokazującej ikonę/etykietę statusu."""
+        url = reverse("auditor:detail", kwargs={"pk": self.audit.pk})
+
+        response = self.client.get(url)
+
+        schema_names = {row["name"] for row in response.context["schema_status_table"]}
+        self.assertIn("BreadcrumbList", schema_names)
 
     def test_failed_audit_shows_failure_message_without_crashing(self):
         failed_audit = Audit.objects.create(url="https://blad.pl", status=Audit.Status.FAILED, score=0)

@@ -441,6 +441,91 @@
         .gsc-delta-negative { color: var(--error); font-weight: 700; }
         .gsc-commentary-text { margin: 0; color: var(--muted); line-height: 1.5; }
 
+        /* --- Zakładka "Audyt Techniczny": Health Score + 4 akordeony + karty testów --- */
+        .health-score-panel {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .health-score-stats {
+            flex: 1;
+            min-width: 260px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+        }
+
+        .tech-accordion-list { display: flex; flex-direction: column; gap: 0.75rem; }
+        .tech-accordion {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .tech-accordion-summary {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 1rem 1.25rem;
+            cursor: pointer;
+            list-style: none;
+            font-weight: 700;
+            color: var(--text);
+        }
+        .tech-accordion-summary::-webkit-details-marker { display: none; }
+        .tech-accordion-summary::before { content: "▶ "; color: var(--muted); font-weight: 400; }
+        .tech-accordion[open] > .tech-accordion-summary::before { content: "▼ "; }
+        .tech-accordion-count {
+            flex-shrink: 0;
+            background: var(--surface-inset);
+            color: var(--muted);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 0.1rem 0.6rem;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+        .tech-accordion-body {
+            padding: 0 1.25rem 1.25rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .test-card-list { display: flex; flex-direction: column; gap: 0.75rem; margin-top: 1rem; }
+        .test-card {
+            background: var(--surface-inset);
+            border: 1px solid var(--border);
+            border-left: 4px solid var(--muted);
+            border-radius: 8px;
+            padding: 1rem;
+        }
+        .test-card.status-ok, .test-card.status-info { border-left-color: var(--ok); }
+        .test-card.status-warning { border-left-color: var(--warning); }
+        .test-card.status-error { border-left-color: var(--error); }
+        .test-card-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .test-card-title { font-weight: 700; color: var(--text); }
+        .test-card-summary { margin: 0.4rem 0 0; color: var(--muted); }
+        .test-card-details { margin-top: 0.6rem; }
+        .test-card-details summary {
+            cursor: pointer;
+            color: var(--accent);
+            font-size: 0.85rem;
+            font-weight: 600;
+            list-style: none;
+        }
+        .test-card-details summary::-webkit-details-marker { display: none; }
+        .test-card-details summary::before { content: "▸ "; }
+        .test-card-details[open] summary::before { content: "▾ "; }
+        .test-card-details-body { margin-top: 0.6rem; }
+        .status-flag.status-info { background: #38BDF8; color: #000000; }
+
         .section-heading {
             font-size: 1.1rem;
             margin: 0 0 1rem;

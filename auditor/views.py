@@ -224,7 +224,6 @@ def select_ga4_property(request: HttpRequest, pk: int) -> HttpResponse:
     )
 
 
-CORE_WEB_VITALS_KEYS = {"pagespeed_score", "lcp", "cls", "fcp", "inp"}
 STRATEGY_LABELS = {"mobile": "📱 ", "desktop": "🖥️ "}
 
 # Czytelne etykiety kategorii - używane w tabeli "Problemy i rekomendacje" oraz w PDF.
@@ -276,7 +275,147 @@ METRIC_DEFINITIONS = {
     "cls": "CLS (Cumulative Layout Shift) mierzy, jak bardzo elementy strony \"skaczą\" podczas ładowania (np. przez obrazki bez zarezerwowanego miejsca). Wysoki CLS frustruje użytkowników i jest karany przez Google jako zły sygnał doświadczenia strony.",
     "fcp": "FCP (First Contentful Paint) mierzy czas, po którym na ekranie pojawia się pierwszy element treści (tekst, obraz). Krótszy czas FCP oznacza, że użytkownik szybciej widzi oznaki ładowania się strony, zamiast pustego ekranu.",
     "inp": "INP (Interaction to Next Paint) mierzy responsywność strony na działania użytkownika (np. kliknięcie przycisku) przez cały czas wizyty. Wysoki INP oznacza, że interfejs \"zawiesza się\" lub reaguje z opóźnieniem, co pogarsza doświadczenie użytkownika.",
+    "meta_keywords": "Znacznik <meta name=\"keywords\"> był używany przez wyszukiwarki 20 lat temu - dziś Google go całkowicie ignoruje przy rankingu, a jego obecność jedynie niepotrzebnie ujawnia konkurencji listę słów kluczowych, na które celuje strona.",
+    "internal_linking": "Linki wewnętrzne (prowadzące do innych podstron tej samej witryny) pomagają robotom wyszukiwarek odkrywać i rozumieć hierarchię treści serwisu, a użytkownikom - poruszać się po nim. Zbyt mało linków wewnętrznych utrudnia indeksację głębszych podstron.",
+    "javascript_rendering": "Część silników JavaScript (React, Vue, Angular) generuje treść strony dopiero w przeglądarce (CSR - Client-Side Rendering). Jeśli surowy HTML nie zawiera realnej treści, część robotów wyszukiwarek i modeli LLM, które nie wykonują JS, zobaczy pustą stronę.",
+    "redirect_chain": "Przekierowania 301/302 kierują użytkownika i roboty z jednego adresu URL na inny (np. z http na https). Zbyt długi łańcuch kolejnych przekierowań spowalnia ładowanie strony i marnuje tzw. \"budżet indeksowania\" (crawl budget) wyszukiwarki.",
+    "robots_txt": "Plik /robots.txt informuje roboty wyszukiwarek, które fragmenty witryny mogą, a których nie powinny odwiedzać. Błędna konfiguracja (np. zablokowanie całej witryny) może całkowicie wyłączyć stronę z indeksu Google.",
+    "http_errors": "Gdy użytkownik lub robot trafi na nieistniejący adres, serwer powinien zwrócić kod HTTP 404 (\"nie znaleziono\"). Zwracanie w takiej sytuacji kodu 200 (tzw. \"miękkie 404\") myli roboty wyszukiwarek co do tego, które adresy naprawdę istnieją.",
+    "image_compression": "Zbyt ciężkie pliki graficzne (powyżej ok. 100 KB) wydłużają czas ładowania strony, co bezpośrednio pogarsza wskaźniki Core Web Vitals (zwłaszcza LCP) oraz doświadczenie użytkownika na wolniejszych połączeniach mobilnych.",
+    "ssl_certificate": "Certyfikat SSL (protokół HTTPS) szyfruje połączenie między przeglądarką a serwerem. Jego brak jest oznaczany przez przeglądarki jako \"niebezpieczne\", odstrasza użytkowników i jest sygnałem rankingowym branym pod uwagę przez Google.",
 }
+
+# "Oficjalne" nazwy testów zgodne ze standardem pełnego Audytu SEO (AI Ready) -
+# nadpisują domyślną, automatycznie generowaną etykietę metryki (patrz
+# `_annotate_metric_labels`). Kilka technicznych kluczy dzieli tę samą oficjalną
+# nazwę, gdy audyt opisuje je jako jeden łączny test.
+OFFICIAL_TEST_NAMES = {
+    "heading_order": "Struktura nagłówków Hx i oczyszczenie z szumu nawigacyjnego",
+    "heading_noise": "Struktura nagłówków Hx i oczyszczenie z szumu nawigacyjnego",
+    "title": "Optymalizacja znaczników Title i Description",
+    "meta_description": "Optymalizacja znaczników Title i Description",
+    "meta_keywords": "Weryfikacja obecności zbędnych Meta Keywords",
+    "images_alt": "Atrybuty ALT oraz tytuły plików graficznych",
+    "image_quality": "Atrybuty ALT oraz tytuły plików graficznych",
+    "image_compression": "Wielkość i kompresja plików graficznych (>100KB)",
+    "eeat_authorship": "Weryfikacja semantyki treści i zgodności z EEAT+ (Autor, Live Update Badge)",
+    "eeat_freshness": "Weryfikacja semantyki treści i zgodności z EEAT+ (Autor, Live Update Badge)",
+    "schema_page_type": "Dane strukturalne Schema.org (Organization, Course, School, FAQPage)",
+    "schema_breadcrumbs": "Dane strukturalne Schema.org (Organization, Course, School, FAQPage)",
+    "schema_faq": "Dane strukturalne Schema.org (Organization, Course, School, FAQPage)",
+    "javascript_rendering": "Renderowanie treści JavaScript (SSR vs CSR) w kontekście AI/LLM",
+    "internal_linking": "Linkowanie wewnętrzne i architektura nawigacji",
+    "http_errors": "Obsługa błędów 4xx/5xx i dedykowana strona 404",
+    "lcp": "Wskaźniki Core Web Vitals i szybkość ładowania (LCP, CLS)",
+    "cls": "Wskaźniki Core Web Vitals i szybkość ładowania (LCP, CLS)",
+}
+
+# ----------------------------------------------------------------------
+# Dedykowana tabela statusów Schema.org (zakładka Audyt Techniczny, akordeon
+# "Dane Strukturalne") - wyciągnięta z ogólnej listy testów, patrz
+# `_build_schema_status_table`.
+# ----------------------------------------------------------------------
+SCHEMA_STATUS_ICONS = {"detected": "🟢", "recommended": "🟡", "not_applicable": "⚪"}
+SCHEMA_STATUS_LABELS = {
+    "detected": "Wykryto",
+    "recommended": "Brak (Rekomendowane)",
+    "not_applicable": "Nie dotyczy",
+}
+
+# (zbiór typów Schema.org, nazwa wyświetlana, opis, zbiór page_type dla których jest
+# rekomendowany | None = zawsze rekomendowany | "faq" = zależnie od wykrycia sekcji FAQ).
+SCHEMA_TABLE_DEFINITIONS = [
+    ({"Organization", "LocalBusiness"}, "Organization / LocalBusiness", "Dane firmowe i kontaktowe", {"homepage"}),
+    ({"WebPage"}, "WebPage", "Kontekst podstrony", None),
+    ({"BreadcrumbList"}, "BreadcrumbList", "Nawigacja okruszkowa", {"product", "article", "category", "generic"}),
+    ({"Course"}, "Course", "Podstrony kursów i grup wiekowych", set()),
+    ({"School"}, "School", "Podstrony placówek i filii lokalnych", set()),
+    ({"FAQPage"}, "FAQPage", "Sekcje pytań i odpowiedzi", "faq"),
+    ({"Article", "BlogPosting"}, "Article", "Wpisy blogowe", {"article"}),
+]
+
+
+def _build_schema_status_table(metrics):
+    """Buduje dedykowaną tabelę statusów Schema.org (SCHEMA_TABLE_DEFINITIONS) na
+    podstawie danych już zebranych w metrykach `schema_page_type`/`schema_faq` -
+    bez ponownego odpytywania strony. Każdy typ dostaje jeden z trzech statusów:
+    "detected" (wykryto), "recommended" (brak, ale rekomendowany dla tego typu
+    podstrony) albo "not_applicable" (nie dotyczy tej podstrony)."""
+    schema_metric = next((m for m in metrics if m.short_key == "schema_page_type"), None)
+    faq_metric = next((m for m in metrics if m.short_key == "schema_faq"), None)
+
+    types_found = set(schema_metric.value.get("types_found", [])) if schema_metric else set()
+    page_type = schema_metric.value.get("page_type", "generic") if schema_metric else "generic"
+    faq_detected = bool(faq_metric.value.get("faq_detected")) if faq_metric else False
+
+    rows = []
+    for type_names, display_name, description, applicability in SCHEMA_TABLE_DEFINITIONS:
+        if type_names & types_found:
+            status = "detected"
+        elif applicability == "faq":
+            status = "recommended" if faq_detected else "not_applicable"
+        elif applicability is None or (applicability and page_type in applicability):
+            status = "recommended"
+        else:
+            status = "not_applicable"
+
+        rows.append({
+            "name": display_name,
+            "description": description,
+            "status": status,
+            "status_icon": SCHEMA_STATUS_ICONS[status],
+            "status_label": SCHEMA_STATUS_LABELS[status],
+        })
+    return rows
+
+
+# ----------------------------------------------------------------------
+# Grupowanie testów w 4 akordeony zakładki "Audyt Techniczny" (detail.html).
+# Klucze Schema.org (schema_page_type/schema_breadcrumbs/schema_faq) są celowo
+# wyłączone z tego grupowania - mają własną, dedykowaną tabelę (patrz wyżej).
+# ----------------------------------------------------------------------
+SCHEMA_METRIC_KEYS = {"schema_page_type", "schema_breadcrumbs", "schema_faq"}
+
+TECHNICAL_ACCORDIONS = [
+    (
+        "indexing",
+        "🌐 Indeksacja, Renderowanie & Nawigacja",
+        {"javascript_rendering", "robots_txt", "canonical", "redirect_chain", "internal_linking", "http_errors"},
+    ),
+    (
+        "content",
+        "✍️ Meta Tagi, Treść & EEAT+",
+        {
+            "title", "meta_description", "meta_keywords", "open_graph", "h1_structure",
+            "heading_order", "heading_noise", "eeat_authorship", "eeat_freshness",
+        },
+    ),
+    (
+        "images_performance",
+        "⚡ Obrazy, Wydajność & Bezpieczeństwo",
+        {"images_alt", "image_quality", "image_compression", "ssl_certificate",
+         "pagespeed_score", "lcp", "cls", "fcp", "inp"},
+    ),
+]
+
+
+def _group_technical_accordions(metrics):
+    """Grupuje metryki (poza Schema.org) w 4 tematyczne akordeony zakładki "Audyt
+    Techniczny", niezależnie od statusu (błąd/ostrzeżenie/ok/info) - każda karta
+    testu pokazuje własny status przez badge, więc grupowanie odbywa się wyłącznie
+    wg tematu, a nie wg tego, czy test "przeszedł"."""
+    groups = {group_id: [] for group_id, _, _ in TECHNICAL_ACCORDIONS}
+    for metric in metrics:
+        if metric.short_key in SCHEMA_METRIC_KEYS:
+            continue
+        for group_id, _, keys in TECHNICAL_ACCORDIONS:
+            if metric.short_key in keys:
+                groups[group_id].append(metric)
+                break
+    return [
+        {"id": group_id, "label": label, "metrics": groups[group_id]}
+        for group_id, label, _ in TECHNICAL_ACCORDIONS
+    ]
 
 
 def _split_recommendation_segments(recommendation):
@@ -322,7 +461,8 @@ def _annotate_metric_labels(metrics):
                 break
         metric.short_key = short_key
         label = metric.value.get("label") if isinstance(metric.value, dict) else None
-        metric.display_key = f"{strategy_emoji}{label or short_key.replace('_', ' ')}"
+        official_name = OFFICIAL_TEST_NAMES.get(short_key)
+        metric.display_key = f"{strategy_emoji}{official_name or label or short_key.replace('_', ' ')}"
         metric.category_label = CATEGORY_LABELS.get(metric.category, metric.category)
         metric.category_icon = CATEGORY_ICONS.get(metric.category, "🔎")
         metric.definition = METRIC_DEFINITIONS.get(short_key, "")
@@ -335,26 +475,6 @@ def _annotate_metric_labels(metrics):
 # Metryki score per urządzenie zastąpione są w podsumowaniu (Priorytety/Ostrzeżenia)
 # jedną zbiorczą metryką "pagespeed_score" - nie pokazujemy ich tam osobno.
 MERGED_PAGESPEED_SCORE_KEYS = {"mobile_pagespeed_score", "desktop_pagespeed_score"}
-
-
-def _split_performance_metrics(metrics):
-    """Rozdziela metryki performance na mobile/desktop (wg przedrostka) i pozostałe.
-
-    Zbiorcza metryka "pagespeed_score" (bez przedrostka) jest pomijana tutaj celowo -
-    jest prezentowana wyłącznie w sekcjach Priorytety/Ostrzeżenia/Zdane testy, żeby nie
-    powielać jej obok pełnych kafelków Mobile/Desktop w sekcji szczegółowej.
-    """
-    mobile, desktop, other = [], [], []
-    for metric in metrics:
-        if metric.key == "pagespeed_score":
-            continue
-        if metric.key.startswith("mobile_"):
-            mobile.append(metric)
-        elif metric.key.startswith("desktop_"):
-            desktop.append(metric)
-        else:
-            other.append(metric)
-    return mobile, desktop, other
 
 
 def _compute_category_scores(audit):
@@ -410,37 +530,30 @@ def audit_detail(request, pk):
 
     all_metrics = _annotate_metric_labels(list(audit.metrics.all()))
 
-    metrics_by_category = {}
-    for metric in all_metrics:
-        metrics_by_category.setdefault(metric.category, []).append(metric)
-
-    performance_metrics = metrics_by_category.pop("performance", [])
-    structure_metrics = metrics_by_category.pop("structure", [])
-    mobile_metrics, desktop_metrics, other_performance_metrics = _split_performance_metrics(
-        performance_metrics
-    )
-
-    mobile_score = next(
-        (m.value.get("value") for m in mobile_metrics if m.short_key == "pagespeed_score"), None
-    )
-    desktop_score = next(
-        (m.value.get("value") for m in desktop_metrics if m.short_key == "pagespeed_score"), None
-    )
-
-    # W podsumowaniu (Priorytety/Ostrzeżenia/Zdane testy) pomijamy osobne metryki
-    # score per urządzenie - reprezentuje je tam jedna zbiorcza metryka "pagespeed_score".
+    # W podsumowaniu pomijamy osobne metryki score per urządzenie - reprezentuje je
+    # jedna zbiorcza metryka "pagespeed_score".
     summary_metrics = [m for m in all_metrics if m.key not in MERGED_PAGESPEED_SCORE_KEYS]
 
     critical_errors = [m for m in summary_metrics if m.status == AuditMetric.MetricStatus.ERROR]
     warnings = [m for m in summary_metrics if m.status == AuditMetric.MetricStatus.WARNING]
     passed_tests = [m for m in summary_metrics if m.status == AuditMetric.MetricStatus.OK]
+    info_tests = [m for m in summary_metrics if m.status == AuditMetric.MetricStatus.INFO]
 
     stats = {
         "errors_count": len(critical_errors),
         "warnings_count": len(warnings),
         "passed_count": len(passed_tests),
+        "info_count": len(info_tests),
+        # "Zgodne ze standardem" = testy zdane (OK) + opcjonalne (INFO) - oba nie są
+        # problemem do naprawy, tylko WARNING/ERROR wymagają uwagi.
+        "compliant_count": len(passed_tests) + len(info_tests),
         "total_count": len(summary_metrics),
     }
+
+    # Zakładka "Audyt Techniczny": 4 tematyczne akordeony (Progressive Disclosure) +
+    # dedykowana tabela statusów Schema.org, budowane z tych samych summary_metrics.
+    technical_accordions = _group_technical_accordions(summary_metrics)
+    schema_status_table = _build_schema_status_table(summary_metrics)
 
     # Lista zdarzeń GA4 do formularza wyboru leadu/konwersji - pobierana na żywo tylko
     # gdy usługa jest już połączona; błąd (np. wygasły token) nie blokuje reszty strony,
@@ -469,18 +582,13 @@ def audit_detail(request, pk):
         "auditor/detail.html",
         {
             "audit": audit,
-            "metrics_by_category": metrics_by_category,
-            "structure_metrics": structure_metrics,
-            "mobile_metrics": mobile_metrics,
-            "desktop_metrics": desktop_metrics,
-            "other_performance_metrics": other_performance_metrics,
-            "mobile_score": mobile_score,
-            "desktop_score": desktop_score,
-            "cwv_keys": CORE_WEB_VITALS_KEYS,
             "critical_errors": critical_errors,
             "warnings": warnings,
             "passed_tests": passed_tests,
+            "info_tests": info_tests,
             "stats": stats,
+            "technical_accordions": technical_accordions,
+            "schema_status_table": schema_status_table,
             "category_scores": _compute_category_scores(audit) if audit.status == "completed" else [],
             "score_bucket": _score_bucket(audit.score),
             "ga4_available_events": ga4_available_events,
