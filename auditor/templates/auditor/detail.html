@@ -165,7 +165,7 @@
     {% endif %}
 
     <h3 class="ga4-subheading">Śledzenie leadów / konwersji</h3>
-    <form method="post" class="ga4-select-form ga4-lead-form">
+    <form method="post" class="ga4-select-form ga4-lead-form" id="ga4-lead-form">
         {% csrf_token %}
         <select name="ga4_selected_lead_event">
             <option value="">-- brak śledzonego zdarzenia --</option>
@@ -175,8 +175,11 @@
             </option>
             {% endfor %}
         </select>
-        <button type="submit">Śledź jako lead/konwersję</button>
+        <button type="submit" id="ga4-lead-form-submit">Śledź jako lead/konwersję</button>
     </form>
+    <p id="ga4-lead-form-loading-note" class="priority-empty hidden" style="margin-top: 0.5rem;">
+        Pobieranie i agregacja danych z GA4 i GSC w toku. Proszę czekać...
+    </p>
     {% if not ga4_available_events %}
     <p class="priority-empty" style="margin-top: 0.5rem;">
         Nie udało się pobrać listy zdarzeń z GA4 (spróbuj odświeżyć stronę).
@@ -348,30 +351,6 @@
 {# ---------- /tab-panel-visibility ---------- #}
 
 <div id="tab-panel-technical" class="detail-tab-panel hidden">
-
-{# ---------- Health Score: ogólna ocena techniczna + zliczenie błędów/ostrzeżeń/zgodnych ---------- #}
-<div class="panel health-score-panel">
-    <div class="score-donut score-donut-{{ score_bucket }}" style="--score: {{ audit.score }};">
-        <div class="score-donut-inner">
-            <span class="score-donut-value">{{ audit.score }}</span>
-            <span class="score-donut-label">Ocena techniczna</span>
-        </div>
-    </div>
-    <div class="health-score-stats">
-        <div class="stat-tile stat-errors">
-            <div class="stat-value">{{ stats.errors_count }}</div>
-            <div class="stat-label">Błędy Krytyczne</div>
-        </div>
-        <div class="stat-tile stat-warnings">
-            <div class="stat-value">{{ stats.warnings_count }}</div>
-            <div class="stat-label">Do Poprawy</div>
-        </div>
-        <div class="stat-tile stat-passed">
-            <div class="stat-value">{{ stats.compliant_count }}</div>
-            <div class="stat-label">Zgodne ze Standardem</div>
-        </div>
-    </div>
-</div>
 
 {# ---------- 4 akordeony zgodne ze strukturą pełnego Audytu SEO (AI Ready) ---------- #}
 <div class="tech-accordion-list">
@@ -627,6 +606,23 @@
 })();
 </script>
 {% endif %}
+
+<script>
+(function () {
+    var form = document.getElementById("ga4-lead-form");
+    var button = document.getElementById("ga4-lead-form-submit");
+    var note = document.getElementById("ga4-lead-form-loading-note");
+    if (!form || !button) return;
+
+    form.addEventListener("submit", function () {
+        button.disabled = true;
+        button.innerHTML = '<span class="btn-spinner"></span>Łączenie z Google Analytics...';
+        setTimeout(function () {
+            if (note) note.classList.remove("hidden");
+        }, 1500);
+    });
+})();
+</script>
 
 <script>
 (function () {

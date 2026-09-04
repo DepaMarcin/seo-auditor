@@ -399,11 +399,20 @@ TECHNICAL_ACCORDIONS = [
 ]
 
 
+STATUS_SORT_PRIORITY = {
+    AuditMetric.MetricStatus.ERROR: 0,
+    AuditMetric.MetricStatus.WARNING: 1,
+    AuditMetric.MetricStatus.OK: 2,
+    AuditMetric.MetricStatus.INFO: 2,
+}
+
+
 def _group_technical_accordions(metrics):
     """Grupuje metryki (poza Schema.org) w 4 tematyczne akordeony zakładki "Audyt
-    Techniczny", niezależnie od statusu (błąd/ostrzeżenie/ok/info) - każda karta
-    testu pokazuje własny status przez badge, więc grupowanie odbywa się wyłącznie
-    wg tematu, a nie wg tego, czy test "przeszedł"."""
+    Techniczny" wg tematu, a w obrębie każdego akordeonu sortuje je wg priorytetu
+    statusu - błędy i ostrzeżenia (wymagające uwagi) na górze, zdane/opcjonalne
+    testy na dole (patrz STATUS_SORT_PRIORITY) - żeby najważniejsze problemy były
+    widoczne bez przewijania."""
     groups = {group_id: [] for group_id, _, _ in TECHNICAL_ACCORDIONS}
     for metric in metrics:
         if metric.short_key in SCHEMA_METRIC_KEYS:
@@ -413,7 +422,11 @@ def _group_technical_accordions(metrics):
                 groups[group_id].append(metric)
                 break
     return [
-        {"id": group_id, "label": label, "metrics": groups[group_id]}
+        {
+            "id": group_id,
+            "label": label,
+            "metrics": sorted(groups[group_id], key=lambda m: STATUS_SORT_PRIORITY.get(m.status, 3)),
+        }
         for group_id, label, _ in TECHNICAL_ACCORDIONS
     ]
 

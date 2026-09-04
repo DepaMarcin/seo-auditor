@@ -11,7 +11,7 @@
         <strong>{{ audit.url }}</strong>, żeby pobrać dane o ruchu organicznym.
     </p>
 
-    <form method="post" class="ga4-select-form">
+    <form method="post" class="ga4-select-form" id="ga4-select-property-form">
         {% csrf_token %}
         <select name="property_id" required>
             <option value="" disabled {% if not has_auto_selected %}selected{% endif %}>-- wybierz usługę --</option>
@@ -21,7 +21,27 @@
             </option>
             {% endfor %}
         </select>
-        <button type="submit">Połącz wybraną usługę</button>
+        <button type="submit" id="ga4-select-property-submit">Połącz wybraną usługę</button>
     </form>
+    <p id="ga4-select-property-loading-note" class="priority-empty hidden" style="margin-top: 0.75rem;">
+        Pobieranie i agregacja danych z GA4 i GSC w toku. Proszę czekać...
+    </p>
 </div>
+
+<script>
+(function () {
+    var form = document.getElementById("ga4-select-property-form");
+    var button = document.getElementById("ga4-select-property-submit");
+    var note = document.getElementById("ga4-select-property-loading-note");
+    if (!form || !button) return;
+
+    form.addEventListener("submit", function () {
+        button.disabled = true;
+        button.innerHTML = '<span class="btn-spinner"></span>Łączenie z Google Analytics...';
+        setTimeout(function () {
+            if (note) note.classList.remove("hidden");
+        }, 1500);
+    });
+})();
+</script>
 {% endblock %}
