@@ -28,7 +28,7 @@ def index(request):
         AuditService().run_audit(audit)
         return redirect("auditor:detail", pk=audit.pk)
 
-    audits = Audit.objects.all()
+    audits = Audit.objects.all().order_by("-created_at")[:10]
     return render(request, "auditor/index.html", {"audits": audits})
 
 
