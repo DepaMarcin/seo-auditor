@@ -34,11 +34,20 @@
     var progressBar = document.getElementById("progress-bar");
     var loadingStatus = document.getElementById("loading-status");
 
+    // Audyt wykonuje się teraz w tle (auditor.tasks.enqueue_audit), więc ten loader
+    // pokazuje wyłącznie moment zlecania zadania - postęp samego audytu widać już na
+    // stronie szczegółów, która odpytuje endpoint `auditor:status`.
     var STATUS_MESSAGES = [
-        "1/3: Pobieranie kodu HTML i analiza struktury nagłówków...",
-        "2/3: Odpytywanie Google PageSpeed Insights API (Mobile & Desktop)...",
-        "3/3: Odpytywanie bazy wiedzy RAG i generowanie rekomendacji AI..."
+        "Zlecanie audytu do wykonania w tle...",
+        "Za chwilę nastąpi przekierowanie do raportu..."
     ];
+
+    function resetForm() {
+        urlInput.readOnly = false;
+        submitBtn.style.pointerEvents = "";
+        submitBtn.style.opacity = "";
+        submitBtn.textContent = "Uruchom audyt";
+    }
 
     form.addEventListener("submit", function (event) {
         event.preventDefault();
@@ -83,6 +92,15 @@
         fetch(form.action, { method: "POST", body: formData })
             .then(function (response) {
                 stopTimers();
+                // Bez tego sprawdzenia odpowiedź 500 była traktowana jak sukces i
+                // kończyła się przekierowaniem na stronę błędu Django.
+                if (!response.ok) {
+                    loadingStatus.textContent =
+                        "Nie udało się uruchomić audytu (błąd " + response.status + "). Spróbuj ponownie.";
+                    progressBar.style.width = "0%";
+                    resetForm();
+                    return;
+                }
                 progressBar.style.width = "100%";
                 var destination = response.url;
                 setTimeout(function () {
@@ -92,10 +110,8 @@
             .catch(function () {
                 stopTimers();
                 loadingStatus.textContent = "Wystąpił błąd połączenia. Spróbuj ponownie.";
-                urlInput.readOnly = false;
-                submitBtn.style.pointerEvents = "";
-                submitBtn.style.opacity = "";
-                submitBtn.textContent = "Uruchom audyt";
+                progressBar.style.width = "0%";
+                resetForm();
             });
     });
 })();

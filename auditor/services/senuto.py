@@ -3,12 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import re
-import traceback
 from datetime import date, timedelta
 from urllib.parse import urlparse
 
 import httpx
 from django.conf import settings
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +62,21 @@ class SenutoService:
             logger.warning("Pomijam zapytanie do Senuto - nie udało się wyodrębnić domeny z %r.", url_or_domain)
             return self._fallback()
 
+        # Senuto przelicza widoczność raz na dobę, więc powtórny audyt tej samej domeny
+        # w ciągu dnia nie ma czego pobierać - odpowiedź bierzemy z cache.
+        cache_key = f"senuto:{domain}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            logger.info("Senuto: statystyki widoczności dla %s pobrane z cache.", domain)
+            return cached
+
         logger.info("Senuto: rozpoczynam pobieranie statystyk widoczności dla domeny %s.", domain)
 
         try:
             with httpx.Client(timeout=self.timeout, headers=self._headers()) as client:
                 summary = self._fetch_visibility_summary(client, domain)
                 history = self._fetch_visibility_history(client, domain)
-            return {
+            result = {
                 "available": True,
                 "error": None,
                 "top3": summary["top3"],
@@ -76,6 +84,10 @@ class SenutoService:
                 "top50": summary["top50"],
                 "history": history,
             }
+            # Cache'ujemy wyłącznie udane odpowiedzi - fallback musi mieć szansę
+            # zamienić się w prawdziwe dane przy następnej próbie.
+            cache.set(cache_key, result, getattr(settings, "CACHE_TTL_SENUTO", 24 * 3600))
+            return result
         except httpx.HTTPStatusError as exc:
             status_code = exc.response.status_code
             raw_body = self._safe_response_text(exc.response)
@@ -110,7 +122,7 @@ class SenutoService:
             return self._fallback()
         except Exception as exc:
             # Uwaga: ten blok NIE zwraca zerowego słownika po cichu - każdy nieoczekiwany
-            # wyjątek jest w pełni wypisywany (print + logger.error z pełnym tracebackiem),
+            # wyjątek jest logowany z pełnym tracebackiem (logger.error),
             # żeby żaden błąd integracji z Senuto nie pozostał niezauważony. Audyt mimo to
             # nie jest przerywany - dane widoczności są traktowane jako dodatek, nie warunek
             # konieczny do ukończenia audytu SEO.
@@ -119,11 +131,13 @@ class SenutoService:
             return self._fallback()
 
     def _log_exception(self, label: str, domain: str, exc: Exception) -> None:
-        """Wypisuje pełny wyjątek (print) i loguje pełny traceback (logger.error), żeby
-        żaden błąd integracji z Senuto nie został po cichu połknięty przez fallback."""
-        tb = traceback.format_exc()
-        print(f"[SenutoService] {label} dla domeny {domain}: {exc!r}\n{tb}")
-        logger.error(tb)
+        """Loguje pełny traceback, żeby żaden błąd integracji z Senuto nie został po cichu
+        połknięty przez fallback.
+
+        Wyłącznie przez `logger` (bez `print`) - komunikat musi trafić do skonfigurowanej
+        obsługi logów aplikacji, a nie na standardowe wyjście procesu.
+        """
+        logger.error("[SenutoService] %s dla domeny %s: %r", label, domain, exc, exc_info=exc)
 
     def _headers(self) -> dict:
         # Zgodnie z oficjalną kolekcją Postman API Senuto: jedyny obsługiwany schemat

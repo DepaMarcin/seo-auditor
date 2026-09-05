@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import date
 from urllib.parse import urlparse
 
+import google_auth_httplib2
+import httplib2
+from django.conf import settings
+from django.core.cache import cache
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -14,6 +19,11 @@ logger = logging.getLogger(__name__)
 QUERY_ROW_LIMIT = 25000
 PERIOD_MONTHS = 3
 TOP_N = 10
+
+# googleapiclient bez jawnego limitu korzysta z domyślnego timeoutu gniazda (który
+# potrafi być bardzo długi lub nieskończony) - zawieszone zapytanie do Search Console
+# blokowałoby wtedy cały wątek audytu.
+GSC_HTTP_TIMEOUT_SECONDS = 30
 
 
 def _extract_base_domain(audit_url: str) -> str:
@@ -108,12 +118,19 @@ class GSCService:
     zewnątrz - zwracany jest bezpieczny fallback z zerowymi wartościami.
     """
 
+    def _build_service(self, credentials: Credentials):
+        """Buduje klienta Search Console z JAWNYM limitem czasu żądania."""
+        authorized_http = google_auth_httplib2.AuthorizedHttp(
+            credentials, http=httplib2.Http(timeout=GSC_HTTP_TIMEOUT_SECONDS)
+        )
+        return build("searchconsole", "v1", http=authorized_http, cache_discovery=False)
+
     def resolve_site_url(self, credentials: Credentials, audit_url: str) -> str | None:
         """Wygodny skrót: buduje klienta Search Console i zwraca `find_best_gsc_site`
         dla `audit_url` - do sprawdzenia, czy/która usługa GSC pasuje do domeny, bez
         pobierania właściwych danych o kliknięciach."""
         try:
-            service = build("searchconsole", "v1", credentials=credentials, cache_discovery=False)
+            service = self._build_service(credentials)
         except Exception:
             logger.exception("Nie udało się zbudować klienta Search Console.")
             return None
@@ -162,8 +179,16 @@ class GSCService:
         period_a_start, period_a_end = last_n_full_months_range(PERIOD_MONTHS)
         period_b_start, period_b_end = same_months_last_year(period_a_start, period_a_end)
 
+        # GSC publikuje dane z 2-3 dniowym opóźnieniem, więc częstsze odpytywanie nie
+        # przyniesie nowych liczb - a każde zapytanie to 4 wywołania API.
+        cache_key = f"gsc:{dimension}:{hashlib.sha256(audit_url.encode()).hexdigest()[:32]}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            logger.info("Search Console: dane (%s) dla %s pobrane z cache.", dimension, audit_url)
+            return cached
+
         try:
-            service = build("searchconsole", "v1", credentials=credentials, cache_discovery=False)
+            service = self._build_service(credentials)
             site_url = find_best_gsc_site(service, audit_url)
             if not site_url:
                 return self._fallback()
@@ -194,19 +219,22 @@ class GSCService:
 
         total_current = totals_current["clicks"]
         total_previous = totals_previous["clicks"]
-        print(
-            f"[GSC] Sumy witrynowe ({dimension}) dla {site_url}: "
-            f"obecnie={total_current} kliknięć / {totals_current['impressions']} wyświetleń, "
-            f"rok temu={total_previous} kliknięć / {totals_previous['impressions']} wyświetleń."
+        logger.info(
+            "[GSC] Sumy witrynowe (%s) dla %s: obecnie=%s kliknięć / %s wyświetleń, "
+            "rok temu=%s kliknięć / %s wyświetleń.",
+            dimension, site_url, total_current, totals_current["impressions"],
+            total_previous, totals_previous["impressions"],
         )
 
-        return {
+        result = {
             "total_clicks_current": total_current,
             "total_clicks_previous": total_previous,
             "yoy_change_percent": self._pct_change(total_previous, total_current) or 0.0,
             "top_gainers": top_gainers,
             "top_losers": top_losers,
         }
+        cache.set(cache_key, result, getattr(settings, "CACHE_TTL_GSC", 12 * 3600))
+        return result
 
     def _query_rows(self, service, site_url: str, dimension: str, start: date, end: date) -> list[dict]:
         body = {

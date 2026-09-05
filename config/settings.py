@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 import os
 from pathlib import Path
 
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -21,16 +22,49 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / '.env')
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
+# ----------------------------------------------------------------------
+# Sekrety i tryb pracy - WYŁĄCZNIE ze zmiennych środowiskowych (.env).
+# Brak DJANGO_SECRET_KEY celowo przerywa start aplikacji: lepiej nie wstać,
+# niż wstać z kluczem zaszytym w repozytorium.
+# ----------------------------------------------------------------------
+SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
+if not SECRET_KEY:
+    raise ImproperlyConfigured(
+        'Brak zmiennej DJANGO_SECRET_KEY w .env - wygeneruj ją poleceniem:\n'
+        '  python -c "from django.core.management.utils import get_random_secret_key; '
+        'print(get_random_secret_key())"'
+    )
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-$i-m83bz70%li(cludhrs9p4dh005s2aux7u4q@5ipmjk=u8bt'
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False').strip().lower() in ('1', 'true', 'yes')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h.strip()]
+if DEBUG and not ALLOWED_HOSTS:
+    ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
 
-ALLOWED_HOSTS = []
+# Klucz szyfrowania tokenów OAuth zapisywanych w bazie (auditor.services.crypto).
+# Może być pusty w środowisku deweloperskim - wtedy tokeny lądują w bazie jawnie,
+# a aplikacja wypisuje ostrzeżenie przy pierwszym zapisie.
+TOKEN_ENCRYPTION_KEY = os.environ.get('TOKEN_ENCRYPTION_KEY', '')
+
+if not DEBUG:
+    # Ustawienia wymuszane wyłącznie na produkcji - lokalny serwer deweloperski
+    # działa po http, więc SSL redirect/secure cookies zablokowałyby pracę.
+    SECURE_SSL_REDIRECT = True
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = 31_536_000
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_PRELOAD = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_REFERRER_POLICY = 'same-origin'
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+    if not TOKEN_ENCRYPTION_KEY:
+        raise ImproperlyConfigured(
+            'Brak TOKEN_ENCRYPTION_KEY - na produkcji tokeny odświeżania Google '
+            'nie mogą być przechowywane w bazie jawnym tekstem. Wygeneruj klucz:\n'
+            '  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
+        )
 
 
 # Application definition
@@ -160,11 +194,68 @@ if DEBUG:
     os.environ.setdefault('OAUTHLIB_INSECURE_TRANSPORT', '1')
 
 
+# ----------------------------------------------------------------------
+# Cache - warstwa oszczędzająca wywołania płatnych/limitowanych API zewnętrznych
+# (PageSpeed, Senuto, GA4, GSC) oraz nośnik dla licznika rate limitu.
+# Domyślnie LocMemCache (per-proces!); na produkcji ustaw REDIS_CACHE_URL, żeby
+# wszystkie procesy workerów współdzieliły jeden cache.
+# ----------------------------------------------------------------------
+REDIS_CACHE_URL = os.environ.get('REDIS_CACHE_URL', '')
+
+if REDIS_CACHE_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_CACHE_URL,
+        }
+    }
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'seo-auditor-locmem',
+        }
+    }
+
+# Czasy życia cache'u dla poszczególnych integracji (sekundy) - dobrane do tego,
+# jak często dane po drugiej stronie faktycznie się zmieniają.
+CACHE_TTL_PAGESPEED = 60 * 60 * 6       # PSI: najdroższe wywołanie, wynik zmienia się wolno
+CACHE_TTL_SENUTO = 60 * 60 * 24         # Senuto przelicza widoczność raz na dobę
+CACHE_TTL_GSC = 60 * 60 * 12            # GSC ma 2-3 dni opóźnienia w danych
+CACHE_TTL_GA4_EVENTS = 60 * 60 * 6      # lista zdarzeń GA4 zmienia się rzadko
+CACHE_TTL_GA4_PROPERTIES = 60 * 60      # lista usług GA4 konta Google
+
+# ----------------------------------------------------------------------
+# Limit uruchamiania audytów (auditor.ratelimit) - jeden audyt to kilkanaście
+# wywołań PageSpeed/OpenAI, więc bez limitu pojedynczy skrypt wyczerpie budżet API.
+# ----------------------------------------------------------------------
+AUDIT_RATE_LIMIT_COUNT = int(os.environ.get('AUDIT_RATE_LIMIT_COUNT', '10'))
+AUDIT_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get('AUDIT_RATE_LIMIT_WINDOW_SECONDS', str(60 * 60)))
+
+# ----------------------------------------------------------------------
+# Celery - audyt (scraping + PageSpeed + rekomendacje AI) trwa minuty, więc nie
+# może blokować wątku HTTP. Gdy broker jest niedostępny, `auditor.tasks.enqueue_audit`
+# wykonuje audyt w wątku tła (tryb awaryjny dla developmentu - patrz auditor/tasks.py).
+# ----------------------------------------------------------------------
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', '')
+CELERY_TASK_ALWAYS_EAGER = os.environ.get('CELERY_TASK_ALWAYS_EAGER', 'False').lower() == 'true'
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_TASK_SOFT_TIME_LIMIT = 600
+CELERY_TASK_TIME_LIMIT = 900
+
+# Logowanie użytkowników (django.contrib.auth) - audyty są prywatne, każdy widok
+# wymaga zalogowania (patrz auditor.views).
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'auditor:index'
+LOGOUT_REDIRECT_URL = 'login'
+
+
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
+# Uwaga: "MAILERS" nie jest ustawieniem Django (nie istnieje w global_settings) -
+# poprawną nazwą jest EMAIL_BACKEND.
 
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}
+EMAIL_BACKEND = os.environ.get(
+    'DJANGO_EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend'
+)

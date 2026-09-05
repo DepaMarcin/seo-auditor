@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -7,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 from django.conf import settings
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +49,33 @@ class PageSpeedService:
             return {strategy: future.result() for strategy, future in futures.items()}
 
     def analyze(self, url: str, strategy: str = "mobile") -> dict:
-        """Odpytuje PageSpeed Insights i zwraca ustandaryzowany słownik wyników."""
+        """Odpytuje PageSpeed Insights i zwraca ustandaryzowany słownik wyników.
+
+        Udany wynik jest cache'owany (domyślnie 6 h): to najdroższa operacja całego
+        audytu (do 60 s na strategię), a wydajność strony nie zmienia się z minuty na
+        minutę. Wyniki nieudane (available=False) NIE trafiają do cache, żeby chwilowa
+        awaria PSI nie blokowała poprawnego pomiaru na kolejne godziny.
+        """
         normalized_url = self._normalize_url(url)
+
+        cache_key = self._cache_key(normalized_url, strategy)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            logger.info("PageSpeed: wynik z cache (strategia: %s) url=%s", strategy, normalized_url)
+            return cached
+
+        result = self._analyze_uncached(normalized_url, strategy)
+        if result.get("available"):
+            cache.set(cache_key, result, getattr(settings, "CACHE_TTL_PAGESPEED", 6 * 3600))
+        return result
+
+    def _cache_key(self, normalized_url: str, strategy: str) -> str:
+        # Hash adresu: URL bywa dłuższy niż limit klucza memcached i może zawierać spacje.
+        digest = hashlib.sha256(normalized_url.encode("utf-8")).hexdigest()[:32]
+        return f"psi:{strategy}:{digest}"
+
+    def _analyze_uncached(self, normalized_url: str, strategy: str) -> dict:
+        url = normalized_url
         params = {"url": normalized_url, "strategy": strategy, "category": "performance"}
         if self.api_key:
             params["key"] = self.api_key

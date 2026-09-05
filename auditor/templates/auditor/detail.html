@@ -14,6 +14,24 @@
         &nbsp;&middot;&nbsp; {{ audit.created_at|date:"Y-m-d H:i" }}
     </p>
 
+    {% if audit_in_progress %}
+    {# Audyt wykonuje się w tle (auditor.tasks) - odpytujemy `auditor:status`
+       i przeładowujemy stronę, gdy zadanie się zakończy. #}
+    <div class="loading-container" id="audit-progress">
+        <div class="loading-header">
+            <span class="spinner"></span>
+            <span>Trwa audyt strony…</span>
+        </div>
+        <div class="progress-track">
+            <div class="progress-bar" id="audit-progress-bar"></div>
+        </div>
+        <p class="loading-status" id="audit-progress-status">
+            Pobieranie kodu HTML, pomiar PageSpeed i generowanie rekomendacji AI. Ta strona
+            odświeży się automatycznie po zakończeniu.
+        </p>
+    </div>
+    {% endif %}
+
     {% if audit.status == "completed" %}
     <h2 class="section-heading" style="margin-top: 1.25rem;">Przegląd</h2>
     <div class="overview-grid">
@@ -46,7 +64,11 @@
         <div class="overview-col overview-preview-col">
             <div class="page-preview-card">
                 <div class="page-preview-frame">
-                    <iframe src="{{ audit.url }}" loading="lazy" sandbox="allow-scripts allow-same-origin" title="Podgląd audytowanej strony"></iframe>
+                    {# sandbox BEZ allow-same-origin: połączenie obu flag pozwala obcej
+                       stronie zdjąć z siebie sandbox, a do samego podglądu wizualnego
+                       dostęp do własnego origin nie jest potrzebny. #}
+                    <iframe src="{{ audit.url }}" loading="lazy" sandbox="allow-scripts"
+                            referrerpolicy="no-referrer" title="Podgląd audytowanej strony"></iframe>
                 </div>
                 <a class="link" href="{{ audit.url }}" target="_blank" rel="noopener">Otwórz stronę ↗</a>
             </div>
@@ -67,10 +89,63 @@
             <div class="stat-label">Zdane testy</div>
         </div>
     </div>
-    {% else %}
+    {% elif not audit_in_progress %}
     <div class="score">{{ audit.score }}<span style="font-size: 1rem; color: var(--muted);">/100</span></div>
     {% endif %}
 </div>
+
+{% if audit_in_progress %}
+<script>
+(function () {
+    var statusUrl = "{% url 'auditor:status' audit.pk %}";
+    var bar = document.getElementById("audit-progress-bar");
+    var statusText = document.getElementById("audit-progress-status");
+    if (!bar) return;
+
+    // Pasek postępu jest szacunkowy - backend nie raportuje etapów, a jedynie stan
+    // końcowy audytu. Asymptotyczne dobijanie do 90% daje wrażenie postępu bez
+    // obiecywania użytkownikowi konkretnego czasu zakończenia.
+    var progress = 5;
+    bar.style.width = progress + "%";
+    var progressTimer = setInterval(function () {
+        progress += (90 - progress) * 0.08 + 0.4;
+        if (progress > 90) progress = 90;
+        bar.style.width = progress + "%";
+    }, 500);
+
+    var failures = 0;
+    var pollTimer = setInterval(function () {
+        fetch(statusUrl, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+            .then(function (response) {
+                if (!response.ok) throw new Error("HTTP " + response.status);
+                return response.json();
+            })
+            .then(function (data) {
+                failures = 0;
+                if (data.finished) {
+                    clearInterval(pollTimer);
+                    clearInterval(progressTimer);
+                    bar.style.width = "100%";
+                    setTimeout(function () { window.location.reload(); }, 400);
+                }
+            })
+            .catch(function () {
+                // Pojedyncze nieudane odpytanie (restart serwera, chwilowa sieć) nie
+                // przerywa oczekiwania - dopiero seria błędów zatrzymuje polling.
+                failures += 1;
+                if (failures >= 5) {
+                    clearInterval(pollTimer);
+                    clearInterval(progressTimer);
+                    if (statusText) {
+                        statusText.textContent =
+                            "Utracono połączenie z serwerem. Odśwież stronę, żeby sprawdzić stan audytu.";
+                    }
+                }
+            });
+    }, 3000);
+})();
+</script>
+{% endif %}
 
 {% if audit.status == "failed" %}
 <div class="panel">

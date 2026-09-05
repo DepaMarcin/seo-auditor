@@ -1,47 +1,108 @@
+"""Widoki aplikacji audytora.
+
+Odpowiadają wyłącznie za obsługę żądania HTTP: autoryzację, walidację wejścia i złożenie
+kontekstu dla szablonu. Logika audytu mieszka w `auditor.services`, a etykiety i
+przekształcenia metryk na struktury dla szablonów - w `auditor.presentation`.
+
+Wszystkie widoki wymagają zalogowania i operują wyłącznie na audytach należących do
+zalogowanego użytkownika (`Audit.owner`) - audyt zawiera dane analityczne firmy (GA4,
+Search Console), więc znajomość samego identyfikatora nie może dawać do nich dostępu.
+"""
+from __future__ import annotations
+
 import json
 import logging
-import re
 from urllib.parse import urlparse
 
 from django.conf import settings
 from django.contrib import messages
-from django.http import HttpRequest, HttpResponse
+from django.contrib.auth.decorators import login_required
+from django.core.cache import cache
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from google_auth_oauthlib.flow import Flow
 
 from .models import Audit, AuditMetric
-from .services.audit_service import SCORE_WEIGHTS, AuditService
+from .presentation import (
+    MERGED_PAGESPEED_SCORE_KEYS,
+    TEAM_BY_CATEGORY,
+    annotate_metric_labels,
+    build_schema_status_table,
+    compute_category_scores,
+    group_technical_accordions,
+    priority_for_metric,
+    score_bucket,
+)
+from .ratelimit import is_rate_limited
 from .services.ga4_service import GA4OAuthService
+from .services.url_guard import UnsafeUrlError, validate_public_url
+from .tasks import enqueue_audit
 
 logger = logging.getLogger(__name__)
 
+# Liczba audytów na liście na stronie głównej.
+RECENT_AUDITS_LIMIT = 10
 
-def index(request):
+
+def _get_owned_audit(request: HttpRequest, pk: int) -> Audit:
+    """Pobiera audyt należący do zalogowanego użytkownika albo zwraca 404.
+
+    Świadomie 404, a nie 403: brak audytu i brak uprawnień muszą wyglądać identycznie,
+    żeby nie dało się przez kod odpowiedzi ustalić, które identyfikatory istnieją.
+    """
+    return get_object_or_404(Audit, pk=pk, owner=request.user)
+
+
+@login_required
+def index(request: HttpRequest) -> HttpResponse:
     if request.method == "POST":
-        url = request.POST.get("url", "").strip()
-        if not url:
-            messages.error(request, "Podaj adres URL do audytu.")
+        if is_rate_limited(request, scope="audit"):
+            messages.error(
+                request,
+                "Przekroczono limit uruchamianych audytów. Spróbuj ponownie za jakiś czas.",
+            )
             return redirect("auditor:index")
 
-        audit = Audit.objects.create(url=url)
-        AuditService().run_audit(audit)
+        try:
+            url = validate_public_url(request.POST.get("url", ""))
+        except UnsafeUrlError as exc:
+            messages.error(request, str(exc))
+            return redirect("auditor:index")
+
+        audit = Audit.objects.create(url=url, owner=request.user)
+        # Audyt trwa minuty (PageSpeed + rekomendacje AI), więc leci w tle - strona
+        # szczegółów odpytuje potem `audit_status` i odświeża się po zakończeniu.
+        enqueue_audit(audit.pk)
         return redirect("auditor:detail", pk=audit.pk)
 
-    audits = Audit.objects.all().order_by("-created_at")[:10]
+    audits = Audit.objects.filter(owner=request.user).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
     return render(request, "auditor/index.html", {"audits": audits})
+
+
+@login_required
+def audit_status(request: HttpRequest, pk: int) -> JsonResponse:
+    """Lekki endpoint JSON dla frontendu: stan audytu wykonywanego w tle."""
+    audit = _get_owned_audit(request, pk)
+    return JsonResponse({
+        "status": audit.status,
+        "status_label": audit.get_status_display(),
+        "score": audit.score,
+        "finished": audit.status in (Audit.Status.COMPLETED, Audit.Status.FAILED),
+    })
 
 
 # ----------------------------------------------------------------------
 # Google Analytics 4 - integracja OAuth 2.0 ("Zaloguj się przez Google")
 # ----------------------------------------------------------------------
 
+@login_required
 def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
     """Inicjuje przepływ OAuth 2.0 z Google dla danego audytu: buduje `Flow` z pliku
     `client_secret.json`, zapisuje w sesji, którego audytu dotyczy autoryzacja
     (`pending_audit_id`) oraz stan CSRF (`ga4_oauth_state`), po czym przekierowuje
     użytkownika na ekran logowania/zgody Google."""
-    audit = get_object_or_404(Audit, pk=pk)
+    audit = _get_owned_audit(request, pk)
 
     try:
         flow = Flow.from_client_secrets_file(
@@ -106,6 +167,16 @@ def _brand_token(url: str) -> str:
     return domain.split(".")[0] if domain else ""
 
 
+def _ga4_properties_cache_key(audit_pk: int) -> str:
+    """Klucz cache listy usług GA4 dla audytu.
+
+    Lista siedzi w cache z własnym TTL, a nie w sesji: sesja rosła bez ograniczeń,
+    bo porzucone przepływy OAuth zostawiały w niej wpisy na stałe.
+    """
+    return f"ga4_properties:{audit_pk}"
+
+
+@login_required
 def ga4_callback(request: HttpRequest) -> HttpResponse:
     """Odbiera kod autoryzacyjny z Google, wymienia go na `credentials` (w tym
     `refresh_token`), zapisuje token w powiązanym `Audit`, pobiera z Google Admin API
@@ -119,7 +190,7 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
         messages.error(request, "Sesja autoryzacji Google wygasła. Spróbuj połączyć konto ponownie.")
         return redirect("auditor:index")
 
-    audit = get_object_or_404(Audit, pk=audit_id)
+    audit = _get_owned_audit(request, audit_id)
 
     try:
         flow = Flow.from_client_secrets_file(
@@ -144,8 +215,9 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
         request.session.pop("code_verifier", None)
 
     if credentials.refresh_token:
+        # Setter właściwości szyfruje wartość, zapisujemy więc realne pole bazy.
         audit.ga4_refresh_token = credentials.refresh_token
-        audit.save(update_fields=["ga4_refresh_token"])
+        audit.save(update_fields=["ga4_refresh_token_encrypted"])
     else:
         logger.warning(
             "Google nie zwróciło refresh_token dla audytu %s - konto mogło już wcześniej wyrazić zgodę.", audit.pk
@@ -164,22 +236,29 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
         )
         return redirect("auditor:detail", pk=audit.pk)
 
-    request.session[f"ga4_properties_{audit.pk}"] = properties
+    cache.set(
+        _ga4_properties_cache_key(audit.pk),
+        properties,
+        getattr(settings, "CACHE_TTL_GA4_PROPERTIES", 3600),
+    )
     messages.success(request, "Połączono z Google. Wybierz teraz usługę Google Analytics 4.")
     return redirect("auditor:select_ga4_property", pk=audit.pk)
 
 
+@login_required
 def select_ga4_property(request: HttpRequest, pk: int) -> HttpResponse:
     """Krok pośredni po autoryzacji Google: prezentuje listę usług (properties) GA4
-    dostępnych dla zalogowanego konta (pobraną w `ga4_callback` i zapisaną w sesji) i
-    pozwala użytkownikowi ręcznie wskazać, która z nich odpowiada audytowanej domenie.
+    dostępnych dla zalogowanego konta (pobraną w `ga4_callback`) i pozwala użytkownikowi
+    ręcznie wskazać, która z nich odpowiada audytowanej domenie.
 
     Po zatwierdzeniu formularza (POST) zapisuje wybrany `ga4_property_id`, odtwarza
     `Credentials` z zapisanego `ga4_refresh_token` i przez `AuditService.sync_ga4_data`
     pobiera oraz zapisuje statystyki ruchu organicznego z GA4.
     """
-    audit = get_object_or_404(Audit, pk=pk)
-    session_key = f"ga4_properties_{audit.pk}"
+    from .services.audit_service import AuditService
+
+    audit = _get_owned_audit(request, pk)
+    cache_key = _ga4_properties_cache_key(audit.pk)
 
     if request.method == "POST":
         property_id = request.POST.get("property_id", "").strip()
@@ -193,17 +272,19 @@ def select_ga4_property(request: HttpRequest, pk: int) -> HttpResponse:
 
         try:
             credentials = _build_credentials_from_refresh_token(audit)
-        except (FileNotFoundError, KeyError):
+        except (FileNotFoundError, KeyError, json.JSONDecodeError):
             logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
             messages.error(request, "Konfiguracja Google Analytics jest niekompletna. Spróbuj połączyć konto ponownie.")
             return redirect("auditor:detail", pk=audit.pk)
 
         AuditService().sync_ga4_data(audit, credentials, property_id)
-        request.session.pop(session_key, None)
+        cache.delete(cache_key)
+        # Świeże dane GA4/GSC unieważniają zbuforowaną listę zdarzeń tej usługi.
+        cache.delete(f"ga4_events:{property_id}")
         messages.success(request, "Wybrano usługę GA4 i pobrano dane o ruchu organicznym.")
         return redirect("auditor:detail", pk=audit.pk)
 
-    properties = request.session.get(session_key, [])
+    properties = cache.get(cache_key) or []
     if not properties:
         messages.error(request, "Lista usług GA4 wygasła. Połącz konto Google ponownie.")
         return redirect("auditor:detail", pk=audit.pk)
@@ -224,299 +305,12 @@ def select_ga4_property(request: HttpRequest, pk: int) -> HttpResponse:
     )
 
 
-STRATEGY_LABELS = {"mobile": "📱 ", "desktop": "🖥️ "}
-
-# Czytelne etykiety kategorii - używane w tabeli "Problemy i rekomendacje" oraz w PDF.
-CATEGORY_LABELS = {
-    "seo": "Meta Tagi",
-    "technical": "SEO Techniczne",
-    "performance": "Szybkość strony",
-    "structure": "Schema.org / GEO",
-}
-
-# Etykiety i kolejność kategorii na paskach postępu w panelu "Przegląd".
-OVERVIEW_CATEGORY_ORDER = [
-    ("seo", "SEO On-Page"),
-    ("technical", "SEO Techniczne"),
-    ("performance", "Szybkość i Wydajność"),
-    ("structure", "Dane Strukturalne & LLM"),
-]
-
-# Wyodrębnia bloki kodu ```...``` (opcjonalnie z nazwą języka) z tekstu rekomendacji AI.
-_CODE_FENCE_RE = re.compile(r"```[a-zA-Z]*\n?(.*?)```", re.DOTALL)
-
-# Ikony kategorii wyświetlane w nagłówku karty metryki.
-CATEGORY_ICONS = {
-    "seo": "🏷️",
-    "technical": "⚙️",
-    "performance": "⚡",
-    "structure": "🧬",
-}
-
-# Krótkie, biznesowe wyjaśnienia metryk ("Co to jest?") wyświetlane na kartach metryk -
-# tłumaczą nietechnicznemu odbiorcy, czym jest dana metryka i dlaczego ma znaczenie dla SEO.
-METRIC_DEFINITIONS = {
-    "title": "Znacznik <title> to tytuł strony widoczny w wynikach wyszukiwania Google oraz na karcie przeglądarki. To jeden z najważniejszych sygnałów SEO — musi być unikalny, zawierać słowa kluczowe i mieścić się w limicie ok. 60-65 znaków, by nie zostać obcięty.",
-    "meta_description": "Meta opis to krótki fragment tekstu wyświetlany pod tytułem strony w wynikach wyszukiwania. Nie wpływa bezpośrednio na ranking, ale decyduje o tym, czy użytkownik kliknie w wynik (CTR) — dobrze napisany opis realnie zwiększa liczbę odwiedzin.",
-    "h1_structure": "Nagłówek H1 to główny tytuł treści na stronie, informujący zarówno użytkownika, jak i roboty wyszukiwarek, czego dotyczy dana podstrona. Strona powinna mieć dokładnie jeden H1, spójny tematycznie z tytułem i treścią.",
-    "canonical": "Znacznik canonical wskazuje wyszukiwarce, która wersja adresu URL jest tą \"oryginalną\", gdy ta sama treść dostępna jest pod wieloma adresami. Brak lub błędny canonical może prowadzić do rozproszenia mocy SEO między duplikaty i problemów z indeksacją.",
-    "open_graph": "Znaczniki Open Graph (og:title, og:description, og:image) kontrolują, jak strona wygląda po udostępnieniu w mediach społecznościowych (Facebook, LinkedIn). Ich brak sprawia, że udostępniony link wygląda nieprofesjonalnie i zniechęca do kliknięcia.",
-    "images_alt": "Atrybut ALT to tekstowy opis obrazka, odczytywany przez czytniki ekranu i roboty wyszukiwarek, które nie \"widzą\" grafik. Brak atrybutu ALT na zdjęciach treściowych to problem dostępności (accessibility) oraz utracona szansa na ruch z wyszukiwania grafiki.",
-    "schema_page_type": "Dane strukturalne Schema.org (JSON-LD) informują wyszukiwarki i modele AI, jakim typem treści jest strona (np. Artykuł, Produkt, Firma lokalna). Poprawnie oznaczony typ strony zwiększa szansę na bogate wyniki wyszukiwania (rich snippets) i widoczność w AI Overviews.",
-    "schema_breadcrumbs": "Znacznik BreadcrumbList opisuje ścieżkę nawigacyjną strony (np. Strona główna > Kategoria > Produkt) w formacie zrozumiałym dla wyszukiwarek. Umożliwia wyświetlenie czytelnej okruszkowej nawigacji bezpośrednio w wynikach Google zamiast surowego adresu URL.",
-    "schema_faq": "Znacznik FAQPage pozwala oznaczyć sekcję pytań i odpowiedzi na stronie tak, by wyszukiwarka mogła wyświetlić je bezpośrednio w wynikach wyszukiwania jako rozwijaną listę. To zwiększa zajmowaną powierzchnię w SERP i poprawia widoczność w wynikach generowanych przez AI.",
-    "heading_order": "Poprawna hierarchia nagłówków (H1 → H2 → H3, bez przeskakiwania poziomów) pomaga zarówno użytkownikom, jak i robotom wyszukiwarek zrozumieć strukturę logiczną treści. Chaotyczna kolejność nagłówków utrudnia indeksację i obniża czytelność strony.",
-    "heading_noise": "Nagłówki powinny zawierać rzeczywistą treść merytoryczną, a nie elementy interfejsu (np. \"Menu\", \"Szukaj\", \"Kliknij tutaj\"). Nadużywanie znaczników nagłówkowych do celów wizualnych rozmywa sygnał tematyczny strony dla wyszukiwarek.",
-    "image_quality": "Metryka ocenia techniczną jakość obrazków na stronie (m.in. wagę plików i format). Zbyt duże, nieoptymalne grafiki spowalniają wczytywanie strony, co bezpośrednio pogarsza wskaźniki Core Web Vitals i doświadczenie użytkownika.",
-    "eeat_authorship": "Sygnały E-E-A-T (Experience, Expertise, Authoritativeness, Trustworthiness) to elementy budujące wiarygodność treści w oczach Google, takie jak widoczna informacja o autorze. Ich obecność jest szczególnie istotna dla treści eksperckich (YMYL) oraz widoczności w wynikach generowanych przez AI.",
-    "eeat_freshness": "Data publikacji lub ostatniej aktualizacji treści to sygnał świeżości, który wyszukiwarki biorą pod uwagę przy ocenie aktualności i wiarygodności strony. Jej brak utrudnia ocenę, czy treść nadal odzwierciedla aktualny stan wiedzy.",
-    "pagespeed_score": "Ogólny wynik PageSpeed (0-100) to zbiorcza ocena wydajności strony wystawiana przez Google na podstawie kluczowych wskaźników ładowania i interaktywności. Wyższy wynik przekłada się na lepsze wrażenia użytkownika i jest jednym z sygnałów rankingowych Google.",
-    "lcp": "LCP (Largest Contentful Paint) mierzy czas, po którym największy widoczny element strony (np. baner, nagłówek) w pełni się wyrenderuje. To kluczowy wskaźnik postrzeganej szybkości ładowania — powinien wynosić poniżej 2,5 sekundy.",
-    "cls": "CLS (Cumulative Layout Shift) mierzy, jak bardzo elementy strony \"skaczą\" podczas ładowania (np. przez obrazki bez zarezerwowanego miejsca). Wysoki CLS frustruje użytkowników i jest karany przez Google jako zły sygnał doświadczenia strony.",
-    "fcp": "FCP (First Contentful Paint) mierzy czas, po którym na ekranie pojawia się pierwszy element treści (tekst, obraz). Krótszy czas FCP oznacza, że użytkownik szybciej widzi oznaki ładowania się strony, zamiast pustego ekranu.",
-    "inp": "INP (Interaction to Next Paint) mierzy responsywność strony na działania użytkownika (np. kliknięcie przycisku) przez cały czas wizyty. Wysoki INP oznacza, że interfejs \"zawiesza się\" lub reaguje z opóźnieniem, co pogarsza doświadczenie użytkownika.",
-    "meta_keywords": "Znacznik <meta name=\"keywords\"> był używany przez wyszukiwarki 20 lat temu - dziś Google go całkowicie ignoruje przy rankingu, a jego obecność jedynie niepotrzebnie ujawnia konkurencji listę słów kluczowych, na które celuje strona.",
-    "internal_linking": "Linki wewnętrzne (prowadzące do innych podstron tej samej witryny) pomagają robotom wyszukiwarek odkrywać i rozumieć hierarchię treści serwisu, a użytkownikom - poruszać się po nim. Zbyt mało linków wewnętrznych utrudnia indeksację głębszych podstron.",
-    "javascript_rendering": "Część silników JavaScript (React, Vue, Angular) generuje treść strony dopiero w przeglądarce (CSR - Client-Side Rendering). Jeśli surowy HTML nie zawiera realnej treści, część robotów wyszukiwarek i modeli LLM, które nie wykonują JS, zobaczy pustą stronę.",
-    "redirect_chain": "Przekierowania 301/302 kierują użytkownika i roboty z jednego adresu URL na inny (np. z http na https). Zbyt długi łańcuch kolejnych przekierowań spowalnia ładowanie strony i marnuje tzw. \"budżet indeksowania\" (crawl budget) wyszukiwarki.",
-    "robots_txt": "Plik /robots.txt informuje roboty wyszukiwarek, które fragmenty witryny mogą, a których nie powinny odwiedzać. Błędna konfiguracja (np. zablokowanie całej witryny) może całkowicie wyłączyć stronę z indeksu Google.",
-    "http_errors": "Gdy użytkownik lub robot trafi na nieistniejący adres, serwer powinien zwrócić kod HTTP 404 (\"nie znaleziono\"). Zwracanie w takiej sytuacji kodu 200 (tzw. \"miękkie 404\") myli roboty wyszukiwarek co do tego, które adresy naprawdę istnieją.",
-    "image_compression": "Zbyt ciężkie pliki graficzne (powyżej ok. 100 KB) wydłużają czas ładowania strony, co bezpośrednio pogarsza wskaźniki Core Web Vitals (zwłaszcza LCP) oraz doświadczenie użytkownika na wolniejszych połączeniach mobilnych.",
-    "ssl_certificate": "Certyfikat SSL (protokół HTTPS) szyfruje połączenie między przeglądarką a serwerem. Jego brak jest oznaczany przez przeglądarki jako \"niebezpieczne\", odstrasza użytkowników i jest sygnałem rankingowym branym pod uwagę przez Google.",
-}
-
-# "Oficjalne" nazwy testów zgodne ze standardem pełnego Audytu SEO (AI Ready) -
-# nadpisują domyślną, automatycznie generowaną etykietę metryki (patrz
-# `_annotate_metric_labels`). Kilka technicznych kluczy dzieli tę samą oficjalną
-# nazwę, gdy audyt opisuje je jako jeden łączny test.
-OFFICIAL_TEST_NAMES = {
-    "heading_order": "Struktura nagłówków Hx i oczyszczenie z szumu nawigacyjnego",
-    "heading_noise": "Struktura nagłówków Hx i oczyszczenie z szumu nawigacyjnego",
-    "title": "Optymalizacja znaczników Title i Description",
-    "meta_description": "Optymalizacja znaczników Title i Description",
-    "meta_keywords": "Weryfikacja obecności zbędnych Meta Keywords",
-    "images_alt": "Atrybuty ALT oraz tytuły plików graficznych",
-    "image_quality": "Atrybuty ALT oraz tytuły plików graficznych",
-    "image_compression": "Wielkość i kompresja plików graficznych (>100KB)",
-    "eeat_authorship": "Weryfikacja semantyki treści i zgodności z EEAT+ (Autor, Live Update Badge)",
-    "eeat_freshness": "Weryfikacja semantyki treści i zgodności z EEAT+ (Autor, Live Update Badge)",
-    "schema_page_type": "Dane strukturalne Schema.org (Organization, Course, School, FAQPage)",
-    "schema_breadcrumbs": "Dane strukturalne Schema.org (Organization, Course, School, FAQPage)",
-    "schema_faq": "Dane strukturalne Schema.org (Organization, Course, School, FAQPage)",
-    "javascript_rendering": "Renderowanie treści JavaScript (SSR vs CSR) w kontekście AI/LLM",
-    "internal_linking": "Linkowanie wewnętrzne i architektura nawigacji",
-    "http_errors": "Obsługa błędów 4xx/5xx i dedykowana strona 404",
-    "lcp": "Wskaźniki Core Web Vitals i szybkość ładowania (LCP, CLS)",
-    "cls": "Wskaźniki Core Web Vitals i szybkość ładowania (LCP, CLS)",
-}
-
-# ----------------------------------------------------------------------
-# Dedykowana tabela statusów Schema.org (zakładka Audyt Techniczny, akordeon
-# "Dane Strukturalne") - wyciągnięta z ogólnej listy testów, patrz
-# `_build_schema_status_table`.
-# ----------------------------------------------------------------------
-SCHEMA_STATUS_ICONS = {"detected": "🟢", "recommended": "🟡", "not_applicable": "⚪"}
-SCHEMA_STATUS_LABELS = {
-    "detected": "Wykryto",
-    "recommended": "Brak (Rekomendowane)",
-    "not_applicable": "Nie dotyczy",
-}
-
-# (zbiór typów Schema.org, nazwa wyświetlana, opis, zbiór page_type dla których jest
-# rekomendowany | None = zawsze rekomendowany | "faq" = zależnie od wykrycia sekcji FAQ).
-SCHEMA_TABLE_DEFINITIONS = [
-    ({"Organization", "LocalBusiness"}, "Organization / LocalBusiness", "Dane firmowe i kontaktowe", {"homepage"}),
-    ({"WebPage"}, "WebPage", "Kontekst podstrony", None),
-    ({"BreadcrumbList"}, "BreadcrumbList", "Nawigacja okruszkowa", {"product", "article", "category", "generic"}),
-    ({"Course"}, "Course", "Podstrony kursów i grup wiekowych", set()),
-    ({"School"}, "School", "Podstrony placówek i filii lokalnych", set()),
-    ({"FAQPage"}, "FAQPage", "Sekcje pytań i odpowiedzi", "faq"),
-    ({"Article", "BlogPosting"}, "Article", "Wpisy blogowe", {"article"}),
-]
-
-
-def _build_schema_status_table(metrics):
-    """Buduje dedykowaną tabelę statusów Schema.org (SCHEMA_TABLE_DEFINITIONS) na
-    podstawie danych już zebranych w metrykach `schema_page_type`/`schema_faq` -
-    bez ponownego odpytywania strony. Każdy typ dostaje jeden z trzech statusów:
-    "detected" (wykryto), "recommended" (brak, ale rekomendowany dla tego typu
-    podstrony) albo "not_applicable" (nie dotyczy tej podstrony)."""
-    schema_metric = next((m for m in metrics if m.short_key == "schema_page_type"), None)
-    faq_metric = next((m for m in metrics if m.short_key == "schema_faq"), None)
-
-    types_found = set(schema_metric.value.get("types_found", [])) if schema_metric else set()
-    page_type = schema_metric.value.get("page_type", "generic") if schema_metric else "generic"
-    faq_detected = bool(faq_metric.value.get("faq_detected")) if faq_metric else False
-
-    rows = []
-    for type_names, display_name, description, applicability in SCHEMA_TABLE_DEFINITIONS:
-        if type_names & types_found:
-            status = "detected"
-        elif applicability == "faq":
-            status = "recommended" if faq_detected else "not_applicable"
-        elif applicability is None or (applicability and page_type in applicability):
-            status = "recommended"
-        else:
-            status = "not_applicable"
-
-        rows.append({
-            "name": display_name,
-            "description": description,
-            "status": status,
-            "status_icon": SCHEMA_STATUS_ICONS[status],
-            "status_label": SCHEMA_STATUS_LABELS[status],
-        })
-    return rows
-
-
-# ----------------------------------------------------------------------
-# Grupowanie testów w 4 akordeony zakładki "Audyt Techniczny" (detail.html).
-# Klucze Schema.org (schema_page_type/schema_breadcrumbs/schema_faq) są celowo
-# wyłączone z tego grupowania - mają własną, dedykowaną tabelę (patrz wyżej).
-# ----------------------------------------------------------------------
-SCHEMA_METRIC_KEYS = {"schema_page_type", "schema_breadcrumbs", "schema_faq"}
-
-TECHNICAL_ACCORDIONS = [
-    (
-        "indexing",
-        "🌐 Indeksacja, Renderowanie & Nawigacja",
-        {"javascript_rendering", "robots_txt", "canonical", "redirect_chain", "internal_linking", "http_errors"},
-    ),
-    (
-        "content",
-        "✍️ Meta Tagi, Treść & EEAT+",
-        {
-            "title", "meta_description", "meta_keywords", "open_graph", "h1_structure",
-            "heading_order", "heading_noise", "eeat_authorship", "eeat_freshness",
-        },
-    ),
-    (
-        "images_performance",
-        "⚡ Obrazy, Wydajność & Bezpieczeństwo",
-        {"images_alt", "image_quality", "image_compression", "ssl_certificate",
-         "pagespeed_score", "lcp", "cls", "fcp", "inp"},
-    ),
-]
-
-
-STATUS_SORT_PRIORITY = {
-    AuditMetric.MetricStatus.ERROR: 0,
-    AuditMetric.MetricStatus.WARNING: 1,
-    AuditMetric.MetricStatus.OK: 2,
-    AuditMetric.MetricStatus.INFO: 2,
-}
-
-
-def _group_technical_accordions(metrics):
-    """Grupuje metryki (poza Schema.org) w 4 tematyczne akordeony zakładki "Audyt
-    Techniczny" wg tematu, a w obrębie każdego akordeonu sortuje je wg priorytetu
-    statusu - błędy i ostrzeżenia (wymagające uwagi) na górze, zdane/opcjonalne
-    testy na dole (patrz STATUS_SORT_PRIORITY) - żeby najważniejsze problemy były
-    widoczne bez przewijania."""
-    groups = {group_id: [] for group_id, _, _ in TECHNICAL_ACCORDIONS}
-    for metric in metrics:
-        if metric.short_key in SCHEMA_METRIC_KEYS:
-            continue
-        for group_id, _, keys in TECHNICAL_ACCORDIONS:
-            if metric.short_key in keys:
-                groups[group_id].append(metric)
-                break
-    return [
-        {
-            "id": group_id,
-            "label": label,
-            "metrics": sorted(groups[group_id], key=lambda m: STATUS_SORT_PRIORITY.get(m.status, 3)),
-        }
-        for group_id, label, _ in TECHNICAL_ACCORDIONS
-    ]
-
-
-def _split_recommendation_segments(recommendation):
-    """Dzieli tekst rekomendacji AI na segmenty tekstowe i bloki kodu (```...```),
-    żeby móc wyrenderować kod w podświetlanej ramce z przyciskiem "Kopiuj"."""
-    if not recommendation:
-        return []
-
-    segments = []
-    last_end = 0
-    for match in _CODE_FENCE_RE.finditer(recommendation):
-        if match.start() > last_end:
-            text = recommendation[last_end:match.start()].strip()
-            if text:
-                segments.append({"type": "text", "content": text})
-        code = match.group(1).strip()
-        if code:
-            segments.append({"type": "code", "content": code})
-        last_end = match.end()
-
-    remaining = recommendation[last_end:].strip()
-    if remaining:
-        segments.append({"type": "text", "content": remaining})
-
-    if not segments and recommendation.strip():
-        segments.append({"type": "text", "content": recommendation.strip()})
-
-    return segments
-
-
-def _annotate_metric_labels(metrics):
-    """Dolicza do każdej metryki `short_key` (klucz bez przedrostka strategii),
-    `display_key` (czytelna etykieta), `category_label` oraz `recommendation_segments`
-    (rekomendacja AI podzielona na tekst/bloki kodu do prezentacji w raporcie)."""
-    for metric in metrics:
-        short_key = metric.key
-        strategy_emoji = ""
-        for strategy, emoji in STRATEGY_LABELS.items():
-            prefix = f"{strategy}_"
-            if metric.key.startswith(prefix):
-                short_key = metric.key[len(prefix):]
-                strategy_emoji = emoji
-                break
-        metric.short_key = short_key
-        label = metric.value.get("label") if isinstance(metric.value, dict) else None
-        official_name = OFFICIAL_TEST_NAMES.get(short_key)
-        metric.display_key = f"{strategy_emoji}{official_name or label or short_key.replace('_', ' ')}"
-        metric.category_label = CATEGORY_LABELS.get(metric.category, metric.category)
-        metric.category_icon = CATEGORY_ICONS.get(metric.category, "🔎")
-        metric.definition = METRIC_DEFINITIONS.get(short_key, "")
-
-        recommendation = metric.value.get("recommendation") if isinstance(metric.value, dict) else None
-        metric.recommendation_segments = _split_recommendation_segments(recommendation)
-    return metrics
-
-
-# Metryki score per urządzenie zastąpione są w podsumowaniu (Priorytety/Ostrzeżenia)
-# jedną zbiorczą metryką "pagespeed_score" - nie pokazujemy ich tam osobno.
-MERGED_PAGESPEED_SCORE_KEYS = {"mobile_pagespeed_score", "desktop_pagespeed_score"}
-
-
-def _compute_category_scores(audit):
-    """Liczy % wyniku dla każdej z 4 kategorii (do pasków postępu w panelu "Przegląd"),
-    tą samą metodą co ogólny wynik audytu (średnia ważona statusów ok/warning/error)."""
-    results = []
-    for category, label in OVERVIEW_CATEGORY_ORDER:
-        category_metrics = list(audit.metrics.filter(category=category))
-        if category_metrics:
-            total = sum(SCORE_WEIGHTS[m.status] for m in category_metrics)
-            score = round(total / len(category_metrics))
-        else:
-            score = 0
-        results.append({"label": label, "score": score})
-    return results
-
-
-def _score_bucket(score):
-    if score >= 80:
-        return "ok"
-    if score >= 50:
-        return "warning"
-    return "error"
-
-
 def _handle_ga4_lead_event_selection(request: HttpRequest, audit: Audit) -> None:
     """Zapisuje wybrane przez użytkownika zdarzenie lead/konwersja GA4 i odświeża
     pełną analitykę (dane wielokanałowe + automatyczne wnioski SEO) - wywoływane z
     formularza POST w `audit_detail`. Pusty wybór czyści `ga4_selected_lead_event`."""
+    from .services.audit_service import AuditService
+
     event_name = request.POST.get("ga4_selected_lead_event", "").strip()
 
     if not audit.ga4_refresh_token or not audit.ga4_property_id:
@@ -525,7 +319,7 @@ def _handle_ga4_lead_event_selection(request: HttpRequest, audit: Audit) -> None
 
     try:
         credentials = _build_credentials_from_refresh_token(audit)
-    except (FileNotFoundError, KeyError):
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
         logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
         messages.error(request, "Sesja Google wygasła. Połącz konto ponownie.")
         return
@@ -534,14 +328,45 @@ def _handle_ga4_lead_event_selection(request: HttpRequest, audit: Audit) -> None
     messages.success(request, "Zaktualizowano analitykę GA4.")
 
 
-def audit_detail(request, pk):
-    audit = get_object_or_404(Audit, pk=pk)
+def _fetch_ga4_available_events(audit: Audit) -> list[str]:
+    """Lista zdarzeń GA4 do formularza wyboru leadu/konwersji.
+
+    Wynik jest cache'owany: wcześniej każde wyświetlenie strony szczegółów oznaczało
+    zapytanie do GA4 o 90 dni danych, co dokładało kilkaset milisekund do renderu i
+    zużywało dzienną quotę przy zwykłym przeglądaniu raportu. Błąd (np. wygasły token)
+    nie blokuje reszty strony - formularz po prostu nie pokaże wtedy żadnych opcji.
+    """
+    if not (audit.ga4_refresh_token and audit.ga4_property_id):
+        return []
+
+    cache_key = f"ga4_events:{audit.ga4_property_id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    events: list[str] = []
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+        events = GA4OAuthService().get_available_events(credentials, audit.ga4_property_id)
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s (lista zdarzeń GA4).", audit.pk)
+
+    # Pustą listę też zapisujemy, ale na krócej - żeby błąd API nie powodował
+    # odpytywania Google przy każdym odświeżeniu strony.
+    ttl = getattr(settings, "CACHE_TTL_GA4_EVENTS", 6 * 3600) if events else 300
+    cache.set(cache_key, events, ttl)
+    return events
+
+
+@login_required
+def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
+    audit = _get_owned_audit(request, pk)
 
     if request.method == "POST" and "ga4_selected_lead_event" in request.POST:
         _handle_ga4_lead_event_selection(request, audit)
         return redirect("auditor:detail", pk=audit.pk)
 
-    all_metrics = _annotate_metric_labels(list(audit.metrics.all()))
+    all_metrics = annotate_metric_labels(list(audit.metrics.all()))
 
     # W podsumowaniu pomijamy osobne metryki score per urządzenie - reprezentuje je
     # jedna zbiorcza metryka "pagespeed_score".
@@ -563,31 +388,16 @@ def audit_detail(request, pk):
         "total_count": len(summary_metrics),
     }
 
-    # Zakładka "Audyt Techniczny": 4 tematyczne akordeony (Progressive Disclosure) +
-    # dedykowana tabela statusów Schema.org, budowane z tych samych summary_metrics.
-    technical_accordions = _group_technical_accordions(summary_metrics)
-    schema_status_table = _build_schema_status_table(summary_metrics)
-
-    # Lista zdarzeń GA4 do formularza wyboru leadu/konwersji - pobierana na żywo tylko
-    # gdy usługa jest już połączona; błąd (np. wygasły token) nie blokuje reszty strony,
-    # formularz wyboru zdarzenia po prostu wtedy nie pokaże żadnych opcji.
-    ga4_available_events: list[str] = []
-    if audit.ga4_refresh_token and audit.ga4_property_id:
-        try:
-            credentials = _build_credentials_from_refresh_token(audit)
-            ga4_available_events = GA4OAuthService().get_available_events(credentials, audit.ga4_property_id)
-        except (FileNotFoundError, KeyError):
-            logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s (lista zdarzeń GA4).", audit.pk)
-
     # Zbiorcza flaga: czy na stronie w ogóle trzeba wczytać Chart.js (Senuto i/lub GA4
     # mają jakiekolwiek dane do narysowania). Liczona tutaj, a nie jako złożony warunek
     # and/or w szablonie, żeby uniknąć pomyłek z precedencją operatorów w templatce.
     ga4_lead_insights = audit.ga4_insights.get("lead_insights") or {}
+    has_ga4 = bool(audit.ga4_refresh_token)
     show_charts_js = bool(
         audit.senuto_history.get("dates")
-        or (audit.ga4_refresh_token and audit.ga4_history.get("dates"))
-        or (audit.ga4_refresh_token and audit.ga4_channels_history.get("months"))
-        or (audit.ga4_refresh_token and ga4_lead_insights.get("history", {}).get("months"))
+        or (has_ga4 and audit.ga4_history.get("dates"))
+        or (has_ga4 and audit.ga4_channels_history.get("months"))
+        or (has_ga4 and ga4_lead_insights.get("history", {}).get("months"))
     )
 
     return render(
@@ -600,56 +410,32 @@ def audit_detail(request, pk):
             "passed_tests": passed_tests,
             "info_tests": info_tests,
             "stats": stats,
-            "technical_accordions": technical_accordions,
-            "schema_status_table": schema_status_table,
-            "category_scores": _compute_category_scores(audit) if audit.status == "completed" else [],
-            "score_bucket": _score_bucket(audit.score),
-            "ga4_available_events": ga4_available_events,
+            # Zakładka "Audyt Techniczny": 4 tematyczne akordeony (Progressive Disclosure)
+            # + dedykowana tabela statusów Schema.org, budowane z tych samych metryk.
+            "technical_accordions": group_technical_accordions(summary_metrics),
+            "schema_status_table": build_schema_status_table(summary_metrics),
+            "category_scores": compute_category_scores(all_metrics) if audit.status == "completed" else [],
+            "score_bucket": score_bucket(audit.score),
+            "ga4_available_events": _fetch_ga4_available_events(audit),
             "ga4_lead_insights": ga4_lead_insights,
             "show_charts_js": show_charts_js,
+            "audit_in_progress": audit.status in (Audit.Status.PENDING, Audit.Status.PROCESSING),
         },
     )
 
 
-# ----------------------------------------------------------------------
-# Generator drukowalnego raportu PDF (auditor:download_pdf_report)
-# ----------------------------------------------------------------------
-
-# Zespół odpowiedzialny za wdrożenie poprawki, wg kategorii metryki.
-TEAM_BY_CATEGORY = {
-    "seo": "SEO",
-    "technical": "IT",
-    "performance": "IT",
-    "structure": "IT",
-}
-
-# Bazowy priorytet (1-10) wg statusu oraz dodatkowy "boost" wg kategorii -
-# wydajność i dane strukturalne mają największy wpływ na widoczność w Google/LLM,
-# więc przy tym samym statusie trafiają wyżej na liście wdrożeniowej.
-PRIORITY_BASE_BY_STATUS = {
-    AuditMetric.MetricStatus.ERROR: 7,
-    AuditMetric.MetricStatus.WARNING: 4,
-}
-PRIORITY_BOOST_BY_CATEGORY = {"performance": 3, "structure": 2, "seo": 1, "technical": 1}
-
-
-def _priority_for_metric(metric):
-    base = PRIORITY_BASE_BY_STATUS.get(metric.status, 3)
-    boost = PRIORITY_BOOST_BY_CATEGORY.get(metric.category, 0)
-    return min(10, base + boost)
-
-
-def download_pdf_report(request, audit_id):
+@login_required
+def download_pdf_report(request: HttpRequest, audit_id: int) -> HttpResponse:
     """Generuje drukowalny (HTML -> Zapisz jako PDF w przeglądarce) raport z audytu,
     w formalnym układzie agencyjnym: okładka, spis treści, tabela priorytetów
     wdrożeniowych oraz rozdziały tematyczne."""
-    audit = get_object_or_404(Audit, pk=audit_id)
+    audit = _get_owned_audit(request, audit_id)
 
     if audit.status != Audit.Status.COMPLETED:
         messages.error(request, "Raport PDF jest dostępny wyłącznie dla zakończonych audytów.")
         return redirect("auditor:detail", pk=audit.pk)
 
-    all_metrics = _annotate_metric_labels(list(audit.metrics.all()))
+    all_metrics = annotate_metric_labels(list(audit.metrics.all()))
     summary_metrics = [m for m in all_metrics if m.key not in MERGED_PAGESPEED_SCORE_KEYS]
 
     priority_findings = [
@@ -657,7 +443,7 @@ def download_pdf_report(request, audit_id):
         if m.status in (AuditMetric.MetricStatus.ERROR, AuditMetric.MetricStatus.WARNING)
     ]
     for metric in priority_findings:
-        metric.priority = _priority_for_metric(metric)
+        metric.priority = priority_for_metric(metric)
         metric.team = TEAM_BY_CATEGORY.get(metric.category, "IT")
     priority_findings.sort(key=lambda m: m.priority, reverse=True)
 
@@ -673,8 +459,8 @@ def download_pdf_report(request, audit_id):
         {
             "audit": audit,
             "generated_at": timezone.now(),
-            "category_scores": _compute_category_scores(audit),
-            "score_bucket": _score_bucket(audit.score),
+            "category_scores": compute_category_scores(all_metrics),
+            "score_bucket": score_bucket(audit.score),
             "stats": stats,
             "priority_findings": priority_findings,
             # Rozdział 1: Analiza Techniczna (technical + performance).

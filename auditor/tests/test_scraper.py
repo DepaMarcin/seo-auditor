@@ -11,6 +11,7 @@ import httpx
 from django.test import SimpleTestCase
 
 from auditor.services.scraper import ScraperError, SEOScraper
+from auditor.services.url_guard import UnsafeUrlError
 
 
 def _fake_response(status_code: int, text: str = "", url: str = "https://example.com") -> httpx.Response:
@@ -18,47 +19,73 @@ def _fake_response(status_code: int, text: str = "", url: str = "https://example
     return httpx.Response(status_code, request=request, text=text)
 
 
+def _fake_redirect(url: str, location: str, status_code: int = 301) -> httpx.Response:
+    """Odpowiedź przekierowująca z ustawionym `next_request`.
+
+    Przy `follow_redirects=False` to httpx wypełnia `response.next_request` kolejnym
+    żądaniem (patrz `_send_handling_redirects`) - atrapa musi to odwzorować, bo scraper
+    właśnie stamtąd bierze adres następnego skoku do walidacji.
+    """
+    response = httpx.Response(
+        status_code, request=httpx.Request("GET", url), headers={"location": location}
+    )
+    response.next_request = httpx.Request("GET", location)
+    return response
+
+
 class SEOScraperFetchTests(SimpleTestCase):
-    """Pobieranie strony: sukces (200) oraz awarie (timeout / HTTP 500)."""
+    """Pobieranie strony: sukces (200), awarie (timeout / HTTP 500) oraz obsługa
+    przekierowań, które od czasu wdrożenia ochrony przed SSRF są wykonywane ręcznie
+    (każdy skok przechodzi `validate_public_url`).
+
+    `validate_public_url` jest tu podmieniane, bo wykonuje odpytanie DNS - te testy
+    sprawdzają zachowanie samego pobierania, a nie walidatora (ten ma własny zestaw
+    testów w `test_url_guard.py`).
+    """
 
     def setUp(self):
         self.scraper = SEOScraper()
+        guard_patcher = patch(
+            "auditor.services.scraper.validate_public_url", side_effect=lambda url: url
+        )
+        self.mock_guard = guard_patcher.start()
+        self.addCleanup(guard_patcher.stop)
 
-    @patch("auditor.services.scraper.httpx.get")
-    def test_fetch_success_returns_html(self, mock_get):
-        mock_get.return_value = _fake_response(200, text="<html><body>OK</body></html>")
+        client_patcher = patch("auditor.services.scraper.httpx.Client")
+        self.mock_client_cls = client_patcher.start()
+        self.addCleanup(client_patcher.stop)
+        self.mock_client = self.mock_client_cls.return_value.__enter__.return_value
+
+    def test_fetch_success_returns_html(self):
+        self.mock_client.get.return_value = _fake_response(200, text="<html><body>OK</body></html>")
 
         html = self.scraper.fetch("https://example.com")
 
         self.assertEqual(html, "<html><body>OK</body></html>")
-        mock_get.assert_called_once()
+        self.mock_client.get.assert_called_once_with("https://example.com")
 
-    @patch("auditor.services.scraper.httpx.get")
-    def test_fetch_timeout_raises_scraper_error(self, mock_get):
-        mock_get.side_effect = httpx.ReadTimeout(
+    def test_fetch_timeout_raises_scraper_error(self):
+        self.mock_client.get.side_effect = httpx.ReadTimeout(
             "Timed out", request=httpx.Request("GET", "https://example.com")
         )
 
         with self.assertRaises(ScraperError):
             self.scraper.fetch("https://example.com")
 
-    @patch("auditor.services.scraper.httpx.get")
-    def test_fetch_http_500_raises_scraper_error(self, mock_get):
-        mock_get.return_value = _fake_response(500, text="Internal Server Error")
+    def test_fetch_http_500_raises_scraper_error(self):
+        self.mock_client.get.return_value = _fake_response(500, text="Internal Server Error")
 
         with self.assertRaises(ScraperError):
             self.scraper.fetch("https://example.com")
 
-    @patch("auditor.services.scraper.httpx.get")
-    def test_fetch_connection_error_raises_scraper_error(self, mock_get):
-        mock_get.side_effect = httpx.ConnectError("Connection refused")
+    def test_fetch_connection_error_raises_scraper_error(self):
+        self.mock_client.get.side_effect = httpx.ConnectError("Connection refused")
 
         with self.assertRaises(ScraperError):
             self.scraper.fetch("https://example.com")
 
-    @patch("auditor.services.scraper.httpx.get")
-    def test_scrape_normalizes_scheme_less_url_and_parses(self, mock_get):
-        mock_get.return_value = _fake_response(
+    def test_scrape_normalizes_scheme_less_url_and_parses(self):
+        self.mock_client.get.return_value = _fake_response(
             200, text="<html><head><title>Test</title></head><body><h1>H1</h1></body></html>"
         )
 
@@ -66,8 +93,32 @@ class SEOScraperFetchTests(SimpleTestCase):
 
         self.assertEqual(data["url"], "https://example.com")
         self.assertEqual(data["title"], "Test")
-        called_url = mock_get.call_args.args[0]
-        self.assertEqual(called_url, "https://example.com")
+        self.mock_client.get.assert_called_once_with("https://example.com")
+
+    def test_fetch_follows_redirect_and_counts_hops(self):
+        self.mock_client.get.side_effect = [
+            _fake_redirect("https://example.com", "https://example.com/final"),
+            _fake_response(200, text="<html>ok</html>", url="https://example.com/final"),
+        ]
+
+        html = self.scraper.fetch("https://example.com")
+
+        self.assertEqual(html, "<html>ok</html>")
+        self.assertEqual(self.scraper._last_redirect_count, 1)
+
+    def test_fetch_rejects_redirect_to_private_address(self):
+        """Publiczny adres nie może przez przekierowanie wprowadzić scrapera do sieci
+        lokalnej - drugi skok jest walidowany tak samo jak adres wejściowy."""
+        self.mock_client.get.return_value = _fake_redirect(
+            "https://example.com", "http://127.0.0.1:8000/admin/", status_code=302
+        )
+        self.mock_guard.side_effect = [
+            "https://example.com",
+            UnsafeUrlError("Adresy w sieci lokalnej nie podlegają audytowi."),
+        ]
+
+        with self.assertRaises(ScraperError):
+            self.scraper.fetch("https://example.com")
 
 
 class SEOScraperOnPageTests(SimpleTestCase):

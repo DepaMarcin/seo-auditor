@@ -1,0 +1,33 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Logowanie — SEO Auditor{% endblock %}
+
+{% block content %}
+<div class="panel login-panel">
+    <h1>Logowanie</h1>
+    <p class="priority-empty">
+        Audyty zawierają dane analityczne (GA4, Search Console), dlatego są prywatne —
+        zaloguj się, żeby zobaczyć swoje raporty.
+    </p>
+
+    {% if form.errors %}
+    <p class="login-error">Nieprawidłowy login lub hasło. Spróbuj ponownie.</p>
+    {% endif %}
+
+    <form method="post" class="login-form">
+        {% csrf_token %}
+        <label for="id_username">Login</label>
+        <input type="text" name="username" id="id_username" autocomplete="username" autofocus required>
+
+        <label for="id_password">Hasło</label>
+        <input type="password" name="password" id="id_password" autocomplete="current-password" required>
+
+        <button type="submit">Zaloguj się</button>
+        <input type="hidden" name="next" value="{{ next }}">
+    </form>
+
+    <p class="priority-empty login-hint">
+        Nie masz jeszcze konta? Utwórz je poleceniem <code>python manage.py createsuperuser</code>.
+    </p>
+</div>
+{% endblock %}

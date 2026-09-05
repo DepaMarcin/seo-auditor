@@ -9,6 +9,8 @@ from uuid import uuid4
 import httpx
 from bs4 import BeautifulSoup
 
+from .url_guard import MAX_REDIRECT_HOPS, UnsafeUrlError, validate_public_url
+
 HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
 # Próg (liczba słów widocznego tekstu) i minimalna liczba <script>, poniżej/powyżej
@@ -100,17 +102,39 @@ class SEOScraper:
         return self.parse(html, normalized_url)
 
     def fetch(self, url: str) -> str:
+        # Przekierowania obsługujemy ręcznie (follow_redirects=False), bo publiczny adres
+        # może przekierować w głąb sieci lokalnej - każdy skok musi przejść tę samą
+        # walidację co adres podany przez użytkownika (ochrona przed SSRF).
         try:
-            response = httpx.get(
-                url, headers=self.headers, timeout=self.timeout, follow_redirects=True
-            )
-            response.raise_for_status()
+            safe_url = validate_public_url(url)
+        except UnsafeUrlError as exc:
+            raise ScraperError(f"Nie udało się pobrać {url}: {exc}") from exc
+
+        hops = 0
+        try:
+            with httpx.Client(
+                headers=self.headers, timeout=self.timeout, follow_redirects=False
+            ) as client:
+                response = client.get(safe_url)
+                while response.is_redirect and hops < MAX_REDIRECT_HOPS:
+                    next_request = response.next_request
+                    if next_request is None:
+                        break
+                    try:
+                        safe_url = validate_public_url(str(next_request.url))
+                    except UnsafeUrlError as exc:
+                        raise ScraperError(
+                            f"Przekierowanie z {url} prowadzi do niedozwolonego adresu: {exc}"
+                        ) from exc
+                    response = client.get(safe_url)
+                    hops += 1
+                response.raise_for_status()
         except httpx.HTTPError as exc:
             raise ScraperError(f"Nie udało się pobrać {url}: {exc}") from exc
-        # httpx z follow_redirects=True zachowuje pełną historię przekierowań w
-        # response.history - odczytujemy ją tutaj (zero dodatkowych zapytań), żeby
-        # parse() mogło zgłosić test "Przekierowania 301/302".
-        self._last_redirect_count = len(response.history)
+
+        # Liczba przekierowań napotkanych po drodze - parse() zgłasza na jej podstawie
+        # test "Przekierowania 301/302" (zero dodatkowych zapytań).
+        self._last_redirect_count = hops
         return response.text
 
     def _normalize_url(self, url: str) -> str:
@@ -485,8 +509,10 @@ class SEOScraper:
         domeną - osobne, krótkie zapytanie GET."""
         robots_url = self._build_absolute_url(base_url, "/robots.txt")
         try:
-            response = httpx.get(robots_url, headers=self.headers, timeout=min(self.timeout, 10.0))
-        except httpx.HTTPError:
+            response = httpx.get(
+                validate_public_url(robots_url), headers=self.headers, timeout=min(self.timeout, 10.0)
+            )
+        except (httpx.HTTPError, UnsafeUrlError):
             return {"checked": True, "exists": False, "disallows_all": False}
 
         if response.status_code != 200:
@@ -519,9 +545,12 @@ class SEOScraper:
         probe_url = self._build_absolute_url(base_url, probe_path)
         try:
             response = httpx.get(
-                probe_url, headers=self.headers, timeout=min(self.timeout, 10.0), follow_redirects=True
+                validate_public_url(probe_url),
+                headers=self.headers,
+                timeout=min(self.timeout, 10.0),
+                follow_redirects=True,
             )
-        except httpx.HTTPError:
+        except (httpx.HTTPError, UnsafeUrlError):
             return {"checked": False, "returns_404": False, "status_code": None}
 
         return {
@@ -540,14 +569,20 @@ class SEOScraper:
         checked_count = 0
         for image_url in image_urls:
             try:
+                # Adresy obrazków pochodzą z audytowanej (obcej) strony, więc są danymi
+                # niezaufanymi - <img src="http://127.0.0.1:8000/..."> to najprostsza
+                # droga do SSRF, jeśli nie sprawdzić ich tak samo jak adresu audytu.
                 response = httpx.head(
-                    image_url, headers=self.headers, timeout=min(self.timeout, 8.0), follow_redirects=True
+                    validate_public_url(image_url),
+                    headers=self.headers,
+                    timeout=min(self.timeout, 8.0),
+                    follow_redirects=True,
                 )
                 content_length = response.headers.get("content-length")
                 if content_length is None:
                     continue
                 size_kb = int(content_length) / 1024
-            except (httpx.HTTPError, ValueError):
+            except (httpx.HTTPError, UnsafeUrlError, ValueError):
                 continue
 
             checked_count += 1

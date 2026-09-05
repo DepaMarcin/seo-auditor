@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+
 from .ga4_insights import analyze_channel_trends
 from .ga4_service import GA4OAuthService
 from .gsc_insights import generate_page_commentary, generate_query_commentary
@@ -85,47 +87,57 @@ class AuditService:
         self.ga4_service = ga4_service or GA4OAuthService()
         self.gsc_service = gsc_service or GSCService()
 
-    def run_audit(self, audit):
-        from auditor.models import Audit
+    def run_audit(self, audit: "Audit") -> "Audit":
+        from auditor.models import Audit, AuditMetric
 
         audit.status = Audit.Status.PROCESSING
         audit.save(update_fields=["status"])
 
         try:
-            data = self.scraper.scrape(audit.url)
-        except ScraperError:
-            logger.warning("Audyt %s nie powiódł się.", audit.pk, exc_info=True)
-            audit.status = Audit.Status.FAILED
-            audit.save(update_fields=["status"])
+            try:
+                data = self.scraper.scrape(audit.url)
+            except ScraperError:
+                logger.warning("Audyt %s nie powiódł się.", audit.pk, exc_info=True)
+                return audit
+
+            metrics = self._build_metrics(data)
+            metrics.extend(self._build_pagespeed_metrics(audit.url))
+            metrics.extend(self._build_extra_checks_metrics(audit.url, data))
+
+            # Jedna transakcja + bulk_create zamiast ~30 osobnych INSERT-ów: bez tego
+            # wyjątek w połowie pętli zostawiał audyt z niekompletnym zestawem metryk.
+            with transaction.atomic():
+                audit.metrics.all().delete()
+                AuditMetric.objects.bulk_create(
+                    [AuditMetric(audit=audit, **metric) for metric in metrics]
+                )
+
+            senuto_stats = self.senuto_service.get_visibility_stats(audit.url)
+            audit.senuto_top3 = senuto_stats["top3"]
+            audit.senuto_top10 = senuto_stats["top10"]
+            audit.senuto_top50 = senuto_stats["top50"]
+            audit.senuto_history = senuto_stats["history"]
+
+            audit.score = self._calculate_score(metrics)
+            audit.status = Audit.Status.COMPLETED
+            audit.save(
+                update_fields=[
+                    "score",
+                    "status",
+                    "senuto_top3",
+                    "senuto_top10",
+                    "senuto_top50",
+                    "senuto_history",
+                ]
+            )
             return audit
-
-        metrics = self._build_metrics(data)
-        metrics.extend(self._build_pagespeed_metrics(audit.url))
-        metrics.extend(self._build_extra_checks_metrics(audit.url, data))
-
-        audit.metrics.all().delete()
-        for metric in metrics:
-            audit.metrics.create(**metric)
-
-        senuto_stats = self.senuto_service.get_visibility_stats(audit.url)
-        audit.senuto_top3 = senuto_stats["top3"]
-        audit.senuto_top10 = senuto_stats["top10"]
-        audit.senuto_top50 = senuto_stats["top50"]
-        audit.senuto_history = senuto_stats["history"]
-
-        audit.score = self._calculate_score(metrics)
-        audit.status = Audit.Status.COMPLETED
-        audit.save(
-            update_fields=[
-                "score",
-                "status",
-                "senuto_top3",
-                "senuto_top10",
-                "senuto_top50",
-                "senuto_history",
-            ]
-        )
-        return audit
+        finally:
+            # Każde wyjście z metody inne niż ukończony audyt musi zamknąć rekord
+            # statusem FAILED - inaczej audyt zostaje w PROCESSING na zawsze, a
+            # interfejs w nieskończoność pokazuje "Audyt jest jeszcze przetwarzany".
+            if audit.status == Audit.Status.PROCESSING:
+                audit.status = Audit.Status.FAILED
+                audit.save(update_fields=["status"])
 
     # ------------------------------------------------------------------
     # Google Analytics 4 (OAuth 2.0) -> ruch organiczny

@@ -1,4 +1,7 @@
+from django.conf import settings
 from django.db import models
+
+from .services.crypto import decrypt_secret, encrypt_secret
 
 
 class Audit(models.Model):
@@ -8,10 +11,21 @@ class Audit(models.Model):
         COMPLETED = "completed", "Zakończony"
         FAILED = "failed", "Błąd"
 
+    # Właściciel audytu - audyt zawiera dane analityczne firmy (GA4, GSC), więc nie
+    # może być dostępny dla każdego, kto zna jego identyfikator. `null=True` istnieje
+    # wyłącznie ze względu na rekordy sprzed wdrożenia autoryzacji (patrz polecenie
+    # `manage.py claim_audits`); nowe audyty zawsze mają właściciela.
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="audits",
+        null=True,
+        blank=True,
+    )
     url = models.URLField(max_length=2048)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     score = models.IntegerField(default=0)
-    created_at = models.DateTimeField(auto_now_add=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     # Statystyki widoczności domeny z API Senuto (auditor.services.senuto.SenutoService).
     senuto_top3 = models.IntegerField(default=0)
@@ -23,7 +37,9 @@ class Audit(models.Model):
 
     # Integracja Google Analytics 4 przez OAuth 2.0 (auditor.services.ga4_service.GA4OAuthService).
     ga4_property_id = models.CharField(max_length=50, blank=True, null=True)
-    ga4_refresh_token = models.TextField(blank=True, null=True)
+    # Token trzymany jest zaszyfrowany (auditor.services.crypto); kod aplikacji nigdy
+    # nie sięga do tego pola bezpośrednio - korzysta z właściwości `ga4_refresh_token`.
+    ga4_refresh_token_encrypted = models.TextField(blank=True, null=True)
     ga4_organic_sessions = models.IntegerField(default=0)
     ga4_history = models.JSONField(default=dict)
 
@@ -50,6 +66,15 @@ class Audit(models.Model):
 
     def __str__(self):
         return f"{self.url} ({self.status})"
+
+    @property
+    def ga4_refresh_token(self) -> str | None:
+        """Odszyfrowany token odświeżania Google (albo None, gdy brak/nie da się odczytać)."""
+        return decrypt_secret(self.ga4_refresh_token_encrypted)
+
+    @ga4_refresh_token.setter
+    def ga4_refresh_token(self, value: str | None) -> None:
+        self.ga4_refresh_token_encrypted = encrypt_secret(value)
 
 
 class AuditMetric(models.Model):

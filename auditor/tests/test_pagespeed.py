@@ -7,6 +7,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import httpx
+from django.core.cache import cache
 from django.test import SimpleTestCase
 
 from auditor.services.pagespeed import PageSpeedService
@@ -47,7 +48,20 @@ def _mock_client(get_return=None, get_side_effect=None):
     return client
 
 
-class PageSpeedServiceParsingTests(SimpleTestCase):
+class PageSpeedTestCase(SimpleTestCase):
+    """Baza dla testów PSI: czyści cache przed każdym testem.
+
+    `PageSpeedService.analyze` cache'uje udane wyniki (patrz CACHE_TTL_PAGESPEED), a
+    domyślny LocMemCache żyje przez cały proces testowy - bez czyszczenia wynik z
+    jednego testu wyciekałby do kolejnych i maskował ich atrapy.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+
+class PageSpeedServiceParsingTests(PageSpeedTestCase):
     """Poprawne parsowanie Core Web Vitals (LCP, CLS, FCP) i wyniku Performance."""
 
     @patch("auditor.services.pagespeed.httpx.Client")
@@ -107,7 +121,7 @@ class PageSpeedServiceParsingTests(SimpleTestCase):
         self.assertIsNotNone(result["error"])
 
 
-class PageSpeedServiceUrlNormalizationTests(SimpleTestCase):
+class PageSpeedServiceUrlNormalizationTests(PageSpeedTestCase):
     def setUp(self):
         self.service = PageSpeedService()
 
@@ -121,7 +135,7 @@ class PageSpeedServiceUrlNormalizationTests(SimpleTestCase):
         self.assertEqual(self.service._normalize_url("https://example.com/path"), "https://example.com/path")
 
 
-class PageSpeedServiceErrorHandlingTests(SimpleTestCase):
+class PageSpeedServiceErrorHandlingTests(PageSpeedTestCase):
     """Obsługa błędów API (np. HTTP 400 dla strategii desktop) - bez wyjątków."""
 
     @patch("auditor.services.pagespeed.httpx.Client")
@@ -220,7 +234,7 @@ class PageSpeedServiceErrorHandlingTests(SimpleTestCase):
         self.assertNotIn("TAJNY_KLUCZ_API", result["error"])
 
 
-class PageSpeedServiceAnalyzeAllTests(SimpleTestCase):
+class PageSpeedServiceAnalyzeAllTests(PageSpeedTestCase):
     """Równoległe zapytania dla strategii mobile i desktop."""
 
     def test_analyze_all_returns_both_strategies(self):
