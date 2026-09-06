@@ -31,8 +31,14 @@ def _change_sentence(
     return f"{subject} {flat_word} {suffix}."
 
 
+DEFAULT_PERIOD_LABEL = "ostatnie 3 miesiące"
+
+
 def analyze_channel_trends(
-    channel_totals_3m: dict, lead_history: dict | None = None, lead_totals_3m: dict | None = None
+    channel_totals_3m: dict,
+    lead_history: dict | None = None,
+    lead_totals_3m: dict | None = None,
+    period_label: str = DEFAULT_PERIOD_LABEL,
 ) -> dict:
     """Analizuje porównanie ROK-DO-ROKU (ostatnie 3 pełne miesiące vs analogiczne 3
     miesiące rok temu) i wylicza gotowe "Automatyczne Wnioski SEO", plus - opcjonalnie
@@ -79,11 +85,15 @@ def analyze_channel_trends(
         "channel_yoy_changes": {},
         "cannibalization_warning": False,
         "summary_points": summary_points,
-        "lead_insights": _analyze_lead_trend(lead_history, lead_totals_3m),
+        "period_label": period_label,
+        "lead_insights": _analyze_lead_trend(lead_history, lead_totals_3m, period_label),
     }
 
     if not insights["has_data"]:
-        summary_points.append("Za mało danych GA4, żeby wyliczyć wnioski o trendzie ruchu organicznego (3M R/R).")
+        summary_points.append(
+            f"Za mało danych GA4, żeby wyliczyć wnioski o trendzie ruchu organicznego "
+            f"dla okresu {period_label}."
+        )
         return insights
 
     # --- 1. Nagłówkowa zmiana ruchu organicznego: ostatnie 3 pełne miesiące vs
@@ -92,7 +102,9 @@ def analyze_channel_trends(
     insights["organic_change_pct"] = organic_change
     if organic_change is not None:
         summary_points.append(
-            _change_sentence("Ruch organiczny", organic_change, "wzrósł", "spadł", "rok do roku (ostatnie 3 miesiące)")
+            _change_sentence(
+                "Ruch organiczny", organic_change, "wzrósł", "spadł", f"rok do roku ({period_label})"
+            )
         )
 
     # --- 2. Dynamika rok-do-roku Organic/Paid/Direct - kontekst do wykrycia
@@ -128,12 +140,16 @@ def analyze_channel_trends(
         )
 
     if not summary_points:
-        summary_points.append("Brak istotnych zmian trendu rok do roku w analizowanym okresie.")
+        summary_points.append(f"Brak istotnych zmian trendu rok do roku w okresie {period_label}.")
 
     return insights
 
 
-def _analyze_lead_trend(lead_history: dict | None, lead_totals_3m: dict | None) -> dict | None:
+def _analyze_lead_trend(
+    lead_history: dict | None,
+    lead_totals_3m: dict | None,
+    period_label: str = DEFAULT_PERIOD_LABEL,
+) -> dict | None:
     """Osobna analiza trendu leadów/konwersji (jeśli użytkownik wybrał zdarzenie do
     śledzenia) - wynik trafia do własnego boksu pod dedykowanym wykresem leadów w
     `detail.html`, niezależnie od wniosków o kanałach ruchu. Trend R/R liczony jest
@@ -147,7 +163,7 @@ def _analyze_lead_trend(lead_history: dict | None, lead_totals_3m: dict | None) 
     last_month_label = months[-1] if months else ""
     last_month_count = events[-1] if events else 0
 
-    summary_points = [f"Liczba leadów w ostatnim miesiącu ({last_month_label}) wyniosła {last_month_count}."]
+    summary_points = [f"Liczba leadów w ostatnim okresie ({last_month_label}) wyniosła {last_month_count}."]
     change = None
     trend = None
     if lead_totals_3m:
@@ -155,7 +171,9 @@ def _analyze_lead_trend(lead_history: dict | None, lead_totals_3m: dict | None) 
         if change is not None:
             trend = "up" if change > 0 else "down" if change < 0 else "flat"
             summary_points.append(
-                _change_sentence("Trend leadów", change, "wzrósł", "spadł", "rok do roku (ostatnie 3 miesiące)")
+                _change_sentence(
+                    "Trend leadów", change, "wzrósł", "spadł", f"rok do roku ({period_label})"
+                )
             )
         else:
             summary_points.append("Za mało danych, żeby wyliczyć trend leadów rok do roku.")

@@ -1,9 +1,3 @@
-{% comment %}
-Karta testu z zasadą "Progressive Disclosure": domyślnie widoczna jest tylko nazwa,
-badge statusu i 1-zdaniowy stan zastany. Definicja ("Co to jest?"), pełny kod/wykaz
-błędu i szczegółowa "Rekomendacja AI" chowają się pod <details> "Rozwiń rekomendację
-i kod". Oczekuje `metric` z pełną adnotacją (_annotate_metric_labels).
-{% endcomment %}
 <div class="test-card status-{{ metric.status }}">
     <div class="test-card-header">
         <span class="test-card-title">{{ metric.display_key }}</span>

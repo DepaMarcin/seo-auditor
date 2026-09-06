@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import date
 
+from django.conf import settings
+from django.core.cache import cache
 from google.analytics.admin_v1beta import AnalyticsAdminServiceClient
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import (
@@ -17,7 +20,19 @@ from google.analytics.data_v1beta.types import (
 )
 from google.oauth2.credentials import Credentials
 
-from .date_ranges import expected_year_months, last_n_full_months_range, same_months_last_year
+from .date_ranges import (
+    MONTHLY_GRANULARITY_THRESHOLD_DAYS,
+    default_range,
+    expected_days,
+    expected_months_between,
+    expected_year_months,
+    format_day_label,
+    format_month_label,
+    last_n_full_months_range,
+    previous_year_range,
+    same_months_last_year,
+    use_monthly_granularity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +60,6 @@ ALLOWED_CHANNELS = [
     "Unassigned",
 ]
 
-_POLISH_MONTH_ABBR = {
-    1: "STY", 2: "LUT", 3: "MAR", 4: "KWI", 5: "MAJ", 6: "CZE",
-    7: "LIP", 8: "SIE", 9: "WRZ", 10: "PAŹ", 11: "LIS", 12: "GRU",
-}
-
-
 class GA4OAuthService:
     """Klient Google Analytics Data API (GA4), autoryzowany przez OAuth 2.0
     ("Zaloguj się przez Google") - pobiera dzienną historię sesji z ruchu
@@ -62,20 +71,45 @@ class GA4OAuthService:
     żeby nieudane połączenie z Google Analytics nie blokowało reszty audytu.
     """
 
-    def fetch_organic_traffic(self, credentials: Credentials, property_id: str, days: int = 30) -> dict:
-        """Zwraca dzienną historię sesji z ruchu organicznego dla ostatnich `days` dni:
+    def fetch_organic_traffic(
+        self,
+        credentials: Credentials,
+        property_id: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        days: int = 30,
+    ) -> dict:
+        """Zwraca historię sesji z ruchu organicznego dla wskazanego zakresu dat:
         {"total_sessions": int, "history": {"dates": [...], "sessions": [...]}}.
+
+        Zakres podaje się przez `start_date`/`end_date`; pominięcie obu oznacza
+        ostatnie `days` dni (zachowanie domyślne przy pierwszym podłączeniu usługi).
+
+        Ziarnistość dobierana jest automatycznie: dla zakresów do
+        {MONTHLY_GRANULARITY_THRESHOLD_DAYS} dni dane są dzienne (wymiar "date"), dla
+        dłuższych - miesięczne (wymiar "yearMonth", agregacja po stronie GA4). Oś jest
+        zawsze wyrównana do pełnego zakresu: okresy bez sesji dostają zero, zamiast
+        znikać z wykresu.
 
         `credentials` to `google.oauth2.credentials.Credentials` uzyskane z przepływu
         OAuth 2.0 (patrz `auditor.views.ga4_callback`). `property_id` to numeryczny
         identyfikator usługi GA4 (bez prefiksu "properties/").
         """
+        start_date, end_date = self._resolve_range(start_date, end_date, days)
+        monthly = use_monthly_granularity(start_date, end_date)
+        dimension = "yearMonth" if monthly else "date"
+
+        cache_key = self._cache_key("traffic", property_id, start_date, end_date)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             client = BetaAnalyticsDataClient(credentials=credentials)
             request = RunReportRequest(
                 property=f"properties/{property_id}",
-                date_ranges=[DateRange(start_date=f"{days}daysAgo", end_date="today")],
-                dimensions=[Dimension(name="date")],
+                date_ranges=[DateRange(start_date=start_date.isoformat(), end_date=end_date.isoformat())],
+                dimensions=[Dimension(name=dimension)],
                 metrics=[Metric(name="sessions")],
                 dimension_filter=FilterExpression(
                     filter=Filter(
@@ -83,57 +117,106 @@ class GA4OAuthService:
                         string_filter=Filter.StringFilter(value=ORGANIC_CHANNEL_GROUP),
                     )
                 ),
-                order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="date"))],
+                order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name=dimension))],
             )
             response = client.run_report(request)
         except Exception:
             logger.exception("Błąd podczas pobierania danych GA4 dla property_id=%s.", property_id)
             return self._fallback()
 
-        dates: list[str] = []
-        sessions: list[int] = []
+        by_key: dict[str, int] = {}
         for row in response.rows:
-            raw_date = row.dimension_values[0].value  # format GA4: "YYYYMMDD"
+            raw_key = row.dimension_values[0].value  # "YYYYMMDD" albo "YYYYMM"
             try:
-                formatted_date = self._format_ga4_date(raw_date)
-                sessions_value = int(row.metric_values[0].value)
+                by_key[raw_key] = int(row.metric_values[0].value)
             except (IndexError, ValueError):
-                logger.warning("Pominięto nieprawidłowy wiersz odpowiedzi GA4: %r", raw_date)
+                logger.warning("Pominięto nieprawidłowy wiersz odpowiedzi GA4: %r", raw_key)
                 continue
-            dates.append(formatted_date)
-            sessions.append(sessions_value)
 
-        return {
+        if monthly:
+            expected = expected_months_between(start_date, end_date)
+            labels = [format_month_label(key) for key in expected]
+        else:
+            expected = expected_days(start_date, end_date)
+            labels = [format_day_label(key) for key in expected]
+        sessions = [by_key.get(key, 0) for key in expected]
+
+        result = {
             "total_sessions": sum(sessions),
-            "history": {"dates": dates, "sessions": sessions},
+            "granularity": "month" if monthly else "day",
+            "history": {"dates": labels, "sessions": sessions},
         }
+        cache.set(cache_key, result, getattr(settings, "CACHE_TTL_GA4_DATA", 3600))
+        return result
 
-    def fetch_yearly_channel_data(self, credentials: Credentials, property_id: str) -> dict:
-        """Pobiera MIESIĘCZNĄ liczbę sesji dla ostatnich {CHANNEL_HISTORY_MONTHS} pełnych
-        miesięcy - GA4 sam agreguje dane wg wymiaru "yearMonth" (serwerowo, bez potrzeby
-        sumowania dni po stronie Pythona), pogrupowaną wg `sessionDefaultChannelGroup` i
-        ograniczoną do kanałów z `ALLOWED_CHANNELS` (pozostałe, marginalne kanały są
-        pomijane, żeby wykres pozostał czytelny). To dane wejściowe dla analizy trendów
-        wielokanałowych (patrz `auditor.services.ga4_insights.analyze_channel_trends`).
+    def _resolve_range(
+        self, start_date: date | None, end_date: date | None, days: int
+    ) -> tuple[date, date]:
+        """Uzupełnia brakujące granice zakresu domyślnym oknem ostatnich `days` dni."""
+        if start_date and end_date:
+            return start_date, end_date
+        return default_range(days)
 
-        Zwraca: {"months": ["WRZ 2025", ..., "SIE 2026"], "channels": {"Organic Search": [...], ...}}
-        - każda tablica w "channels" ma dokładnie {CHANNEL_HISTORY_MONTHS} elementów
-        (miesiące bez żadnych sesji w danym kanale są uzupełnione zerem), a klucze
-        "channels" zawsze obejmują wszystkie `ALLOWED_CHANNELS` w tej samej kolejności -
-        nawet jeśli dany kanał nie wystąpił w danych ani razu.
+    def _cache_key(self, kind: str, property_id: str, start_date: date, end_date: date, extra: str = "") -> str:
+        """Klucz cache ZAWSZE zawiera zakres dat - bez tego zmiana zakresu w interfejsie
+        dostawałaby z powrotem dane poprzedniego okresu."""
+        suffix = f":{hashlib.sha256(extra.encode()).hexdigest()[:16]}" if extra else ""
+        return f"ga4:{kind}:{property_id}:{start_date.isoformat()}:{end_date.isoformat()}{suffix}"
+
+    def fetch_channel_history(
+        self,
+        credentials: Credentials,
+        property_id: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
+        """Pobiera liczbę sesji w podanym zakresie, pogrupowaną wg
+        `sessionDefaultChannelGroup` i ograniczoną do kanałów z `ALLOWED_CHANNELS`
+        (pozostałe, marginalne kanały są pomijane, żeby wykres pozostał czytelny).
+        To dane wejściowe dla analizy trendów wielokanałowych (patrz
+        `auditor.services.ga4_insights.analyze_channel_trends`).
+
+        Bez podanego zakresu zwraca ostatnie {CHANNEL_HISTORY_MONTHS} pełnych miesięcy
+        (zachowanie sprzed wprowadzenia dynamicznych zakresów, używane przy pierwszym
+        podłączeniu usługi). Ziarnistość - jak w `fetch_organic_traffic` - dobierana
+        automatycznie: dzienna dla krótkich zakresów, miesięczna dla długich.
+
+        Zwraca: {"months": ["WRZ 2025", ...], "channels": {"Organic Search": [...], ...}}
+        - każda tablica ma tyle elementów, ile etykiet w "months" (okresy bez sesji w
+        danym kanale są uzupełnione zerem), a klucze "channels" zawsze obejmują
+        wszystkie `ALLOWED_CHANNELS` w tej samej kolejności - nawet jeśli dany kanał
+        nie wystąpił w danych ani razu.
         """
+        if start_date and end_date:
+            monthly = use_monthly_granularity(start_date, end_date)
+            expected = (
+                expected_months_between(start_date, end_date) if monthly
+                else expected_days(start_date, end_date)
+            )
+            range_start, range_end = start_date, end_date
+        else:
+            monthly = True
+            expected = expected_year_months(CHANNEL_HISTORY_MONTHS)
+            range_start, range_end = last_n_full_months_range(CHANNEL_HISTORY_MONTHS)
+
+        dimension = "yearMonth" if monthly else "date"
+        cache_key = self._cache_key("channels", property_id, range_start, range_end)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             client = BetaAnalyticsDataClient(credentials=credentials)
             request = RunReportRequest(
                 property=f"properties/{property_id}",
-                date_ranges=[DateRange(start_date="365daysAgo", end_date="today")],
-                dimensions=[Dimension(name="yearMonth"), Dimension(name="sessionDefaultChannelGroup")],
+                date_ranges=[DateRange(start_date=range_start.isoformat(), end_date=range_end.isoformat())],
+                dimensions=[Dimension(name=dimension), Dimension(name="sessionDefaultChannelGroup")],
                 metrics=[Metric(name="sessions")],
-                order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="yearMonth"))],
+                order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name=dimension))],
             )
             response = client.run_report(request)
         except Exception:
-            logger.exception("Błąd podczas pobierania rocznych danych GA4 wg kanału dla property_id=%s.", property_id)
+            logger.exception("Błąd podczas pobierania danych GA4 wg kanału dla property_id=%s.", property_id)
             return self._empty_channel_history()
 
         allowed = set(ALLOWED_CHANNELS)
@@ -142,21 +225,33 @@ class GA4OAuthService:
             channel = row.dimension_values[1].value
             if channel not in allowed:
                 continue
-            raw_month = row.dimension_values[0].value  # format GA4: "YYYYMM"
+            raw_key = row.dimension_values[0].value
             try:
                 sessions_value = int(row.metric_values[0].value)
             except (IndexError, ValueError):
-                logger.warning("Pominięto nieprawidłowy wiersz rocznych danych GA4 wg kanału: %r", raw_month)
+                logger.warning("Pominięto nieprawidłowy wiersz danych GA4 wg kanału: %r", raw_key)
                 continue
-            series_by_channel.setdefault(channel, {})[raw_month] = sessions_value
+            series_by_channel.setdefault(channel, {})[raw_key] = sessions_value
 
-        expected_months = expected_year_months(CHANNEL_HISTORY_MONTHS)
-        months = [self._format_year_month(m) for m in expected_months]
+        labels = [
+            format_month_label(key) if monthly else format_day_label(key)
+            for key in expected
+        ]
         channels = {
-            channel: [series_by_channel.get(channel, {}).get(m, 0) for m in expected_months]
+            channel: [series_by_channel.get(channel, {}).get(key, 0) for key in expected]
             for channel in ALLOWED_CHANNELS
         }
-        return {"months": months, "channels": channels}
+        result = {"months": labels, "channels": channels}
+        cache.set(cache_key, result, getattr(settings, "CACHE_TTL_GA4_DATA", 3600))
+        return result
+
+    def fetch_yearly_channel_data(self, credentials: Credentials, property_id: str) -> dict:
+        """Zgodność wsteczna: 12 pełnych miesięcy danych wielokanałowych.
+
+        Cienka nakładka na `fetch_channel_history` bez zakresu - używana przy
+        pierwszym podłączeniu usługi GA4 (`AuditService._refresh_ga4_insights`).
+        """
+        return self.fetch_channel_history(credentials, property_id)
 
     def get_available_events(self, credentials: Credentials, property_id: str) -> list[str]:
         """Zwraca listę unikalnych nazw zdarzeń (`eventName`) zarejestrowanych w GA4 w
@@ -181,24 +276,48 @@ class GA4OAuthService:
         return [row.dimension_values[0].value for row in response.rows if row.dimension_values[0].value]
 
     def fetch_event_conversions(
-        self, credentials: Credentials, property_id: str, event_name: str, days: int = 365
+        self,
+        credentials: Credentials,
+        property_id: str,
+        event_name: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+        days: int = 365,
     ) -> dict:
-        """Pobiera MIESIĘCZNĄ liczbę wystąpień `event_name` przypisanych do kanału
-        "Organic Search" dla ostatnich {CHANNEL_HISTORY_MONTHS} pełnych miesięcy (GA4
-        agreguje serwerowo wg wymiaru "yearMonth") - dane wejściowe do wyliczenia trendu
-        leadów/konwersji z ruchu organicznego (osobny wykres pod głównym wykresem
-        kanałów w `detail.html`).
+        """Pobiera liczbę wystąpień `event_name` przypisanych do kanału "Organic Search"
+        w podanym zakresie - dane wejściowe do wyliczenia trendu leadów/konwersji z ruchu
+        organicznego (osobny wykres pod głównym wykresem kanałów w `detail.html`).
+
+        Bez podanego zakresu zwraca ostatnie {CHANNEL_HISTORY_MONTHS} pełnych miesięcy.
+        Ziarnistość dobierana automatycznie, oś wyrównana do pełnego zakresu (okresy bez
+        ani jednego wystąpienia zdarzenia dostają zero - GA4 nie zwraca dla nich wiersza).
 
         Zwraca: {"total_events": int, "history": {"months": ["WRZ 2025", ...], "events": [...]}}
-        - "events" ma zawsze dokładnie {CHANNEL_HISTORY_MONTHS} elementów, z zerami dla
-        miesięcy bez ani jednego wystąpienia zdarzenia (GA4 nie zwraca dla nich wiersza).
         """
+        if start_date and end_date:
+            monthly = use_monthly_granularity(start_date, end_date)
+            expected = (
+                expected_months_between(start_date, end_date) if monthly
+                else expected_days(start_date, end_date)
+            )
+            range_start, range_end = start_date, end_date
+        else:
+            monthly = True
+            expected = expected_year_months(CHANNEL_HISTORY_MONTHS)
+            range_start, range_end = last_n_full_months_range(CHANNEL_HISTORY_MONTHS)
+
+        dimension = "yearMonth" if monthly else "date"
+        cache_key = self._cache_key("events", property_id, range_start, range_end, extra=event_name)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             client = BetaAnalyticsDataClient(credentials=credentials)
             request = RunReportRequest(
                 property=f"properties/{property_id}",
-                date_ranges=[DateRange(start_date=f"{days}daysAgo", end_date="today")],
-                dimensions=[Dimension(name="yearMonth")],
+                date_ranges=[DateRange(start_date=range_start.isoformat(), end_date=range_end.isoformat())],
+                dimensions=[Dimension(name=dimension)],
                 metrics=[Metric(name="eventCount")],
                 dimension_filter=FilterExpression(
                     and_group=FilterExpressionList(
@@ -218,7 +337,7 @@ class GA4OAuthService:
                         ]
                     )
                 ),
-                order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name="yearMonth"))],
+                order_bys=[OrderBy(dimension=OrderBy.DimensionOrderBy(dimension_name=dimension))],
             )
             response = client.run_report(request)
         except Exception:
@@ -227,23 +346,27 @@ class GA4OAuthService:
             )
             return self._empty_event_history()
 
-        by_month: dict[str, int] = {}
+        by_key: dict[str, int] = {}
         for row in response.rows:
-            raw_month = row.dimension_values[0].value
+            raw_key = row.dimension_values[0].value
             try:
-                by_month[raw_month] = int(row.metric_values[0].value)
+                by_key[raw_key] = int(row.metric_values[0].value)
             except (IndexError, ValueError):
-                logger.warning("Pominięto nieprawidłowy wiersz konwersji GA4: %r", raw_month)
+                logger.warning("Pominięto nieprawidłowy wiersz konwersji GA4: %r", raw_key)
                 continue
 
-        expected_months = expected_year_months(CHANNEL_HISTORY_MONTHS)
-        months = [self._format_year_month(m) for m in expected_months]
-        events = [by_month.get(m, 0) for m in expected_months]
+        labels = [
+            format_month_label(key) if monthly else format_day_label(key)
+            for key in expected
+        ]
+        events = [by_key.get(key, 0) for key in expected]
 
-        return {
+        result = {
             "total_events": sum(events),
-            "history": {"months": months, "events": events},
+            "history": {"months": labels, "events": events},
         }
+        cache.set(cache_key, result, getattr(settings, "CACHE_TTL_GA4_DATA", 3600))
+        return result
 
     def fetch_channel_totals(
         self, credentials: Credentials, property_id: str, start_date: date, end_date: date
@@ -251,8 +374,13 @@ class GA4OAuthService:
         """Zwraca sumę sesji wg kanału (ograniczoną do `ALLOWED_CHANNELS`) dla
         wskazanego zakresu dat - JEDNO zapytanie bez wymiaru dni/miesięcy, więc GA4
         zwraca od razu zagregowany total per kanał dla całego okresu. Używane do
-        porównań rok-do-roku (patrz `fetch_3m_yoy_summary`), niezależnie od 12-mies.
-        danych do wykresu (`fetch_yearly_channel_data`)."""
+        porównań rok-do-roku (patrz `fetch_yoy_summary`), niezależnie od danych
+        szeregu czasowego do wykresu (`fetch_channel_history`)."""
+        cache_key = self._cache_key("channel_totals", property_id, start_date, end_date)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             client = BetaAnalyticsDataClient(credentials=credentials)
             request = RunReportRequest(
@@ -279,6 +407,8 @@ class GA4OAuthService:
                 totals[channel] = int(row.metric_values[0].value)
             except (IndexError, ValueError):
                 continue
+
+        cache.set(cache_key, totals, getattr(settings, "CACHE_TTL_GA4_DATA", 3600))
         return totals
 
     def fetch_event_total(
@@ -287,7 +417,12 @@ class GA4OAuthService:
         """Zwraca łączną liczbę wystąpień `event_name` przypisanych do kanału Organic
         Search dla wskazanego zakresu dat - jedna zagregowana wartość, bez podziału
         na dni/miesiące. Używane do porównania rok-do-roku trendu leadów (patrz
-        `fetch_3m_yoy_summary`)."""
+        `fetch_yoy_summary`)."""
+        cache_key = self._cache_key("event_total", property_id, start_date, end_date, extra=event_name)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         try:
             client = BetaAnalyticsDataClient(credentials=credentials)
             request = RunReportRequest(
@@ -321,21 +456,26 @@ class GA4OAuthService:
             )
             return 0
 
-        if not response.rows:
-            return 0
         try:
-            return int(response.rows[0].metric_values[0].value)
+            total = int(response.rows[0].metric_values[0].value) if response.rows else 0
         except (IndexError, ValueError):
-            return 0
+            total = 0
 
-    def fetch_3m_yoy_summary(
-        self, credentials: Credentials, property_id: str, lead_event_name: str | None = None
+        cache.set(cache_key, total, getattr(settings, "CACHE_TTL_GA4_DATA", 3600))
+        return total
+
+    def fetch_yoy_summary(
+        self,
+        credentials: Credentials,
+        property_id: str,
+        start_date: date,
+        end_date: date,
+        lead_event_name: str | None = None,
     ) -> dict:
-        """Pobiera zagregowane dane rok-do-roku dla ostatnich {YOY_COMPARISON_MONTHS}
-        pełnych miesięcy vs analogiczne {YOY_COMPARISON_MONTHS} miesiące rok temu:
-        sesje wg kanału oraz - opcjonalnie - liczbę wybranego zdarzenia lead/konwersja
-        z ruchu organicznego. Dane wejściowe dla
-        `auditor.services.ga4_insights.analyze_channel_trends`.
+        """Zagregowane porównanie rok-do-roku dla DOWOLNEGO zakresu dat: wybrany okres
+        vs ten sam okres przesunięty o rok wstecz (`previous_year_range`). Zwraca sesje
+        wg kanału oraz - opcjonalnie - liczbę wybranego zdarzenia lead/konwersja z ruchu
+        organicznego. Dane wejściowe dla `auditor.services.ga4_insights.analyze_channel_trends`.
 
         Zwraca:
         {
@@ -343,8 +483,36 @@ class GA4OAuthService:
             "leads": {"current": int, "previous": int} | None,
         }
         """
+        period_b_start, period_b_end = previous_year_range(start_date, end_date)
+        return self._yoy_summary(
+            credentials, property_id, start_date, end_date, period_b_start, period_b_end, lead_event_name
+        )
+
+    def fetch_3m_yoy_summary(
+        self, credentials: Credentials, property_id: str, lead_event_name: str | None = None
+    ) -> dict:
+        """Zgodność wsteczna: porównanie R/R dla ostatnich {YOY_COMPARISON_MONTHS}
+        pełnych miesięcy kalendarzowych. Używane przy pierwszym podłączeniu usługi GA4
+        (`AuditService._refresh_ga4_insights`), gdy użytkownik nie wskazał jeszcze
+        własnego zakresu."""
         period_a_start, period_a_end = last_n_full_months_range(YOY_COMPARISON_MONTHS)
         period_b_start, period_b_end = same_months_last_year(period_a_start, period_a_end)
+        return self._yoy_summary(
+            credentials, property_id, period_a_start, period_a_end,
+            period_b_start, period_b_end, lead_event_name,
+        )
+
+    def _yoy_summary(
+        self,
+        credentials: Credentials,
+        property_id: str,
+        period_a_start: date,
+        period_a_end: date,
+        period_b_start: date,
+        period_b_end: date,
+        lead_event_name: str | None,
+    ) -> dict:
+        """Wspólne ciało obu wariantów porównania R/R (dowolny zakres i 3 pełne miesiące)."""
 
         channels_current = self.fetch_channel_totals(credentials, property_id, period_a_start, period_a_end)
         channels_previous = self.fetch_channel_totals(credentials, property_id, period_b_start, period_b_end)
@@ -404,18 +572,8 @@ class GA4OAuthService:
             token_uri="https://oauth2.googleapis.com/token",
         )
 
-    def _format_ga4_date(self, raw_date: str) -> str:
-        """Konwertuje datę w formacie GA4 ("YYYYMMDD") na ISO ("YYYY-MM-DD")."""
-        return f"{raw_date[0:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
-
-    def _format_year_month(self, raw_year_month: str) -> str:
-        """Konwertuje miesiąc w formacie GA4 ("YYYYMM") na czytelną polską etykietę,
-        np. "202509" -> "WRZ 2025"."""
-        year, month = raw_year_month[:4], int(raw_year_month[4:6])
-        return f"{_POLISH_MONTH_ABBR.get(month, raw_year_month[4:6])} {year}"
-
     def _fallback(self) -> dict:
-        return {"total_sessions": 0, "history": {"dates": [], "sessions": []}}
+        return {"total_sessions": 0, "granularity": "day", "history": {"dates": [], "sessions": []}}
 
     def _empty_channel_history(self) -> dict:
         return {"months": [], "channels": {}}

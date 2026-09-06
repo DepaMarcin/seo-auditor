@@ -5,7 +5,6 @@
 
 {% block content %}
 
-{# ---------- SEKCJA 1: Przegląd (wynik, kategorie, podgląd strony) ---------- #}
 <div class="panel">
     <p><a class="link" href="{% url 'auditor:index' %}">&larr; Wszystkie audyty</a></p>
     <h1>{{ audit.url }}</h1>
@@ -15,8 +14,6 @@
     </p>
 
     {% if audit_in_progress %}
-    {# Audyt wykonuje się w tle (auditor.tasks) - odpytujemy `auditor:status`
-       i przeładowujemy stronę, gdy zadanie się zakończy. #}
     <div class="loading-container" id="audit-progress">
         <div class="loading-header">
             <span class="spinner"></span>
@@ -64,9 +61,6 @@
         <div class="overview-col overview-preview-col">
             <div class="page-preview-card">
                 <div class="page-preview-frame">
-                    {# sandbox BEZ allow-same-origin: połączenie obu flag pozwala obcej
-                       stronie zdjąć z siebie sandbox, a do samego podglądu wizualnego
-                       dostęp do własnego origin nie jest potrzebny. #}
                     <iframe src="{{ audit.url }}" loading="lazy" sandbox="allow-scripts"
                             referrerpolicy="no-referrer" title="Podgląd audytowanej strony"></iframe>
                 </div>
@@ -102,9 +96,6 @@
     var statusText = document.getElementById("audit-progress-status");
     if (!bar) return;
 
-    // Pasek postępu jest szacunkowy - backend nie raportuje etapów, a jedynie stan
-    // końcowy audytu. Asymptotyczne dobijanie do 90% daje wrażenie postępu bez
-    // obiecywania użytkownikowi konkretnego czasu zakończenia.
     var progress = 5;
     bar.style.width = progress + "%";
     var progressTimer = setInterval(function () {
@@ -130,8 +121,6 @@
                 }
             })
             .catch(function () {
-                // Pojedyncze nieudane odpytanie (restart serwera, chwilowa sieć) nie
-                // przerywa oczekiwania - dopiero seria błędów zatrzymuje polling.
                 failures += 1;
                 if (failures >= 5) {
                     clearInterval(pollTimer);
@@ -153,7 +142,6 @@
 </div>
 {% elif audit.status == "completed" %}
 
-{# ---------- Przełącznik zakładek: Widoczność i Ruch / Audyt Techniczny & PageSpeed ---------- #}
 <div class="detail-tabs" role="tablist">
     <button type="button" class="detail-tab-btn active" data-tab-target="tab-panel-visibility" role="tab" aria-selected="true">
         📈 Widoczność i Ruch
@@ -165,7 +153,6 @@
 
 <div id="tab-panel-visibility" class="detail-tab-panel">
 
-{# ---------- SEKCJA 2: Analiza Widoczności (Senuto) ---------- #}
 <div class="panel">
     <h2 class="section-heading">📈 Analiza Widoczności (Senuto)</h2>
     <div class="senuto-stats-row">
@@ -192,7 +179,6 @@
     {% endif %}
 </div>
 
-{# ---------- SEKCJA 3: Ruch organiczny (Google Analytics 4) ---------- #}
 <div class="panel">
     <h2 class="section-heading">🌱 Ruch organiczny (Google Analytics 4)</h2>
     {% if not audit.ga4_refresh_token %}
@@ -204,39 +190,64 @@
             🔗 Połącz z Google Analytics
         </a>
     </div>
-    {% elif audit.ga4_history.dates %}
+    {% else %}
+    <div class="range-controls" data-range-controls="ga4" data-source="ga4">
+        <div class="range-quick">
+            <button type="button" class="range-quick-btn" data-range="7d">7 dni</button>
+            <button type="button" class="range-quick-btn" data-range="30d">30 dni</button>
+            <button type="button" class="range-quick-btn" data-range="90d">90 dni</button>
+            <button type="button" class="range-quick-btn" data-range="12m">12 miesięcy</button>
+        </div>
+        <div class="range-custom">
+            <label for="ga4-start-date">Od</label>
+            <input type="date" id="ga4-start-date" class="range-start" max="{{ today_iso }}">
+            <label for="ga4-end-date">Do</label>
+            <input type="date" id="ga4-end-date" class="range-end" max="{{ today_iso }}">
+            <button type="button" class="range-apply">Zastosuj</button>
+        </div>
+        <p class="range-status">
+            <span class="range-label">Zakres z ostatniego odświeżenia danych audytu</span>
+            <span class="spinner range-spinner hidden"></span>
+        </p>
+        <p class="range-error hidden" role="alert"></p>
+    </div>
+
     <div class="senuto-stats-row">
         <div class="stat-tile stat-senuto">
-            <div class="stat-value">{{ audit.ga4_organic_sessions }}</div>
-            <div class="stat-label">Sesji organicznych (30 dni)</div>
+            <div class="stat-value" id="ga4-kpi-sessions">{{ audit.ga4_organic_sessions }}</div>
+            <div class="stat-label" id="ga4-kpi-label">Sesji organicznych (30 dni)</div>
         </div>
     </div>
     {{ audit.ga4_history|json_script:"ga4-history-data" }}
-    <div class="senuto-chart-wrap">
+    <div class="senuto-chart-wrap" data-loadable>
         <canvas id="ga4-organic-chart"></canvas>
     </div>
 
-    {% if audit.ga4_channels_history.months %}
-    <h3 class="ga4-subheading">Ruch wg kanału (ostatnie 12 miesięcy)</h3>
+    <h3 class="ga4-subheading" id="ga4-channels-heading">Ruch wg kanału (ostatnie 12 miesięcy)</h3>
     <p class="priority-empty" style="margin: 0 0 0.5rem;">
         Domyślnie widoczny jest tylko ruch organiczny - zaznacz dodatkowe kanały, żeby je porównać.
     </p>
     <div class="ga4-channel-toggles" id="ga4-channel-toggles"></div>
     {{ audit.ga4_channels_history|json_script:"ga4-channels-data" }}
-    <div class="senuto-chart-wrap" style="margin-top: 0.5rem;">
+    <div class="senuto-chart-wrap" style="margin-top: 0.5rem;" data-loadable>
         <canvas id="ga4-channels-chart"></canvas>
     </div>
-    {% endif %}
 
-    {% if audit.ga4_insights.summary_points %}
-    <div class="ga4-insights-box{% if audit.ga4_insights.cannibalization_warning %} ga4-insights-warning{% endif %}">
+    <div class="ga4-insights-box{% if audit.ga4_insights.cannibalization_warning %} ga4-insights-warning{% endif %}{% if not audit.ga4_insights.summary_points %} hidden{% endif %}"
+         id="ga4-insights-box" data-loadable>
         <div class="ga4-insights-heading">🧠 Automatyczne Wnioski SEO</div>
-        <ul class="ga4-insights-list">
+        <ul class="ga4-insights-list" id="ga4-insights-list">
             {% for point in audit.ga4_insights.summary_points %}
             <li>{{ point }}</li>
             {% endfor %}
         </ul>
     </div>
+
+    {% if not audit.ga4_history.dates %}
+    <p class="priority-empty" id="ga4-empty-note">
+        Połączono z Google Analytics, ale dla zapisanego okresu nie ma danych o ruchu organicznym.
+        Wybierz inny zakres dat powyżej.
+    </p>
     {% endif %}
 
     <h3 class="ga4-subheading">Śledzenie leadów / konwersji</h3>
@@ -261,48 +272,66 @@
     </p>
     {% endif %}
 
-    {% if audit.ga4_selected_lead_event and ga4_lead_insights.history.months %}
-    {# ---------- Osobna, niezależna sekcja: wykres i wnioski dla leadów/konwersji ---------- #}
+    {% if audit.ga4_selected_lead_event %}
     <div class="ga4-leads-section">
-        <h3 class="ga4-subheading">Leady / konwersje: {{ audit.ga4_selected_lead_event }} (ostatnie 12 miesięcy)</h3>
+        <h3 class="ga4-subheading" id="ga4-leads-heading">
+            Leady / konwersje: {{ audit.ga4_selected_lead_event }} (ostatnie 12 miesięcy)
+        </h3>
         {{ ga4_lead_insights.history|json_script:"ga4-leads-data" }}
-        <div class="senuto-chart-wrap">
+        <div class="senuto-chart-wrap" data-loadable>
             <canvas id="ga4-leads-chart"></canvas>
         </div>
-        {% if ga4_lead_insights.summary_points %}
-        <div class="ga4-insights-box ga4-insights-leads">
+        <div class="ga4-insights-box ga4-insights-leads{% if not ga4_lead_insights.summary_points %} hidden{% endif %}"
+             id="ga4-leads-insights-box" data-loadable>
             <div class="ga4-insights-heading">🎯 Wnioski o leadach</div>
-            <ul class="ga4-insights-list">
+            <ul class="ga4-insights-list" id="ga4-leads-insights-list">
                 {% for point in ga4_lead_insights.summary_points %}
                 <li>{{ point }}</li>
                 {% endfor %}
             </ul>
         </div>
-        {% endif %}
     </div>
     {% endif %}
-
-    {% else %}
-    <p class="priority-empty">Połączono z Google Analytics, ale nie udało się jeszcze pobrać danych o ruchu organicznym.</p>
     {% endif %}
 </div>
 
-{# ---------- SEKCJA 4: Analiza Fraz Kluczowych (Google Search Console) ---------- #}
 <div class="panel">
-    <h2 class="section-heading">🔑 Analiza Fraz Kluczowych (Google Search Console – Ostatnie 3 Miesiące vs Rok Temu)</h2>
+    <h2 class="section-heading">🔑 Analiza Fraz Kluczowych (Google Search Console — wybrany okres vs rok temu)</h2>
     {% if not audit.ga4_refresh_token %}
     <p class="priority-empty">
         Połącz konto Google (sekcja GA4 powyżej), żeby zobaczyć porównanie fraz kluczowych z Google Search Console.
     </p>
-    {% elif audit.gsc_total_clicks_current or audit.gsc_total_clicks_previous %}
-    <div class="gsc-summary-card">
-        <div class="gsc-summary-numbers">
-            <span class="gsc-summary-current">{{ audit.gsc_total_clicks_current|intcomma }}</span>
-            <span class="gsc-summary-vs">vs</span>
-            <span class="gsc-summary-previous">{{ audit.gsc_total_clicks_previous|intcomma }}</span>
-            <span class="gsc-summary-label">kliknięć (3 mies.)</span>
+    {% else %}
+    <div class="range-controls" data-range-controls="gsc" data-source="gsc">
+        <div class="range-quick">
+            <button type="button" class="range-quick-btn" data-range="7d">7 dni</button>
+            <button type="button" class="range-quick-btn" data-range="30d">30 dni</button>
+            <button type="button" class="range-quick-btn" data-range="90d">90 dni</button>
+            <button type="button" class="range-quick-btn" data-range="12m">12 miesięcy</button>
         </div>
-        <span class="status-flag {% if audit.gsc_yoy_change_percent >= 0 %}status-ok{% else %}status-error{% endif %}">
+        <div class="range-custom">
+            <label for="gsc-start-date">Od</label>
+            <input type="date" id="gsc-start-date" class="range-start" max="{{ today_iso }}">
+            <label for="gsc-end-date">Do</label>
+            <input type="date" id="gsc-end-date" class="range-end" max="{{ today_iso }}">
+            <button type="button" class="range-apply">Zastosuj</button>
+        </div>
+        <p class="range-status">
+            <span class="range-label">Zakres z ostatniego odświeżenia danych audytu (3 pełne miesiące)</span>
+            <span class="spinner range-spinner hidden"></span>
+        </p>
+        <p class="range-error hidden" role="alert"></p>
+    </div>
+
+    <div class="gsc-summary-card" data-loadable>
+        <div class="gsc-summary-numbers">
+            <span class="gsc-summary-current" id="gsc-clicks-current">{{ audit.gsc_total_clicks_current|intcomma }}</span>
+            <span class="gsc-summary-vs">vs</span>
+            <span class="gsc-summary-previous" id="gsc-clicks-previous">{{ audit.gsc_total_clicks_previous|intcomma }}</span>
+            <span class="gsc-summary-label" id="gsc-clicks-label">kliknięć (3 mies.)</span>
+        </div>
+        <span class="status-flag {% if audit.gsc_yoy_change_percent >= 0 %}status-ok{% else %}status-error{% endif %}"
+              id="gsc-yoy-flag">
             {% if audit.gsc_yoy_change_percent >= 0 %}+{% endif %}{{ audit.gsc_yoy_change_percent }}% YoY
         </span>
     </div>
@@ -310,13 +339,13 @@
     <h3 class="ga4-subheading">🔑 Frazy kluczowe</h3>
     <div class="gsc-tables-grid">
         <div>
-            <h3 class="ga4-subheading" style="color: var(--ok);">📈 Top 10 Wzrostów (3M R/R)</h3>
-            <div class="table-scroll">
+            <h3 class="ga4-subheading" style="color: var(--ok);">📈 Top 10 Wzrostów (R/R)</h3>
+            <div class="table-scroll" data-loadable>
                 <table class="gsc-table">
                     <thead>
                         <tr><th>Fraza</th><th>Kliknięcia teraz</th><th>Kliknięcia rok temu</th><th>Różnica</th></tr>
                     </thead>
-                    <tbody>
+                    <tbody id="gsc-query-gainers">
                         {% for row in audit.gsc_top_gainers %}
                         <tr>
                             <td>{{ row.query }}</td>
@@ -332,13 +361,13 @@
             </div>
         </div>
         <div>
-            <h3 class="ga4-subheading" style="color: var(--error);">📉 Top 10 Spadków (3M R/R)</h3>
-            <div class="table-scroll">
+            <h3 class="ga4-subheading" style="color: var(--error);">📉 Top 10 Spadków (R/R)</h3>
+            <div class="table-scroll" data-loadable>
                 <table class="gsc-table">
                     <thead>
                         <tr><th>Fraza</th><th>Kliknięcia teraz</th><th>Kliknięcia rok temu</th><th>Różnica</th></tr>
                     </thead>
-                    <tbody>
+                    <tbody id="gsc-query-losers">
                         {% for row in audit.gsc_top_losers %}
                         <tr>
                             <td>{{ row.query }}</td>
@@ -354,23 +383,22 @@
             </div>
         </div>
     </div>
-    {% if audit.gsc_query_commentary %}
-    <div class="ga4-insights-box">
+    <div class="ga4-insights-box{% if not audit.gsc_query_commentary %} hidden{% endif %}"
+         id="gsc-query-commentary-box" data-loadable>
         <div class="ga4-insights-heading">🧠 Wnioski o frazach</div>
-        <p class="gsc-commentary-text">{{ audit.gsc_query_commentary }}</p>
+        <p class="gsc-commentary-text" id="gsc-query-commentary">{{ audit.gsc_query_commentary }}</p>
     </div>
-    {% endif %}
 
     <h3 class="ga4-subheading">📄 Podstrony</h3>
     <div class="gsc-tables-grid">
         <div>
-            <h3 class="ga4-subheading" style="color: var(--ok);">📈 Top 10 Wzrostów (3M R/R)</h3>
-            <div class="table-scroll">
+            <h3 class="ga4-subheading" style="color: var(--ok);">📈 Top 10 Wzrostów (R/R)</h3>
+            <div class="table-scroll" data-loadable>
                 <table class="gsc-table">
                     <thead>
                         <tr><th>Podstrona</th><th>Kliknięcia teraz</th><th>Kliknięcia rok temu</th><th>Różnica</th></tr>
                     </thead>
-                    <tbody>
+                    <tbody id="gsc-page-gainers">
                         {% for row in audit.gsc_top_page_gainers %}
                         <tr>
                             <td>{{ row.page }}</td>
@@ -386,13 +414,13 @@
             </div>
         </div>
         <div>
-            <h3 class="ga4-subheading" style="color: var(--error);">📉 Top 10 Spadków (3M R/R)</h3>
-            <div class="table-scroll">
+            <h3 class="ga4-subheading" style="color: var(--error);">📉 Top 10 Spadków (R/R)</h3>
+            <div class="table-scroll" data-loadable>
                 <table class="gsc-table">
                     <thead>
                         <tr><th>Podstrona</th><th>Kliknięcia teraz</th><th>Kliknięcia rok temu</th><th>Różnica</th></tr>
                     </thead>
-                    <tbody>
+                    <tbody id="gsc-page-losers">
                         {% for row in audit.gsc_top_page_losers %}
                         <tr>
                             <td>{{ row.page }}</td>
@@ -408,26 +436,25 @@
             </div>
         </div>
     </div>
-    {% if audit.gsc_page_commentary %}
-    <div class="ga4-insights-box">
+    <div class="ga4-insights-box{% if not audit.gsc_page_commentary %} hidden{% endif %}"
+         id="gsc-page-commentary-box" data-loadable>
         <div class="ga4-insights-heading">🧠 Wnioski o podstronach</div>
-        <p class="gsc-commentary-text">{{ audit.gsc_page_commentary }}</p>
+        <p class="gsc-commentary-text" id="gsc-page-commentary">{{ audit.gsc_page_commentary }}</p>
     </div>
-    {% endif %}
-    {% else %}
-    <p class="priority-empty">
-        Nie znaleziono usługi Google Search Console dla tej domeny (lub brak zarejestrowanych kliknięć w
-        analizowanym okresie). Jeśli konto Google zostało połączone przed dodaniem tej funkcji, połącz je ponownie.
+
+    {% if not audit.gsc_total_clicks_current and not audit.gsc_total_clicks_previous %}
+    <p class="priority-empty" id="gsc-empty-note">
+        Dla zapisanego okresu nie znaleziono kliknięć w Search Console (albo domena nie jest tam
+        zarejestrowana). Wybierz inny zakres dat powyżej, żeby sprawdzić ponownie.
     </p>
+    {% endif %}
     {% endif %}
 </div>
 
 </div>
-{# ---------- /tab-panel-visibility ---------- #}
 
 <div id="tab-panel-technical" class="detail-tab-panel hidden">
 
-{# ---------- 4 akordeony zgodne ze strukturą pełnego Audytu SEO (AI Ready) ---------- #}
 <div class="tech-accordion-list">
     {% for group in technical_accordions %}
     <details class="tech-accordion" {% if forloop.first %}open{% endif %}>
@@ -448,7 +475,6 @@
         </div>
     </details>
     {% if group.id == "content" %}
-    {# ---------- Akordeon 3/4: Dane Strukturalne (Schema.org) - dedykowana tabela statusów ---------- #}
     <details class="tech-accordion">
         <summary class="tech-accordion-summary">
             <span>🧬 Dane Strukturalne</span>
@@ -478,7 +504,6 @@
 </div>
 
 </div>
-{# ---------- /tab-panel-technical ---------- #}
 
 {% if show_charts_js %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
@@ -538,7 +563,7 @@
 </script>
 {% endif %}
 
-{% if audit.ga4_refresh_token and audit.ga4_history.dates %}
+{% if audit.ga4_refresh_token %}
 <script>
 (function () {
     var dataEl = document.getElementById("ga4-history-data");
@@ -546,13 +571,14 @@
     if (!dataEl || !canvas || typeof Chart === "undefined") return;
 
     var history = JSON.parse(dataEl.textContent);
-    new Chart(canvas.getContext("2d"), {
+    window.seoCharts = window.seoCharts || {};
+    window.seoCharts.ga4Organic = new Chart(canvas.getContext("2d"), {
         type: "line",
         data: {
-            labels: history.dates,
+            labels: history.dates || [],
             datasets: [{
                 label: "Sesje organiczne (GA4)",
-                data: history.sessions,
+                data: history.sessions || [],
                 borderColor: "#4285F4",
                 backgroundColor: "rgba(66, 133, 244, 0.15)",
                 pointBackgroundColor: "#4285F4",
@@ -574,7 +600,7 @@
 </script>
 {% endif %}
 
-{% if audit.ga4_refresh_token and audit.ga4_channels_history.months %}
+{% if audit.ga4_refresh_token %}
 <script>
 (function () {
     var dataEl = document.getElementById("ga4-channels-data");
@@ -583,8 +609,6 @@
     if (!dataEl || !canvas || typeof Chart === "undefined") return;
 
     var data = JSON.parse(dataEl.textContent);
-    // Paleta dla kanałów innych niż Organic Search (ten zawsze ma neonową zieleń) -
-    // kolejność kanałów pochodzi z backendu (auditor.services.ga4_service.ALLOWED_CHANNELS).
     var palette = ["#F59E0B", "#A78BFA", "#38BDF8", "#F472B6", "#FB923C"];
     var paletteIndex = 0;
 
@@ -599,22 +623,18 @@
             borderWidth: isOrganic ? 3 : 1.5,
             pointRadius: 0,
             tension: 0.25,
-            // Domyślnie widoczny jest WYŁĄCZNIE ruch organiczny - pozostałe kanały
-            // użytkownik włącza ręcznie zaznaczając checkbox nad wykresem.
             hidden: !isOrganic,
         };
     });
 
-    var chart = new Chart(canvas.getContext("2d"), {
+    window.seoCharts = window.seoCharts || {};
+    var chart = window.seoCharts.ga4Channels = new Chart(canvas.getContext("2d"), {
         type: "line",
-        data: { labels: data.months, datasets: datasets },
+        data: { labels: data.months || [], datasets: datasets },
         options: {
             responsive: true,
             interaction: { mode: "index", intersect: false },
             animation: { duration: 400 },
-            // Wyłączona domyślna legenda Chart.js - zastąpiona własnymi checkboxami
-            // nad wykresem (patrz pętla poniżej), żeby wymusić "wyłącznie Organic
-            // Search domyślnie widoczny" zamiast standardowego "wszystko widoczne".
             plugins: { legend: { display: false } },
             scales: {
                 x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
@@ -622,6 +642,8 @@
             },
         },
     });
+
+    window.seoCharts.ga4ChannelOrder = datasets.map(function (d) { return d.label; });
 
     if (togglesEl) {
         datasets.forEach(function (dataset, index) {
@@ -649,7 +671,7 @@
 </script>
 {% endif %}
 
-{% if audit.ga4_selected_lead_event and ga4_lead_insights.history.months %}
+{% if audit.ga4_selected_lead_event %}
 <script>
 (function () {
     var dataEl = document.getElementById("ga4-leads-data");
@@ -657,13 +679,14 @@
     if (!dataEl || !canvas || typeof Chart === "undefined") return;
 
     var data = JSON.parse(dataEl.textContent);
-    new Chart(canvas.getContext("2d"), {
+    window.seoCharts = window.seoCharts || {};
+    window.seoCharts.ga4Leads = new Chart(canvas.getContext("2d"), {
         type: "bar",
         data: {
-            labels: data.months,
+            labels: data.months || [],
             datasets: [{
                 label: "{{ audit.ga4_selected_lead_event|escapejs }}",
-                data: data.events,
+                data: data.events || [],
                 backgroundColor: "#4285F4",
                 borderRadius: 4,
             }],
@@ -677,6 +700,253 @@
                 y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
             },
         },
+    });
+})();
+</script>
+{% endif %}
+
+{% if audit.ga4_refresh_token %}
+<script>
+(function () {
+    var endpoint = "{% url 'auditor:analytics_data' audit.pk %}";
+    var controls = document.querySelectorAll("[data-range-controls]");
+    if (!controls.length) return;
+
+    function setLoading(section, isLoading) {
+        var panel = section.closest(".panel");
+        if (!panel) return;
+        panel.querySelectorAll("[data-loadable]").forEach(function (el) {
+            el.classList.toggle("is-loading", isLoading);
+        });
+        var spinner = section.querySelector(".range-spinner");
+        if (spinner) spinner.classList.toggle("hidden", !isLoading);
+        section.querySelectorAll("button, input").forEach(function (el) {
+            el.disabled = isLoading;
+        });
+    }
+
+    function showError(section, message) {
+        var box = section.querySelector(".range-error");
+        if (!box) return;
+        box.textContent = message || "";
+        box.classList.toggle("hidden", !message);
+    }
+
+    function setRangeLabel(section, label) {
+        var el = section.querySelector(".range-label");
+        if (el) el.textContent = "Zakres: " + label;
+    }
+
+    function formatNumber(value) {
+        return Number(value || 0).toLocaleString("pl-PL");
+    }
+
+    function renderList(listEl, points) {
+        if (!listEl) return;
+        listEl.innerHTML = "";
+        (points || []).forEach(function (point) {
+            var li = document.createElement("li");
+            li.textContent = point;
+            listEl.appendChild(li);
+        });
+        var box = listEl.closest(".ga4-insights-box");
+        if (box) box.classList.toggle("hidden", !(points || []).length);
+    }
+
+    function renderRows(tbody, rows, keyName, positive) {
+        if (!tbody) return;
+        tbody.innerHTML = "";
+        if (!rows || !rows.length) {
+            var empty = document.createElement("tr");
+            var cell = document.createElement("td");
+            cell.colSpan = 4;
+            cell.className = "priority-empty";
+            cell.textContent = "Brak danych.";
+            empty.appendChild(cell);
+            tbody.appendChild(empty);
+            return;
+        }
+        rows.forEach(function (row) {
+            var tr = document.createElement("tr");
+            [
+                row[keyName],
+                formatNumber(row.clicks_current),
+                formatNumber(row.clicks_previous),
+                (positive ? "+" : "") + formatNumber(row.delta),
+            ].forEach(function (value, index) {
+                var td = document.createElement("td");
+                // textContent, nie innerHTML - frazy i adresy podstron pochodzą z
+                // Search Console, czyli spoza naszej kontroli.
+                td.textContent = value;
+                if (index === 3) td.className = positive ? "gsc-delta-positive" : "gsc-delta-negative";
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+    }
+
+    function updateGa4(data, rangeLabel) {
+        if (!data || !data.available) return;
+        var charts = window.seoCharts || {};
+
+        var kpi = document.getElementById("ga4-kpi-sessions");
+        if (kpi) kpi.textContent = formatNumber(data.organic_sessions);
+        var kpiLabel = document.getElementById("ga4-kpi-label");
+        if (kpiLabel) kpiLabel.textContent = "Sesji organicznych (" + rangeLabel + ")";
+
+        if (charts.ga4Organic && data.history) {
+            charts.ga4Organic.data.labels = data.history.dates || [];
+            charts.ga4Organic.data.datasets[0].data = data.history.sessions || [];
+            charts.ga4Organic.update();
+        }
+
+        if (charts.ga4Channels && data.channels) {
+            charts.ga4Channels.data.labels = data.channels.months || [];
+            var order = charts.ga4ChannelOrder || [];
+            charts.ga4Channels.data.datasets.forEach(function (dataset, index) {
+                var channel = order[index] || dataset.label;
+                dataset.data = (data.channels.channels || {})[channel] || [];
+            });
+            charts.ga4Channels.update();
+        }
+        var channelsHeading = document.getElementById("ga4-channels-heading");
+        if (channelsHeading) channelsHeading.textContent = "Ruch wg kanału (" + rangeLabel + ")";
+
+        renderList(document.getElementById("ga4-insights-list"), (data.insights || {}).summary_points);
+        var insightsBox = document.getElementById("ga4-insights-box");
+        if (insightsBox) {
+            insightsBox.classList.toggle("ga4-insights-warning", !!(data.insights || {}).cannibalization_warning);
+        }
+
+        var leads = data.lead_insights || {};
+        if (charts.ga4Leads && leads.history) {
+            charts.ga4Leads.data.labels = leads.history.months || [];
+            charts.ga4Leads.data.datasets[0].data = leads.history.events || [];
+            charts.ga4Leads.update();
+        }
+        renderList(document.getElementById("ga4-leads-insights-list"), leads.summary_points);
+        var leadsHeading = document.getElementById("ga4-leads-heading");
+        if (leadsHeading && data.lead_event) {
+            leadsHeading.textContent = "Leady / konwersje: " + data.lead_event + " (" + rangeLabel + ")";
+        }
+
+        var emptyNote = document.getElementById("ga4-empty-note");
+        if (emptyNote) emptyNote.classList.add("hidden");
+    }
+
+    function updateGsc(data, rangeLabel) {
+        if (!data || !data.available) return;
+
+        var current = document.getElementById("gsc-clicks-current");
+        if (current) current.textContent = formatNumber(data.total_clicks_current);
+        var previous = document.getElementById("gsc-clicks-previous");
+        if (previous) previous.textContent = formatNumber(data.total_clicks_previous);
+        var label = document.getElementById("gsc-clicks-label");
+        if (label) label.textContent = "kliknięć (" + rangeLabel + ")";
+
+        var flag = document.getElementById("gsc-yoy-flag");
+        if (flag) {
+            var change = Number(data.yoy_change_percent || 0);
+            flag.textContent = (change >= 0 ? "+" : "") + change + "% YoY";
+            flag.classList.toggle("status-ok", change >= 0);
+            flag.classList.toggle("status-error", change < 0);
+        }
+
+        renderRows(document.getElementById("gsc-query-gainers"), data.top_gainers, "query", true);
+        renderRows(document.getElementById("gsc-query-losers"), data.top_losers, "query", false);
+        renderRows(document.getElementById("gsc-page-gainers"), data.top_page_gainers, "page", true);
+        renderRows(document.getElementById("gsc-page-losers"), data.top_page_losers, "page", false);
+
+        [
+            ["gsc-query-commentary", data.query_commentary],
+            ["gsc-page-commentary", data.page_commentary],
+        ].forEach(function (pair) {
+            var el = document.getElementById(pair[0]);
+            if (!el) return;
+            el.textContent = pair[1] || "";
+            var box = el.closest(".ga4-insights-box");
+            if (box) box.classList.toggle("hidden", !pair[1]);
+        });
+
+        var emptyNote = document.getElementById("gsc-empty-note");
+        if (emptyNote) emptyNote.classList.add("hidden");
+    }
+
+    function requestRange(section, params) {
+        var source = section.dataset.source;
+        params.set("source", source);
+        showError(section, "");
+        setLoading(section, true);
+
+        fetch(endpoint + "?" + params.toString(), { headers: { "X-Requested-With": "XMLHttpRequest" } })
+            .then(function (response) {
+                return response.json().then(function (payload) {
+                    if (!response.ok) throw new Error(payload.error || "Błąd " + response.status);
+                    return payload;
+                });
+            })
+            .then(function (payload) {
+                var rangeLabel = (payload.range || {}).label || "";
+                setRangeLabel(section, rangeLabel);
+                if (payload.ga4) updateGa4(payload.ga4, rangeLabel);
+                if (payload.gsc) updateGsc(payload.gsc, rangeLabel);
+
+                var unavailable = (payload.ga4 && !payload.ga4.available) || (payload.gsc && !payload.gsc.available);
+                if (unavailable) {
+                    showError(section, (payload.ga4 || payload.gsc).reason || "Brak danych dla tego zakresu.");
+                }
+                // Daty w polach własnego zakresu synchronizujemy z tym, co realnie
+                // policzył backend (mógł np. przyciąć datę końcową do dzisiaj).
+                var startInput = section.querySelector(".range-start");
+                var endInput = section.querySelector(".range-end");
+                if (startInput && payload.range) startInput.value = payload.range.start_date;
+                if (endInput && payload.range) endInput.value = payload.range.end_date;
+            })
+            .catch(function (error) {
+                showError(section, error.message || "Nie udało się pobrać danych dla wybranego zakresu.");
+            })
+            .finally(function () {
+                setLoading(section, false);
+            });
+    }
+
+    controls.forEach(function (section) {
+        section.querySelectorAll(".range-quick-btn").forEach(function (button) {
+            button.addEventListener("click", function () {
+                section.querySelectorAll(".range-quick-btn").forEach(function (other) {
+                    other.classList.toggle("active", other === button);
+                });
+                var params = new URLSearchParams();
+                params.set("range", button.dataset.range);
+                requestRange(section, params);
+            });
+        });
+
+        var applyBtn = section.querySelector(".range-apply");
+        if (applyBtn) {
+            applyBtn.addEventListener("click", function () {
+                var start = section.querySelector(".range-start").value;
+                var end = section.querySelector(".range-end").value;
+                if (!start || !end) {
+                    showError(section, "Podaj obie daty zakresu.");
+                    return;
+                }
+                if (start > end) {
+                    // Ta sama reguła jest egzekwowana po stronie serwera
+                    // (date_ranges.validate_range) - tutaj tylko po to, żeby nie
+                    // wysyłać żądania, o którym z góry wiadomo, że zostanie odrzucone.
+                    showError(section, "Data początkowa nie może być późniejsza niż data końcowa.");
+                    return;
+                }
+                section.querySelectorAll(".range-quick-btn").forEach(function (other) {
+                    other.classList.remove("active");
+                });
+                var params = new URLSearchParams();
+                params.set("start_date", start);
+                params.set("end_date", end);
+                requestRange(section, params);
+            });
+        }
     });
 })();
 </script>

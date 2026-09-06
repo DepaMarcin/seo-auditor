@@ -36,7 +36,6 @@
     .sheet { page-break-after: always; }
     .sheet:last-of-type { page-break-after: auto; }
 
-    /* --- Okładka: ciemny hero z neonowo-zielonym akcentem --- */
     .cover {
         min-height: 900px;
         display: flex;
@@ -61,7 +60,6 @@
     .cover-score-box .lbl { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; }
     .cover-footer { color: var(--muted); font-size: 0.8rem; }
 
-    /* --- Nagłówki i typografia raportu --- */
     h1.chapter-title {
         font-size: 1.5rem;
         margin: 0 0 1.5rem;
@@ -79,7 +77,6 @@
         border-bottom: 1px dashed var(--border);
     }
 
-    /* --- Tabele: zielone podświetlenia nagłówków --- */
     table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.85rem; }
     th {
         background: var(--accent);
@@ -116,7 +113,6 @@
         color: #334155;
     }
 
-    /* --- Statusy --- */
     .status-flag {
         display: inline-block;
         padding: 0.15rem 0.6rem;
@@ -130,7 +126,6 @@
     .status-flag.warning { background: #eab308; color: #1e293b; }
     .status-flag.ok { background: var(--accent); color: #000000; }
 
-    /* --- Ramki Ocena / Rekomendacja / Kod (kontrastowe bloki rozwiązań) --- */
     .finding { margin: 1rem 0 1.5rem; page-break-inside: avoid; }
     .finding-title { font-weight: 700; margin-bottom: 0.35rem; color: var(--text); }
     .callout {
@@ -158,7 +153,6 @@
         max-width: 100%;
     }
 
-    /* --- Pasek postępu kategorii (na okładce/przeglądzie) --- */
     .cat-bar-row { margin-bottom: 0.9rem; }
     .cat-bar-head { display: flex; justify-content: space-between; font-size: 0.85rem; margin-bottom: 0.25rem; }
     .cat-track { height: 8px; border-radius: 999px; background: var(--border); overflow: hidden; }
@@ -192,7 +186,6 @@
     <button type="button" onclick="window.print()">🖨️ Drukuj / Zapisz jako PDF</button>
 </div>
 
-<!-- OKŁADKA -->
 <div class="page sheet cover">
     <div>
         <div class="cover-brand">SEO Auditor</div>
@@ -223,7 +216,6 @@
     <div class="cover-footer">Raport wygenerowany automatycznie przez SEO Auditor — silnik audytowy oparty o RAG.</div>
 </div>
 
-<!-- SPIS TREŚCI -->
 <div class="page sheet">
     <div class="toc-title">Spis treści</div>
     <ul class="toc-list">
@@ -243,7 +235,6 @@
     {% endfor %}
 </div>
 
-<!-- 1. PRIORYTETOWE WDROŻENIA -->
 <div class="page sheet">
     <h1 class="chapter-title">1. Priorytetowe wdrożenia</h1>
     <p>Poniżej przygotowana została lista zadań do wdrożenia, uszeregowana wg priorytetu (1-10) oraz zespołu odpowiedzialnego za realizację.</p>
@@ -277,7 +268,6 @@
     {% endif %}
 </div>
 
-<!-- 2. ANALIZA TECHNICZNA -->
 <div class="page sheet">
     <h1 class="chapter-title">2. Analiza Techniczna</h1>
     <p>Rozdział obejmuje strukturę techniczną strony (H1, canonical) oraz wydajność i Core Web Vitals.</p>
@@ -309,7 +299,6 @@
     {% endfor %}
 </div>
 
-<!-- 3. META TAGI -->
 <div class="page sheet">
     <h1 class="chapter-title">3. Meta Tagi</h1>
     <p>Analiza znaczników title, meta description oraz Open Graph.</p>
@@ -341,7 +330,6 @@
     {% endfor %}
 </div>
 
-<!-- 4. DANE STRUKTURALNE SCHEMA.ORG -->
 <div class="page sheet">
     <h1 class="chapter-title">4. Dane Strukturalne Schema.org</h1>
     <p>Ocena obecności i poprawności danych strukturalnych (JSON-LD / Microdata) na podstawie wykrytego typu podstrony oraz uniwersalnych reguł BreadcrumbList i FAQPage.</p>
@@ -373,7 +361,6 @@
     {% endfor %}
 </div>
 
-<!-- 5. WIDOCZNOŚĆ W AI OVERVIEWS (GEO) -->
 <div class="page sheet">
     <h1 class="chapter-title">5. Widoczność w AI Overviews (GEO)</h1>
     <p>Ocena czynników wpływających na wykorzystanie treści przez modele językowe (LLM) i Google AI Overviews: szum nagłówkowy, kolejność nagłówków, jakość plików graficznych oraz sygnały E-E-A-T (autorstwo, aktualność).</p>

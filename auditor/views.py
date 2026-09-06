@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import date
 from urllib.parse import urlparse
 
 from django.conf import settings
@@ -35,7 +36,18 @@ from .presentation import (
     score_bucket,
 )
 from .ratelimit import is_rate_limited
+from .services.date_ranges import (
+    DateRangeError,
+    default_range,
+    format_range_label,
+    parse_iso_date,
+    quick_range,
+    validate_range,
+)
+from .services.ga4_insights import analyze_channel_trends
 from .services.ga4_service import GA4OAuthService
+from .services.gsc_insights import generate_page_commentary, generate_query_commentary
+from .services.gsc_service import GSCService
 from .services.url_guard import UnsafeUrlError, validate_public_url
 from .tasks import enqueue_audit
 
@@ -43,6 +55,9 @@ logger = logging.getLogger(__name__)
 
 # Liczba audytów na liście na stronie głównej.
 RECENT_AUDITS_LIMIT = 10
+
+# Zakres pokazywany w sekcjach GA4/GSC przy pierwszym wejściu na stronę audytu.
+DEFAULT_ANALYTICS_RANGE_DAYS = 30
 
 
 def _get_owned_audit(request: HttpRequest, pk: int) -> Audit:
@@ -358,6 +373,146 @@ def _fetch_ga4_available_events(audit: Audit) -> list[str]:
     return events
 
 
+def _resolve_requested_range(request: HttpRequest) -> tuple[date, date]:
+    """Wyznacza zakres dat żądania: `range` (skrót) albo `start_date`/`end_date`.
+
+    Podnosi `DateRangeError` z komunikatem gotowym do pokazania użytkownikowi, gdy
+    parametry są niepoprawne (zły format, odwrócona kolejność, zbyt szerokie okno).
+    """
+    quick = request.GET.get("range", "").strip()
+    if quick:
+        return quick_range(quick)
+
+    raw_start = request.GET.get("start_date", "").strip()
+    raw_end = request.GET.get("end_date", "").strip()
+    if not raw_start and not raw_end:
+        return default_range(DEFAULT_ANALYTICS_RANGE_DAYS)
+    if not raw_start or not raw_end:
+        raise DateRangeError("Podaj obie daty zakresu (start_date oraz end_date).")
+
+    start = parse_iso_date(raw_start, "start_date")
+    end = parse_iso_date(raw_end, "end_date")
+    return validate_range(start, end)
+
+
+def _build_ga4_payload(
+    audit: Audit, start_date: date, end_date: date, period_label: str
+) -> dict:
+    """Świeże dane GA4 dla wskazanego zakresu: szereg czasowy, KPI i przeliczone wnioski."""
+    if not (audit.ga4_refresh_token and audit.ga4_property_id):
+        return {"available": False, "reason": "Nie połączono konta Google Analytics."}
+
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
+        return {"available": False, "reason": "Sesja Google wygasła - połącz konto ponownie."}
+
+    service = GA4OAuthService()
+    property_id = audit.ga4_property_id
+    lead_event = audit.ga4_selected_lead_event
+
+    traffic = service.fetch_organic_traffic(credentials, property_id, start_date, end_date)
+    channels = service.fetch_channel_history(credentials, property_id, start_date, end_date)
+
+    lead_history = None
+    if lead_event:
+        lead_history = service.fetch_event_conversions(
+            credentials, property_id, lead_event, start_date, end_date
+        )["history"]
+
+    yoy = service.fetch_yoy_summary(
+        credentials, property_id, start_date, end_date, lead_event_name=lead_event
+    )
+    insights = analyze_channel_trends(
+        yoy["channels"], lead_history=lead_history, lead_totals_3m=yoy["leads"],
+        period_label=period_label,
+    )
+
+    return {
+        "available": True,
+        "organic_sessions": traffic["total_sessions"],
+        "granularity": traffic["granularity"],
+        "history": traffic["history"],
+        "channels": channels,
+        "insights": insights,
+        "lead_event": lead_event,
+        "lead_insights": insights.get("lead_insights") or {},
+    }
+
+
+def _build_gsc_payload(
+    audit: Audit, start_date: date, end_date: date, period_label: str
+) -> dict:
+    """Świeże dane Search Console dla wskazanego zakresu (vs ten sam okres rok wcześniej)."""
+    if not (audit.ga4_refresh_token and audit.ga4_property_id):
+        return {"available": False, "reason": "Nie połączono konta Google."}
+
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
+        return {"available": False, "reason": "Sesja Google wygasła - połącz konto ponownie."}
+
+    service = GSCService()
+    query_stats = service.fetch_yoy_query_performance(credentials, audit.url, start_date, end_date)
+    page_stats = service.fetch_yoy_page_performance(credentials, audit.url, start_date, end_date)
+
+    return {
+        "available": True,
+        "total_clicks_current": query_stats["total_clicks_current"],
+        "total_clicks_previous": query_stats["total_clicks_previous"],
+        "yoy_change_percent": query_stats["yoy_change_percent"],
+        "top_gainers": query_stats["top_gainers"],
+        "top_losers": query_stats["top_losers"],
+        "top_page_gainers": page_stats["top_gainers"],
+        "top_page_losers": page_stats["top_losers"],
+        "query_commentary": generate_query_commentary(query_stats, period_label),
+        "page_commentary": generate_page_commentary(page_stats, period_label),
+    }
+
+
+@login_required
+def analytics_data(request: HttpRequest, pk: int) -> JsonResponse:
+    """Endpoint JSON zasilający dynamiczny wybór zakresu dat w sekcjach GA4 i GSC.
+
+    Parametry (query string):
+      * `start_date`, `end_date` - zakres w formacie YYYY-MM-DD, albo
+      * `range` - skrót: "7d" / "30d" / "90d" / "12m",
+      * `source` - "ga4", "gsc" albo "all" (domyślnie): która sekcja ma być policzona.
+        Ogranicza liczbę wywołań API do tej sekcji, którą użytkownik faktycznie zmienił.
+
+    Zwraca 400 z czytelnym komunikatem, gdy zakres jest niepoprawny - walidacja leży
+    w `auditor.services.date_ranges.validate_range`.
+    """
+    audit = _get_owned_audit(request, pk)
+
+    try:
+        start_date, end_date = _resolve_requested_range(request)
+    except DateRangeError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    source = request.GET.get("source", "all").strip().lower()
+    if source not in ("all", "ga4", "gsc"):
+        return JsonResponse({"error": "Nieprawidłowa wartość parametru source."}, status=400)
+
+    period_label = format_range_label(start_date, end_date)
+    payload: dict = {
+        "range": {
+            "start_date": start_date.isoformat(),
+            "end_date": end_date.isoformat(),
+            "label": period_label,
+        }
+    }
+
+    if source in ("all", "ga4"):
+        payload["ga4"] = _build_ga4_payload(audit, start_date, end_date, period_label)
+    if source in ("all", "gsc"):
+        payload["gsc"] = _build_gsc_payload(audit, start_date, end_date, period_label)
+
+    return JsonResponse(payload)
+
+
 @login_required
 def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
     audit = _get_owned_audit(request, pk)
@@ -393,12 +548,9 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
     # and/or w szablonie, żeby uniknąć pomyłek z precedencją operatorów w templatce.
     ga4_lead_insights = audit.ga4_insights.get("lead_insights") or {}
     has_ga4 = bool(audit.ga4_refresh_token)
-    show_charts_js = bool(
-        audit.senuto_history.get("dates")
-        or (has_ga4 and audit.ga4_history.get("dates"))
-        or (has_ga4 and audit.ga4_channels_history.get("months"))
-        or (has_ga4 and ga4_lead_insights.get("history", {}).get("months"))
-    )
+    # Przy połączonym GA4 Chart.js jest potrzebny zawsze - wykresy powstają nawet z
+    # pustymi danymi, żeby dynamiczna zmiana zakresu dat miała co aktualizować.
+    show_charts_js = bool(has_ga4 or audit.senuto_history.get("dates"))
 
     return render(
         request,
@@ -419,6 +571,8 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "ga4_available_events": _fetch_ga4_available_events(audit),
             "ga4_lead_insights": ga4_lead_insights,
             "show_charts_js": show_charts_js,
+            # Górna granica pól <input type="date"> - nie ma danych z przyszłości.
+            "today_iso": timezone.localdate().isoformat(),
             "audit_in_progress": audit.status in (Audit.Status.PENDING, Audit.Status.PROCESSING),
         },
     )

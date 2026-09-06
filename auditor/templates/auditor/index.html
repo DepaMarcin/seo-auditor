@@ -34,9 +34,6 @@
     var progressBar = document.getElementById("progress-bar");
     var loadingStatus = document.getElementById("loading-status");
 
-    // Audyt wykonuje się teraz w tle (auditor.tasks.enqueue_audit), więc ten loader
-    // pokazuje wyłącznie moment zlecania zadania - postęp samego audytu widać już na
-    // stronie szczegółów, która odpytuje endpoint `auditor:status`.
     var STATUS_MESSAGES = [
         "Zlecanie audytu do wykonania w tle...",
         "Za chwilę nastąpi przekierowanie do raportu..."
@@ -52,15 +49,11 @@
     form.addEventListener("submit", function (event) {
         event.preventDefault();
 
-        // Loader startuje tylko wtedy, gdy pole URL faktycznie ma wartość.
         if (!urlInput.value.trim()) {
             urlInput.reportValidity();
             return;
         }
 
-        // Uwaga: `disabled` na polu URL wyklucza je z FormData/natywnego wysyłania
-        // formularza - przeglądarka nie wyśle wtedy wartości w żądaniu POST.
-        // `readOnly` blokuje edycję, ale wartość pola nadal trafia do żądania.
         urlInput.readOnly = true;
         submitBtn.style.pointerEvents = "none";
         submitBtn.style.opacity = "0.6";
@@ -92,8 +85,6 @@
         fetch(form.action, { method: "POST", body: formData })
             .then(function (response) {
                 stopTimers();
-                // Bez tego sprawdzenia odpowiedź 500 była traktowana jak sukces i
-                // kończyła się przekierowaniem na stronę błędu Django.
                 if (!response.ok) {
                     loadingStatus.textContent =
                         "Nie udało się uruchomić audytu (błąd " + response.status + "). Spróbuj ponownie.";

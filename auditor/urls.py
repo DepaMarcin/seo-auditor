@@ -9,6 +9,8 @@ urlpatterns = [
     path("audits/<int:pk>/", views.audit_detail, name="detail"),
     # Odpytywany przez stronę szczegółów, dopóki audyt wykonuje się w tle.
     path("audits/<int:pk>/status/", views.audit_status, name="status"),
+    # Dane GA4/GSC dla wybranego zakresu dat (AJAX z sekcji "Widoczność i Ruch").
+    path("audits/<int:pk>/analytics-data/", views.analytics_data, name="analytics_data"),
     path("audits/<int:audit_id>/pdf/", views.download_pdf_report, name="download_pdf_report"),
     path("audits/<int:pk>/ga4/connect/", views.start_ga4_auth, name="start_ga4_auth"),
     path("ga4/callback/", views.ga4_callback, name="ga4_callback"),

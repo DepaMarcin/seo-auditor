@@ -5,7 +5,6 @@
     <title>{% block title %}SEO Auditor{% endblock %}</title>
     <style>
         :root {
-            /* --- Dark Agency Theme --- */
             --bg: #0B0F19;
             --panel: #1E293B;
             --surface-inset: #0F172A;
@@ -53,7 +52,6 @@
         }
         .logout-button:hover { color: var(--text); border-color: var(--muted); }
 
-        /* --- Ekran logowania (registration/login.html) --- */
         .login-panel { max-width: 420px; margin: 3rem auto; }
         .login-form { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 1.25rem; }
         .login-form label { font-size: 0.85rem; color: var(--muted); font-weight: 600; }
@@ -74,13 +72,6 @@
             border-radius: 8px;
             padding: 0.6rem 0.85rem;
             margin: 1rem 0 0;
-        }
-        .login-hint { margin-top: 1.25rem; font-size: 0.85rem; }
-        .login-hint code {
-            background: var(--surface-inset);
-            border: 1px solid var(--border);
-            border-radius: 4px;
-            padding: 0.1rem 0.35rem;
         }
         header a {
             color: var(--text);
@@ -177,6 +168,71 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
+        .range-controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.75rem 1rem;
+            padding: 0.85rem 1rem;
+            margin-bottom: 1rem;
+            background: var(--surface-inset);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+        .range-quick { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+        .range-quick-btn {
+            background: transparent;
+            color: var(--muted);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            padding: 0.3rem 0.85rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+        .range-quick-btn:hover { color: var(--text); border-color: var(--muted); }
+        .range-quick-btn.active {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: #000000;
+        }
+        .range-custom { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+        .range-custom label { color: var(--muted); font-size: 0.85rem; font-weight: 600; }
+        .range-custom input[type="date"] {
+            padding: 0.35rem 0.6rem;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--panel);
+            color: var(--text);
+            font: inherit;
+            font-size: 0.85rem;
+            color-scheme: dark;
+        }
+        .range-apply { padding: 0.35rem 0.9rem; font-size: 0.85rem; }
+        .range-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin: 0;
+            width: 100%;
+            color: var(--muted);
+            font-size: 0.85rem;
+        }
+        .range-error {
+            width: 100%;
+            margin: 0;
+            padding: 0.5rem 0.75rem;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.35);
+            border-radius: 6px;
+            color: var(--error);
+            font-size: 0.85rem;
+        }
+
+        /* Stan ładowania sekcji odświeżanej asynchronicznie - zawartość przygasa i
+           przestaje reagować na kliknięcia, dopóki nie wrócą nowe dane. */
+        [data-loadable] { transition: opacity 0.2s ease; }
+        [data-loadable].is-loading { opacity: 0.35; pointer-events: none; }
+
         .progress-track {
             width: 100%;
             height: 10px;
@@ -223,14 +279,12 @@
             border: 1px solid transparent;
             margin-bottom: 0.5rem;
         }
-        /* Sukces / informacja - ciemnozielone tło, jasnozielony tekst i obramowanie. */
         .messages li.message-success,
         .messages li.message-info {
             background: rgba(20, 83, 45, 0.4);
             border-color: #22c55e;
             color: #86efac;
         }
-        /* Błąd / ostrzeżenie - ciemnoczerwone tło, jasnoczerwony tekst i obramowanie. */
         .messages li.message-error,
         .messages li.message-warning {
             background: rgba(127, 29, 29, 0.4);
@@ -269,8 +323,6 @@
             border-radius: 8px;
             padding: 0.75rem 1.5rem;
         }
-        /* --- Główny przełącznik widoków strony audytu: Widoczność i Ruch / Audyt
-           Techniczny & PageSpeed - czysty JS, przełącza klasę .hidden na panelach. --- */
         .detail-tabs {
             display: flex;
             gap: 0.5rem;
@@ -338,7 +390,6 @@
         .structure-card.status-warning { border-left-color: var(--warning); }
         .structure-card.status-error { border-left-color: var(--error); }
 
-        /* --- Executive Summary: statystyki, priorytety, zdane testy --- */
         .stats-row {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -361,7 +412,6 @@
         .stat-tile.stat-passed { border-color: rgba(16, 185, 129, 0.4); }
         .stat-tile.stat-passed .stat-value { color: var(--ok); }
 
-        /* --- Analiza Widoczności (Senuto): karty TOP3/TOP10/TOP50 + wykres liniowy --- */
         .senuto-stats-row {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -370,8 +420,6 @@
         }
         .stat-tile.stat-senuto { border-color: rgba(0, 230, 118, 0.3); }
         .stat-tile.stat-senuto .stat-value { color: var(--accent); }
-        /* Kafelki TOP3/TOP10/TOP50 są jednocześnie przyciskami przełączającymi serię
-           na wykresie widoczności - stąd reset stylów natywnego <button> i stan .active. */
         .senuto-tab {
             cursor: pointer;
             display: block;
@@ -390,7 +438,6 @@
             padding: 1rem;
         }
 
-        /* --- Ruch organiczny (Google Analytics 4) - przycisk połączenia OAuth --- */
         .ga4-connect-box {
             display: flex;
             flex-direction: column;
@@ -398,7 +445,6 @@
             gap: 0.75rem;
         }
 
-        /* --- GA4: analiza wielokanałowa, boks wniosków, formularz wyboru leadu --- */
         .ga4-subheading {
             font-size: 0.8rem;
             text-transform: uppercase;
@@ -424,7 +470,6 @@
         .ga4-insights-list li:last-child { margin-bottom: 0; }
         .ga4-lead-form { margin-top: 0.5rem; }
 
-        /* --- Checkboxy przełączające widoczność kanałów na wykresie ruchu --- */
         .ga4-channel-toggles {
             display: flex;
             flex-wrap: wrap;
@@ -448,7 +493,6 @@
             cursor: pointer;
         }
 
-        /* --- Osobna sekcja wykresu i wniosków dla leadów/konwersji --- */
         .ga4-leads-section {
             margin-top: 1.75rem;
             padding-top: 1.5rem;
@@ -459,7 +503,6 @@
             background: rgba(66, 133, 244, 0.08);
         }
 
-        /* --- Analiza Fraz Kluczowych (Google Search Console) - karta 3M YoY + tabele --- */
         .gsc-summary-card {
             display: flex;
             align-items: center;
@@ -501,7 +544,6 @@
         .gsc-delta-negative { color: var(--error); font-weight: 700; }
         .gsc-commentary-text { margin: 0; color: var(--muted); line-height: 1.5; }
 
-        /* --- Zakładka "Audyt Techniczny": 4 akordeony + karty testów --- */
         .tech-accordion-list { display: flex; flex-direction: column; gap: 0.75rem; }
         .tech-accordion {
             background: var(--panel);
@@ -662,7 +704,6 @@
         .passed-item:last-child { border-bottom: none; }
         .passed-item .passed-category { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; }
 
-        /* --- Zastany element ze strony (snippet) - świadomie ciemny, dla kontrastu i czytelności kodu --- */
         .snippet-label {
             font-size: 0.7rem;
             text-transform: uppercase;
@@ -687,7 +728,6 @@
         .metric-row:last-child { border-bottom: none; }
         .metric-note { margin: 0.35rem 0 0; }
 
-        /* --- Panel "Przegląd": wykres kołowy, paski kategorii, podgląd strony --- */
         .overview-grid {
             display: grid;
             grid-template-columns: repeat(3, minmax(200px, 1fr));
@@ -775,7 +815,6 @@
             pointer-events: none;
         }
 
-        /* --- Modułowe karty metryk (zastępują dawną tabelę "Problemy i rekomendacje") --- */
         .metric-card-list {
             display: flex;
             flex-direction: column;
@@ -835,7 +874,6 @@
         }
         .metric-card-section .snippet-box { margin-top: 0.4rem; }
 
-        /* --- Rekomendacje AI + bloki kodu z przyciskiem Kopiuj --- */
         .recommendation {
             margin-top: 0.9rem;
             padding: 0.6rem 0.8rem;
@@ -908,8 +946,6 @@
     {% if user.is_authenticated %}
     <div class="header-user">
         <span class="header-username">{{ user.get_username }}</span>
-        {# Wylogowanie musi być POST-em: LogoutView w nowszych Django nie przyjmuje GET,
-           a wylogowanie linkiem dałoby się wywołać cudzym obrazkiem (CSRF). #}
         <form method="post" action="{% url 'logout' %}" class="logout-form">
             {% csrf_token %}
             <button type="submit" class="logout-button">Wyloguj</button>

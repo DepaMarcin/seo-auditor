@@ -12,7 +12,7 @@ from django.core.cache import cache
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from .date_ranges import last_n_full_months_range, same_months_last_year
+from .date_ranges import last_n_full_months_range, previous_year_range, same_months_last_year
 
 logger = logging.getLogger(__name__)
 
@@ -55,33 +55,32 @@ def find_best_gsc_site(service, audit_url: str) -> str | None:
     """
     domain = _extract_base_domain(audit_url)
     if not domain:
-        print(f"[GSC] Nie udało się wyodrębnić domeny z adresu audytu: {audit_url!r}.")
+        logger.warning("[GSC] Nie udało się wyodrębnić domeny z adresu audytu: %r.", audit_url)
         return None
 
     try:
         response = service.sites().list().execute()
     except Exception:
-        logger.exception("Nie udało się pobrać listy usług Search Console.")
-        print("[GSC] Błąd podczas pobierania listy usług Search Console (sites().list()).")
+        logger.exception("[GSC] Nie udało się pobrać listy usług Search Console (sites().list()).")
         return None
 
     site_urls = [entry.get("siteUrl", "") for entry in response.get("siteEntry", []) if entry.get("siteUrl")]
     if not site_urls:
-        print(f"[GSC] Konto Google nie ma dostępu do żadnej usługi Search Console (domena audytu: {domain}).")
+        logger.info("[GSC] Konto Google nie ma dostępu do żadnej usługi Search Console (domena audytu: %s).", domain)
         return None
 
     # 1. Usługa domenowa - najbardziej precyzyjne i najczęściej spotykane dopasowanie.
     domain_property = f"sc-domain:{domain}"
     for site_url in site_urls:
         if site_url.lower() == domain_property:
-            print(f"[GSC] Dopasowano usługę domenową '{site_url}' dla domeny {domain}.")
+            logger.info("[GSC] Dopasowano usługę domenową %r dla domeny %s.", site_url, domain)
             return site_url
 
     # 2. Dokładny URL audytu (po normalizacji końcowego ukośnika).
     normalized_audit_url = audit_url.rstrip("/").lower()
     for site_url in site_urls:
         if site_url.rstrip("/").lower() == normalized_audit_url:
-            print(f"[GSC] Dopasowano dokładny URL usługi '{site_url}' dla {audit_url}.")
+            logger.info("[GSC] Dopasowano dokładny URL usługi %r dla %s.", site_url, audit_url)
             return site_url
 
     # 3. Warianty URL z/bez "www.", http oraz https.
@@ -91,17 +90,20 @@ def find_best_gsc_site(service, audit_url: str) -> str | None:
     }
     for site_url in site_urls:
         if site_url.lower() in url_variants:
-            print(f"[GSC] Dopasowano wariant URL usługi '{site_url}' dla domeny {domain}.")
+            logger.info("[GSC] Dopasowano wariant URL usługi %r dla domeny %s.", site_url, domain)
             return site_url
 
     # 4. Dowolna usługa, której URL zawiera bazową domenę (np. inna subdomena/ścieżka).
     for site_url in site_urls:
         normalized = site_url.lower().replace("sc-domain:", "")
         if domain in normalized:
-            print(f"[GSC] Dopasowano usługę '{site_url}' po zawieraniu domeny {domain}.")
+            logger.info("[GSC] Dopasowano usługę %r po zawieraniu domeny %s.", site_url, domain)
             return site_url
 
-    print(f"[GSC] Nie znaleziono usługi Search Console dla domeny {domain}. Dostępne usługi konta: {site_urls}")
+    logger.info(
+        "[GSC] Nie znaleziono usługi Search Console dla domeny %s. Dostępne usługi konta: %s",
+        domain, site_urls,
+    )
     return None
 
 
@@ -109,8 +111,8 @@ class GSCService:
     """Klient Google Search Console API (Search Analytics), autoryzowany przez OAuth
     2.0 (ten sam przepływ "Zaloguj się przez Google" co GA4, ze scope'em
     `webmasters.readonly` - patrz `settings.GA4_SCOPES`). Porównuje wydajność fraz
-    kluczowych oraz podstron: ostatnie 3 pełne miesiące vs analogiczne 3 miesiące
-    rok temu (3M R/R).
+    kluczowych oraz podstron dla wybranego zakresu dat vs ten sam zakres rok wcześniej
+    (bez podanego zakresu: ostatnie 3 pełne miesiące kalendarzowe).
 
     Zgodnie z konwencją pozostałych integracji zewnętrznych w tym projekcie
     (SenutoService, GA4OAuthService): błąd komunikacji z GSC (brak dostępu, domena
@@ -136,27 +138,51 @@ class GSCService:
             return None
         return find_best_gsc_site(service, audit_url)
 
-    def fetch_yoy_query_performance(self, credentials: Credentials, audit_url: str) -> dict:
-        """Porównuje wydajność FRAZ kluczowych (`dimensions=["query"]`) - ostatnie 3
-        pełne miesiące vs analogiczne 3 miesiące rok temu. Patrz
-        `_fetch_yoy_dimension_performance` po pełny opis kształtu zwracanego słownika
-        (klucz wiersza to tu "query")."""
-        return self._fetch_yoy_dimension_performance(credentials, audit_url, dimension="query", key_name="query")
+    def fetch_yoy_query_performance(
+        self,
+        credentials: Credentials,
+        audit_url: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
+        """Porównuje wydajność FRAZ kluczowych (`dimensions=["query"]`) w podanym
+        zakresie vs ten sam zakres rok wcześniej. Bez podanego zakresu: ostatnie 3
+        pełne miesiące. Patrz `_fetch_yoy_dimension_performance` po pełny opis kształtu
+        zwracanego słownika (klucz wiersza to tu "query")."""
+        return self._fetch_yoy_dimension_performance(
+            credentials, audit_url, dimension="query", key_name="query",
+            start_date=start_date, end_date=end_date,
+        )
 
-    def fetch_yoy_page_performance(self, credentials: Credentials, audit_url: str) -> dict:
-        """Porównuje wydajność PODSTRON (`dimensions=["page"]`) - ostatnie 3 pełne
-        miesiące vs analogiczne 3 miesiące rok temu. Patrz
-        `_fetch_yoy_dimension_performance` po pełny opis kształtu zwracanego słownika
-        (klucz wiersza to tu "page", z pełnym adresem URL podstrony)."""
-        return self._fetch_yoy_dimension_performance(credentials, audit_url, dimension="page", key_name="page")
+    def fetch_yoy_page_performance(
+        self,
+        credentials: Credentials,
+        audit_url: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
+    ) -> dict:
+        """Porównuje wydajność PODSTRON (`dimensions=["page"]`) w podanym zakresie vs
+        ten sam zakres rok wcześniej. Bez podanego zakresu: ostatnie 3 pełne miesiące.
+        Patrz `_fetch_yoy_dimension_performance` po pełny opis kształtu zwracanego
+        słownika (klucz wiersza to tu "page", z pełnym adresem URL podstrony)."""
+        return self._fetch_yoy_dimension_performance(
+            credentials, audit_url, dimension="page", key_name="page",
+            start_date=start_date, end_date=end_date,
+        )
 
     def _fetch_yoy_dimension_performance(
-        self, credentials: Credentials, audit_url: str, dimension: str, key_name: str
+        self,
+        credentials: Credentials,
+        audit_url: str,
+        dimension: str,
+        key_name: str,
+        start_date: date | None = None,
+        end_date: date | None = None,
     ) -> dict:
         """Pobiera i porównuje kliknięcia pogrupowane wg `dimension` ("query" lub
-        "page") dla dwóch 3-miesięcznych okresów: Okres A (ostatnie {PERIOD_MONTHS}
-        pełnych miesięcy, bieżący niepełny miesiąc jest pomijany) i Okres B (te same
-        miesiące kalendarzowe rok wcześniej). Usługę Search Console dopasowuje do
+        "page") dla dwóch okresów: Okresu A (zakres podany przez `start_date`/`end_date`,
+        a bez niego - ostatnie {PERIOD_MONTHS} pełnych miesięcy kalendarzowych) i Okresu
+        B (ten sam zakres przesunięty o rok wstecz). Usługę Search Console dopasowuje do
         `audit_url` przez `find_best_gsc_site` (patrz tam - obsługuje sc-domain:,
         http/https, z/bez www).
 
@@ -176,12 +202,21 @@ class GSCService:
             "top_losers": [...],
         }
         """
-        period_a_start, period_a_end = last_n_full_months_range(PERIOD_MONTHS)
-        period_b_start, period_b_end = same_months_last_year(period_a_start, period_a_end)
+        if start_date and end_date:
+            period_a_start, period_a_end = start_date, end_date
+            period_b_start, period_b_end = previous_year_range(start_date, end_date)
+        else:
+            period_a_start, period_a_end = last_n_full_months_range(PERIOD_MONTHS)
+            period_b_start, period_b_end = same_months_last_year(period_a_start, period_a_end)
 
         # GSC publikuje dane z 2-3 dniowym opóźnieniem, więc częstsze odpytywanie nie
-        # przyniesie nowych liczb - a każde zapytanie to 4 wywołania API.
-        cache_key = f"gsc:{dimension}:{hashlib.sha256(audit_url.encode()).hexdigest()[:32]}"
+        # przyniesie nowych liczb - a każde zapytanie to 4 wywołania API. Klucz MUSI
+        # zawierać zakres dat, inaczej po zmianie zakresu w interfejsie wróciłyby
+        # zbuforowane dane poprzedniego okresu.
+        site_digest = hashlib.sha256(audit_url.encode()).hexdigest()[:32]
+        cache_key = (
+            f"gsc:{dimension}:{site_digest}:{period_a_start.isoformat()}:{period_a_end.isoformat()}"
+        )
         cached = cache.get(cache_key)
         if cached is not None:
             logger.info("Search Console: dane (%s) dla %s pobrane z cache.", dimension, audit_url)
