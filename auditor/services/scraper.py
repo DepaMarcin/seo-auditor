@@ -13,6 +13,10 @@ from .url_guard import MAX_REDIRECT_HOPS, UnsafeUrlError, validate_public_url
 
 HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
+# Boty modeli językowych (LLM), których zablokowanie w robots.txt wyklucza witrynę
+# z odpowiedzi generowanych przez AI - kluczowe dla GEO (Generative Engine Optimization).
+AI_BOT_USER_AGENTS = ("GPTBot", "ClaudeBot", "PerplexityBot", "Bytespider")
+
 # Próg (liczba słów widocznego tekstu) i minimalna liczba <script>, poniżej/powyżej
 # których strona jest podejrzewana o renderowanie wyłącznie po stronie klienta (CSR) -
 # treść "pusta" bez wykonania JS jest niewidoczna dla części robotów/modeli LLM.
@@ -173,10 +177,13 @@ class SEOScraper:
         page_type = self._detect_page_type(url, soup)
         faq_detected = self._detect_faq_section(soup)
         heading_noise = self._analyze_heading_noise(soup)
+        heading_quality = self._analyze_heading_quality(soup)
         eeat = self._analyze_eeat_signals(soup)
         meta_keywords_present = bool(self._get_meta_content(soup, "keywords"))
         internal_links_count = self._count_internal_links(soup, url)
         js_rendering = self._analyze_js_rendering(soup)
+        twitter_card = self._extract_twitter_card(soup)
+        favicon = self._extract_favicon(soup, url)
 
         return {
             "url": url,
@@ -202,10 +209,104 @@ class SEOScraper:
             "page_type": page_type,
             "faq_detected": faq_detected,
             "heading_noise": heading_noise,
+            "heading_quality": heading_quality,
             "eeat": eeat,
             "internal_links_count": internal_links_count,
             "js_rendering": js_rendering,
+            # Liczba słów widocznej treści wystawiona na wierzch - poza detekcją CSR
+            # korzysta z niej także test "thin content" (patrz AuditService).
+            "word_count": js_rendering.get("word_count", 0),
+            "twitter_card": twitter_card,
+            "favicon": favicon,
             "redirect_count": self._last_redirect_count,
+        }
+
+    def _extract_twitter_card(self, soup: BeautifulSoup) -> dict:
+        """Zbiera tagi Twitter Card (X) z `<meta name="twitter:...">`.
+
+        Twitter/X czyta `name`, a nie `property` (w odróżnieniu od Open Graph), ale
+        część CMS-ów wystawia je przez `property` - obsługujemy oba warianty, bo dla
+        wyniku audytu liczy się obecność tagu, a nie użyty atrybut. Brakujące
+        `twitter:title`/`twitter:description`/`twitter:image` nie są błędem, jeśli
+        strona ma odpowiedniki Open Graph - X używa ich wtedy jako fallbacku (ocena
+        tej zależności leży po stronie `AuditService._evaluate_twitter_cards`).
+        """
+        tags: dict[str, str] = {}
+        for tag in soup.find_all("meta"):
+            key = tag.get("name") or tag.get("property") or ""
+            if key.lower().startswith("twitter:") and tag.get("content", "").strip():
+                tags[key.lower()[len("twitter:"):]] = tag["content"].strip()
+
+        return {
+            "tags": tags,
+            "card_type": tags.get("card"),
+            "has_card": "card" in tags,
+        }
+
+    def _extract_favicon(self, soup: BeautifulSoup, base_url: str) -> dict:
+        """Wykrywa ikonę witryny deklarowaną w `<head>`.
+
+        Sprawdzane są wszystkie używane w praktyce warianty `rel`: "icon",
+        "shortcut icon", "apple-touch-icon" oraz "mask-icon". Brak deklaracji w HTML
+        nie przesądza jeszcze o braku ikony (przeglądarki pobierają domyślnie
+        `/favicon.ico`), dlatego zwracamy też adres tego fallbacku - to `AuditService`
+        decyduje, jaki status z tego wynika.
+        """
+        icon_rels = {"icon", "shortcut icon", "apple-touch-icon", "mask-icon"}
+        declared: list[dict] = []
+        for link in soup.find_all("link", href=True):
+            rel_value = " ".join(link.get("rel") or []).lower()
+            if rel_value in icon_rels or "icon" in rel_value.split():
+                declared.append({
+                    "rel": rel_value,
+                    "href": urljoin(base_url, link["href"]),
+                    "sizes": link.get("sizes", ""),
+                })
+
+        return {
+            "declared": declared,
+            "count": len(declared),
+            "has_apple_touch_icon": any("apple-touch-icon" in item["rel"] for item in declared),
+            "default_ico_url": self._build_absolute_url(base_url, "/favicon.ico"),
+        }
+
+    def _analyze_heading_quality(self, soup: BeautifulSoup) -> dict:
+        """Ocenia poprawność hierarchii nagłówków H1-H6 w kolejności występowania.
+
+        Wykrywa dwa problemy, których nie łapie `_analyze_heading_noise` (ten zajmuje
+        się wyłącznie treścią nagłówków) ani test H1 (ten liczy same H1):
+          * nagłówki puste (bez tekstu) - używane wyłącznie do celów wizualnych,
+            rozmywają strukturę dokumentu dla robotów i czytników ekranu,
+          * przeskoki poziomów (np. H1 -> H3 z pominięciem H2), które łamią logiczne
+            zagnieżdżenie sekcji.
+        """
+        empty_headings: list[str] = []
+        level_skips: list[dict] = []
+        previous_level = 0
+
+        for tag in soup.find_all(HEADING_TAGS):
+            level = int(tag.name[1])
+            text = tag.get_text(strip=True)
+
+            if not text:
+                empty_headings.append(tag.name.upper())
+            # Pierwszy nagłówek na stronie nie ma z czym tworzyć przeskoku, a zejście
+            # w górę hierarchii (H3 -> H2) jest normalnym początkiem nowej sekcji.
+            elif previous_level and level > previous_level + 1:
+                level_skips.append({
+                    "from": f"H{previous_level}",
+                    "to": tag.name.upper(),
+                    "text": text[:80],
+                })
+
+            if text:
+                previous_level = level
+
+        return {
+            "empty_headings": empty_headings,
+            "empty_count": len(empty_headings),
+            "level_skips": level_skips,
+            "skip_count": len(level_skips),
         }
 
     def _get_meta_content(self, soup: BeautifulSoup, name: str) -> str | None:
@@ -516,13 +617,64 @@ class SEOScraper:
             return {"checked": True, "exists": False, "disallows_all": False}
 
         if response.status_code != 200:
-            return {"checked": True, "exists": False, "disallows_all": False}
+            return {"checked": True, "exists": False, "disallows_all": False, "blocked_ai_bots": []}
 
         return {
             "checked": True,
             "exists": True,
             "disallows_all": self._robots_disallows_everything(response.text),
+            "blocked_ai_bots": self._robots_blocked_ai_bots(response.text),
         }
+
+    def _robots_blocked_ai_bots(self, content: str) -> list[str]:
+        """Zwraca listę botów LLM, którym robots.txt blokuje dostęp do całej witryny.
+
+        Istotne dla widoczności w odpowiedziach generowanych przez AI (GEO): jeśli
+        `GPTBot`, `ClaudeBot`, `PerplexityBot` czy `Bytespider` dostaną "Disallow: /",
+        treść witryny nie trafi do modeli i nie pojawi się w ich odpowiedziach.
+
+        Blokadę zliczamy tylko wtedy, gdy `Disallow: /` obejmuje CAŁĄ witrynę -
+        blokada pojedynczego katalogu (np. "Disallow: /admin/") jest normalną
+        konfiguracją, a nie problemem. Uwzględniamy też grupę "User-agent: *",
+        która obowiązuje boty bez własnej, dedykowanej sekcji.
+        """
+        # Mapowanie: nazwa user-agenta (lowercase) -> lista reguł Disallow w jego grupie.
+        rules_by_agent: dict[str, list[str]] = {}
+        current_agents: list[str] = []
+        expecting_agents = False
+
+        for raw_line in content.splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if not line or ":" not in line:
+                continue
+            field, _, value = line.partition(":")
+            field, value = field.strip().lower(), value.strip()
+
+            if field == "user-agent":
+                # Kolejne linie User-agent bez Disallow pomiędzy tworzą jedną grupę.
+                if not expecting_agents:
+                    current_agents = []
+                    expecting_agents = True
+                current_agents.append(value.lower())
+                rules_by_agent.setdefault(value.lower(), [])
+            elif field in ("disallow", "allow"):
+                expecting_agents = False
+                for agent in current_agents:
+                    rules_by_agent.setdefault(agent, []).append(f"{field}:{value}")
+
+        def blocks_everything(agent: str) -> bool:
+            rules = rules_by_agent.get(agent)
+            if rules is None:
+                return False
+            # "Allow: /" po "Disallow: /" znosi blokadę całej witryny.
+            return "disallow:/" in rules and "allow:/" not in rules
+
+        blocked = []
+        for bot in AI_BOT_USER_AGENTS:
+            agent = bot.lower()
+            if blocks_everything(agent) or (agent not in rules_by_agent and blocks_everything("*")):
+                blocked.append(bot)
+        return blocked
 
     def _robots_disallows_everything(self, content: str) -> bool:
         """Czy robots.txt blokuje CAŁĄ witrynę dla wszystkich robotów

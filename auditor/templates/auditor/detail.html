@@ -455,6 +455,32 @@
 
 <div id="tab-panel-technical" class="detail-tab-panel hidden">
 
+<div class="panel priority-findings-panel">
+    <h2 class="section-heading">🚨 Krytyczne problemy i ostrzeżenia</h2>
+    {% if priority_findings %}
+    <p class="priority-empty priority-findings-intro">
+        {{ stats.errors_count }} błęd(ów) krytycznych i {{ stats.warnings_count }} ostrzeżeń wymagających uwagi.
+        Pełny stan techniczny — również testy zaliczone — znajdziesz w akordeonach kategorii poniżej.
+    </p>
+    <div class="test-card-list">
+        {% for metric in priority_findings %}
+        {% include "auditor/_test_card.html" with metric=metric %}
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="priority-findings-clear">
+        <span class="priority-findings-clear-icon">✅</span>
+        <div>
+            <strong>Brak wykrytych krytycznych problemów</strong>
+            <p class="priority-empty" style="margin: 0.25rem 0 0;">
+                Wszystkie {{ stats.total_count }} testów zakończyło się statusem zaliczonym lub opcjonalnym.
+                Szczegóły w akordeonach kategorii poniżej.
+            </p>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
 <div class="tech-accordion-list">
     {% for group in technical_accordions %}
     <details class="tech-accordion" {% if forloop.first %}open{% endif %}>
@@ -481,7 +507,14 @@
             <span class="tech-accordion-count">{{ schema_status_table|length }}</span>
         </summary>
         <div class="tech-accordion-body">
-            <div class="table-scroll">
+            {% if schema_cards %}
+            <div class="test-card-list">
+                {% for metric in schema_cards %}
+                {% include "auditor/_test_card.html" with metric=metric %}
+                {% endfor %}
+            </div>
+            {% endif %}
+            <div class="table-scroll" style="margin-top: 1rem;">
                 <table class="gsc-table">
                     <thead>
                         <tr><th>Typ Schema.org</th><th>Zastosowanie</th><th>Status</th></tr>
@@ -775,8 +808,6 @@
                 (positive ? "+" : "") + formatNumber(row.delta),
             ].forEach(function (value, index) {
                 var td = document.createElement("td");
-                // textContent, nie innerHTML - frazy i adresy podstron pochodzą z
-                // Search Console, czyli spoza naszej kontroli.
                 td.textContent = value;
                 if (index === 3) td.className = positive ? "gsc-delta-positive" : "gsc-delta-negative";
                 tr.appendChild(td);
@@ -895,8 +926,6 @@
                 if (unavailable) {
                     showError(section, (payload.ga4 || payload.gsc).reason || "Brak danych dla tego zakresu.");
                 }
-                // Daty w polach własnego zakresu synchronizujemy z tym, co realnie
-                // policzył backend (mógł np. przyciąć datę końcową do dzisiaj).
                 var startInput = section.querySelector(".range-start");
                 var endInput = section.querySelector(".range-end");
                 if (startInput && payload.range) startInput.value = payload.range.start_date;
@@ -932,9 +961,6 @@
                     return;
                 }
                 if (start > end) {
-                    // Ta sama reguła jest egzekwowana po stronie serwera
-                    // (date_ranges.validate_range) - tutaj tylko po to, żeby nie
-                    // wysyłać żądania, o którym z góry wiadomo, że zostanie odrzucone.
                     showError(section, "Data początkowa nie może być późniejsza niż data końcowa.");
                     return;
                 }

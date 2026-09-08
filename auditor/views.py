@@ -31,6 +31,7 @@ from .presentation import (
     annotate_metric_labels,
     build_schema_status_table,
     compute_category_scores,
+    extract_schema_cards,
     group_technical_accordions,
     priority_for_metric,
     score_bucket,
@@ -564,8 +565,13 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "stats": stats,
             # Zakładka "Audyt Techniczny": 4 tematyczne akordeony (Progressive Disclosure)
             # + dedykowana tabela statusów Schema.org, budowane z tych samych metryk.
+            # Sekcja "Krytyczne problemy i ostrzeżenia" na górze strony: wszystkie
+            # testy ze statusem ERROR/WARNING, niezależnie od kategorii - błędy przed
+            # ostrzeżeniami, żeby najpilniejsze pozycje były pierwsze.
+            "priority_findings": critical_errors + warnings,
             "technical_accordions": group_technical_accordions(summary_metrics),
             "schema_status_table": build_schema_status_table(summary_metrics),
+            "schema_cards": extract_schema_cards(summary_metrics),
             "category_scores": compute_category_scores(all_metrics) if audit.status == "completed" else [],
             "score_bucket": score_bucket(audit.score),
             "ga4_available_events": _fetch_ga4_available_events(audit),

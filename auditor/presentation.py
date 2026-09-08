@@ -45,6 +45,11 @@ CATEGORY_ICONS = {
 # Krótkie, biznesowe wyjaśnienia metryk ("Co to jest?") wyświetlane na kartach metryk -
 # tłumaczą nietechnicznemu odbiorcy, czym jest dana metryka i dlaczego ma znaczenie dla SEO.
 METRIC_DEFINITIONS = {
+    "robots_ai_bots": "Boty modeli językowych (GPTBot, ClaudeBot, PerplexityBot, Bytespider) zbierają treść stron, żeby móc ją cytować w odpowiedziach generowanych przez AI. Zablokowanie ich w pliku robots.txt wyklucza witrynę z tych odpowiedzi — bywa to świadomą decyzją (ochrona treści), ale powinno być wyborem, a nie przypadkiem.",
+    "schema_validity": "Dane strukturalne JSON-LD muszą być poprawne składniowo — blok z błędem jest przez wyszukiwarki i modele AI pomijany w całości, tak jakby go nie było. Typy Organization, SoftwareApplication, FAQPage i Product to te, po których AI buduje odpowiedzi o firmie i jej ofercie.",
+    "twitter_cards": "Tagi Twitter Card sterują wyglądem linku udostępnionego w serwisie X: typem podglądu, tytułem, opisem i miniaturą. Bez nich (i bez Open Graph) udostępniony link wyświetla się jako goły adres URL, co drastycznie obniża klikalność.",
+    "favicon": "Favicon to mała ikona witryny widoczna w karcie przeglądarki, na liście zakładek i w wynikach wyszukiwania na urządzeniach mobilnych. Jej brak sprawia, że strona wygląda niedokończenie i trudniej ją rozpoznać wśród wielu otwartych kart.",
+    "thin_content": "\"Thin content\" to strona o zbyt małej objętości treści, żeby wyczerpać temat i konkurować w wynikach wyszukiwania. Google traktuje takie strony jako niskiej wartości, a modele językowe rzadko cytują je jako źródło.",
     "title": "Znacznik <title> to tytuł strony widoczny w wynikach wyszukiwania Google oraz na karcie przeglądarki. To jeden z najważniejszych sygnałów SEO — musi być unikalny, zawierać słowa kluczowe i mieścić się w limicie ok. 60-65 znaków, by nie zostać obcięty.",
     "meta_description": "Meta opis to krótki fragment tekstu wyświetlany pod tytułem strony w wynikach wyszukiwania. Nie wpływa bezpośrednio na ranking, ale decyduje o tym, czy użytkownik kliknie w wynik (CTR) — dobrze napisany opis realnie zwiększa liczbę odwiedzin.",
     "h1_structure": "Nagłówek H1 to główny tytuł treści na stronie, informujący zarówno użytkownika, jak i roboty wyszukiwarek, czego dotyczy dana podstrona. Strona powinna mieć dokładnie jeden H1, spójny tematycznie z tytułem i treścią.",
@@ -79,7 +84,12 @@ METRIC_DEFINITIONS = {
 # `annotate_metric_labels`). Kilka technicznych kluczy dzieli tę samą oficjalną
 # nazwę, gdy audyt opisuje je jako jeden łączny test.
 OFFICIAL_TEST_NAMES = {
-    "heading_order": "Struktura nagłówków Hx i oczyszczenie z szumu nawigacyjnego",
+    "robots_ai_bots": "Dostęp botów AI/LLM (GPTBot, ClaudeBot, PerplexityBot) w robots.txt",
+    "schema_validity": "Poprawność składni JSON-LD i pokrycie typów istotnych dla AI",
+    "twitter_cards": "Podgląd linku w mediach społecznościowych (Open Graph i Twitter Card)",
+    "favicon": "Ikona witryny (favicon, apple-touch-icon)",
+    "thin_content": "Objętość treści (thin content)",
+    "heading_order": "Hierarchia nagłówków Hx: kolejność, puste nagłówki i przeskoki poziomów",
     "heading_noise": "Struktura nagłówków Hx i oczyszczenie z szumu nawigacyjnego",
     "title": "Optymalizacja znaczników Title i Description",
     "meta_description": "Optymalizacja znaczników Title i Description",
@@ -165,20 +175,27 @@ def build_schema_status_table(metrics: list[AuditMetric]) -> list[dict]:
 # Klucze Schema.org (schema_page_type/schema_breadcrumbs/schema_faq) są celowo
 # wyłączone z tego grupowania - mają własną, dedykowaną tabelę (patrz wyżej).
 # ----------------------------------------------------------------------
-SCHEMA_METRIC_KEYS = {"schema_page_type", "schema_breadcrumbs", "schema_faq"}
+SCHEMA_METRIC_KEYS = {"schema_page_type", "schema_breadcrumbs", "schema_faq", "schema_validity"}
+
+# Metryki Schema.org renderowane jako KARTA testu wewnątrz akordeonu "Dane Strukturalne"
+# (obok tabeli pokrycia typów) - w odróżnieniu od pozostałych kluczy SCHEMA_METRIC_KEYS,
+# które tabela reprezentuje w całości i osobna karta tylko dublowałaby informację.
+SCHEMA_CARD_KEYS = ("schema_validity",)
 
 TECHNICAL_ACCORDIONS = [
     (
         "indexing",
         "🌐 Indeksacja, Renderowanie & Nawigacja",
-        {"javascript_rendering", "robots_txt", "canonical", "redirect_chain", "internal_linking", "http_errors"},
+        {"javascript_rendering", "robots_txt", "robots_ai_bots", "canonical", "redirect_chain",
+         "internal_linking", "http_errors", "favicon"},
     ),
     (
         "content",
         "✍️ Meta Tagi, Treść & EEAT+",
         {
-            "title", "meta_description", "meta_keywords", "open_graph", "h1_structure",
-            "heading_order", "heading_noise", "eeat_authorship", "eeat_freshness",
+            "title", "meta_description", "meta_keywords", "open_graph", "twitter_cards",
+            "h1_structure", "heading_order", "heading_noise", "thin_content",
+            "eeat_authorship", "eeat_freshness",
         },
     ),
     (
@@ -341,3 +358,14 @@ def score_bucket(score: int) -> str:
     if score >= 50:
         return "warning"
     return "error"
+
+
+def extract_schema_cards(metrics: list[AuditMetric]) -> list[AuditMetric]:
+    """Metryki Schema.org pokazywane jako karty testu w akordeonie "Dane Strukturalne".
+
+    Wyodrębnione osobno, bo `group_technical_accordions` celowo pomija cały zbiór
+    SCHEMA_METRIC_KEYS - inaczej te testy trafiłyby do akordeonów tematycznych,
+    z dala od tabeli pokrycia typów, której dotyczą.
+    """
+    by_key = {m.short_key: m for m in metrics}
+    return [by_key[key] for key in SCHEMA_CARD_KEYS if key in by_key]

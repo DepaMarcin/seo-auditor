@@ -96,7 +96,8 @@
             display: flex;
             gap: 0.5rem;
         }
-        input[type="url"] {
+        input[type="url"],
+        form.audit-form input[type="text"] {
             flex: 1;
             padding: 0.6rem 0.8rem;
             border-radius: 6px;
@@ -168,6 +169,21 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
+        .priority-findings-panel { border-color: rgba(239, 68, 68, 0.25); }
+        .priority-findings-intro { margin: 0 0 1rem; }
+        .priority-findings-panel .test-card-list { margin-top: 0; }
+        .priority-findings-clear {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.85rem;
+            padding: 1rem 1.25rem;
+            background: rgba(16, 185, 129, 0.06);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 8px;
+        }
+        .priority-findings-clear-icon { font-size: 1.4rem; line-height: 1; }
+        .priority-findings-clear strong { color: var(--ok); }
+
         .range-controls {
             display: flex;
             flex-wrap: wrap;
@@ -228,8 +244,6 @@
             font-size: 0.85rem;
         }
 
-        /* Stan ładowania sekcji odświeżanej asynchronicznie - zawartość przygasa i
-           przestaje reagować na kliknięcia, dopóki nie wrócą nowe dane. */
         [data-loadable] { transition: opacity 0.2s ease; }
         [data-loadable].is-loading { opacity: 0.35; pointer-events: none; }
 

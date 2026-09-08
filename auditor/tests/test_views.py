@@ -354,6 +354,40 @@ class AuditStatusEndpointTests(AuthenticatedTestCase):
         self.assertTrue(payload["finished"])
         self.assertEqual(payload["score"], 88)
 
+    def test_priority_panel_renders_inside_technical_tab(self):
+        """Panel priorytetów należy do zakładki technicznej, nie do widoku nad zakładkami."""
+        audit = Audit.objects.create(
+            url="https://example.com", status=Audit.Status.COMPLETED, owner=self.user
+        )
+        AuditMetric.objects.create(
+            audit=audit, category="seo", key="title", status="error",
+            value={"note": "Brak tagu <title>."},
+        )
+
+        html = self.client.get(reverse("auditor:detail", kwargs={"pk": audit.pk})).content.decode()
+
+        panel = html.find("Krytyczne problemy i ostrzeżenia")
+        tabs = html.find('<div class="detail-tabs"')
+        technical_tab = html.find('<div id="tab-panel-technical"')
+        accordions = html.find('<div class="tech-accordion-list">')
+
+        self.assertGreater(panel, tabs, "panel nie może być nad zakładkami")
+        self.assertGreater(panel, technical_tab, "panel musi być wewnątrz zakładki technicznej")
+        self.assertLess(panel, accordions, "panel musi być nad akordeonami kategorii")
+
+    def test_priority_panel_shows_empty_state_without_problems(self):
+        audit = Audit.objects.create(
+            url="https://example.com", status=Audit.Status.COMPLETED, owner=self.user
+        )
+        AuditMetric.objects.create(
+            audit=audit, category="seo", key="title", status="ok", value={"note": "Tytuł poprawny."},
+        )
+
+        response = self.client.get(reverse("auditor:detail", kwargs={"pk": audit.pk}))
+
+        self.assertEqual(response.context["priority_findings"], [])
+        self.assertContains(response, "Brak wykrytych krytycznych problemów")
+
     def test_detail_page_shows_progress_panel_while_processing(self):
         audit = Audit.objects.create(
             url="https://example.com", status=Audit.Status.PROCESSING, owner=self.user

@@ -11,7 +11,7 @@ from .gsc_insights import generate_page_commentary, generate_query_commentary
 from .gsc_service import GSCService
 from .pagespeed import PageSpeedService
 from .rag import RAGEngine
-from .scraper import ScraperError, SEOScraper
+from .scraper import AI_BOT_USER_AGENTS, ScraperError, SEOScraper
 from .senuto import SenutoService
 
 if TYPE_CHECKING:
@@ -64,6 +64,14 @@ EEAT_REQUIRED_PAGE_TYPES = {"article"}
 
 # Minimalna liczba linków wewnętrznych, poniżej której zgłaszamy ostrzeżenie.
 INTERNAL_LINKING_MIN = 3
+
+# Progi testu "thin content" (liczba słów widocznej treści).
+THIN_CONTENT_MIN_WORDS = 300
+THIN_CONTENT_CRITICAL_WORDS = 100
+
+# Typy Schema.org, po których modele językowe budują odpowiedzi o firmie i jej ofercie -
+# ich obecność zwiększa szansę na cytowanie witryny w wynikach generowanych przez AI.
+AI_RELEVANT_SCHEMA_TYPES = ("Organization", "SoftwareApplication", "FAQPage", "Product")
 
 SCORE_WEIGHTS = {"ok": 100, "info": 100, "warning": 50, "error": 0}
 
@@ -276,6 +284,10 @@ class AuditService:
             self._evaluate_schema_page_type(data),
             self._evaluate_schema_breadcrumbs(data),
             self._evaluate_schema_faq(data),
+            self._evaluate_schema_validity(data),
+            self._evaluate_twitter_cards(data),
+            self._evaluate_favicon(data),
+            self._evaluate_thin_content(data),
             self._evaluate_heading_order(data),
             self._evaluate_heading_noise(data),
             self._evaluate_image_quality(data),
@@ -286,6 +298,190 @@ class AuditService:
             self._evaluate_js_rendering(data),
             self._evaluate_redirects(data),
         ]
+
+    def _evaluate_schema_validity(self, data: dict) -> dict:
+        """AI & GEO: poprawność składniowa JSON-LD i pokrycie typów istotnych dla AI.
+
+        Uzupełnia `_evaluate_schema_page_type` (który sprawdza, czy typ strony pasuje
+        do jej zawartości) o dwie rzeczy, których tamten test nie łapie:
+          * bloki JSON-LD z błędem składni - dla wyszukiwarki i modelu językowego są
+            niewidoczne, więc cichy błąd parsowania kosztuje całe oznaczenie strony,
+          * obecność typów, po których modele AI budują odpowiedzi o firmie i ofercie
+            (Organization, SoftwareApplication, FAQPage, Product).
+        """
+        schema = data.get("schema", {})
+        blocks = schema.get("blocks_found", 0)
+        parse_errors = schema.get("parse_errors", 0)
+        types_found = set(schema.get("types_found", []))
+        present = [t for t in AI_RELEVANT_SCHEMA_TYPES if t in types_found]
+        missing = [t for t in AI_RELEVANT_SCHEMA_TYPES if t not in types_found]
+
+        if parse_errors:
+            status = "error"
+            note = (
+                f"{parse_errors} z {blocks} bloków JSON-LD ma błąd składni - wyszukiwarki i modele AI "
+                "całkowicie je pomijają."
+            )
+        elif not blocks:
+            status = "error"
+            note = "Strona nie zawiera żadnych danych strukturalnych JSON-LD (<script type=\"application/ld+json\">)."
+        elif not present:
+            status = "warning"
+            note = (
+                "JSON-LD jest poprawny składniowo, ale nie zawiera żadnego z typów istotnych dla AI "
+                f"({', '.join(AI_RELEVANT_SCHEMA_TYPES)})."
+            )
+        elif missing:
+            status = "warning"
+            note = (
+                f"Wykryto poprawne typy: {', '.join(present)}. Brakuje jeszcze: {', '.join(missing)} - "
+                "ich dodanie zwiększa szansę na cytowanie w odpowiedziach AI."
+            )
+        else:
+            status = "ok"
+            note = f"JSON-LD jest poprawny i zawiera wszystkie kluczowe typy: {', '.join(present)}."
+
+        current_value = (
+            f"Bloki JSON-LD: {blocks} (błędy składni: {parse_errors}). "
+            f"Wykryte typy: {', '.join(sorted(types_found)) or 'brak'}."
+        )
+        return self._make_metric(
+            "structure",
+            "schema_validity",
+            {
+                "blocks_found": blocks,
+                "parse_errors": parse_errors,
+                "types_present": present,
+                "types_missing": missing,
+                "note": note,
+            },
+            status,
+            current_value=current_value,
+        )
+
+    def _evaluate_twitter_cards(self, data: dict) -> dict:
+        """Social Graph: obecność i kompletność tagów Twitter Card (X).
+
+        `twitter:title`/`description`/`image` są opcjonalne, jeśli strona ma
+        odpowiedniki Open Graph - X używa ich wtedy jako fallbacku. Brakiem, który
+        realnie psuje podgląd linku, jest dopiero brak `twitter:card` (typ karty)
+        oraz jednoczesny brak obrazka w obu standardach.
+        """
+        twitter = data.get("twitter_card", {})
+        tags = twitter.get("tags", {})
+        og = data.get("open_graph", {})
+
+        has_image = bool(tags.get("image") or og.get("image"))
+        card_type = twitter.get("card_type")
+
+        if not tags and not og:
+            status = "error"
+            note = (
+                "Brak tagów Twitter Card i Open Graph - link udostępniony w mediach społecznościowych "
+                "wyświetli się jako goły adres URL, bez tytułu i miniatury."
+            )
+        elif not card_type:
+            status = "warning"
+            note = (
+                "Brak tagu twitter:card - X nie wie, jakiego typu podgląd wyświetlić "
+                "(zalecane: summary_large_image)."
+            )
+        elif not has_image:
+            status = "warning"
+            note = "Karta Twitter jest zadeklarowana, ale brakuje obrazka (twitter:image ani og:image)."
+        else:
+            status = "ok"
+            note = f"Karta Twitter jest kompletna (typ: {card_type}, obrazek podglądu obecny)."
+
+        current_value = (
+            "; ".join(f"twitter:{key}={value}" for key, value in sorted(tags.items()))
+            if tags
+            else "(brak tagów twitter:*)"
+        )
+        return self._make_metric(
+            "seo",
+            "twitter_cards",
+            {
+                "tags": tags,
+                "card_type": card_type,
+                "has_image": has_image,
+                "falls_back_to_og": bool(og and not tags),
+                "note": note,
+            },
+            status,
+            current_value=current_value,
+        )
+
+    def _evaluate_favicon(self, data: dict) -> dict:
+        """Social Graph: ikona witryny widoczna w karcie przeglądarki i zakładkach."""
+        favicon = data.get("favicon", {})
+        declared = favicon.get("declared", [])
+
+        if not declared:
+            status = "warning"
+            note = (
+                "Strona nie deklaruje ikony witryny w <head>. Przeglądarki spróbują pobrać domyślny "
+                "/favicon.ico, ale jawna deklaracja jest pewniejsza i pozwala podać wersje HD."
+            )
+            current_value = "(brak <link rel=\"icon\"> w sekcji <head>)"
+        elif not favicon.get("has_apple_touch_icon"):
+            status = "ok"
+            note = (
+                f"Ikona witryny jest zadeklarowana ({len(declared)} wariant(ów)). Warto dodać jeszcze "
+                "apple-touch-icon dla ekranu głównego iOS."
+            )
+            current_value = "; ".join(f'rel="{item["rel"]}" -> {item["href"]}' for item in declared)
+        else:
+            status = "ok"
+            note = f"Ikona witryny jest poprawnie zadeklarowana ({len(declared)} wariant(ów), w tym apple-touch-icon)."
+            current_value = "; ".join(f'rel="{item["rel"]}" -> {item["href"]}' for item in declared)
+
+        return self._make_metric(
+            "technical",
+            "favicon",
+            {
+                "declared_count": len(declared),
+                "declared": declared,
+                "has_apple_touch_icon": favicon.get("has_apple_touch_icon", False),
+                "note": note,
+            },
+            status,
+            current_value=current_value,
+        )
+
+    def _evaluate_thin_content(self, data: dict) -> dict:
+        """Content Quality: czy strona ma wystarczającą objętość treści.
+
+        Poniżej {THIN_CONTENT_MIN_WORDS} słów strona jest zwykle zbyt uboga, żeby
+        konkurować w wynikach wyszukiwania i zostać uznana za wartościowe źródło przez
+        modele językowe. Próg liczony jest na widocznym tekście (bez skryptów i
+        stylów) - patrz `SEOScraper._analyze_js_rendering`.
+        """
+        word_count = data.get("word_count", 0)
+
+        if word_count == 0:
+            status = "error"
+            note = (
+                "Nie wykryto żadnej widocznej treści tekstowej w surowym HTML - strona jest pusta "
+                "dla robotów, które nie wykonują JavaScriptu."
+            )
+        elif word_count < THIN_CONTENT_CRITICAL_WORDS:
+            status = "error"
+            note = f"Bardzo uboga treść: {word_count} słów (rekomendowane minimum to {THIN_CONTENT_MIN_WORDS})."
+        elif word_count < THIN_CONTENT_MIN_WORDS:
+            status = "warning"
+            note = f"Uboga treść: {word_count} słów - poniżej rekomendowanego minimum {THIN_CONTENT_MIN_WORDS} słów."
+        else:
+            status = "ok"
+            note = f"Objętość treści jest wystarczająca ({word_count} słów)."
+
+        return self._make_metric(
+            "seo",
+            "thin_content",
+            {"word_count": word_count, "threshold": THIN_CONTENT_MIN_WORDS, "note": note},
+            status,
+            current_value=f"Liczba słów widocznej treści: {word_count}",
+        )
 
     def _evaluate_title(self, data: dict) -> dict:
         title = data.get("title")
@@ -482,18 +678,49 @@ class AuditService:
         return self._make_metric("structure", "schema_faq", value, status, current_value=current_value)
 
     def _evaluate_heading_order(self, data: dict) -> dict:
+        """Poprawność hierarchii nagłówków: kolejność względem H1, puste nagłówki i
+        przeskoki poziomów (H1 -> H3 z pominięciem H2).
+
+        Wszystkie trzy problemy dotyczą tej samej rzeczy - logicznej struktury
+        dokumentu - więc raportujemy je w JEDNEJ karcie testu, zamiast rozbijać na
+        osobne pozycje, które użytkownik i tak naprawia jedną zmianą w szablonie.
+        """
         before_h1 = data.get("heading_noise", {}).get("headings_before_h1", [])
+        quality = data.get("heading_quality", {})
+        empty_headings = quality.get("empty_headings", [])
+        level_skips = quality.get("level_skips", [])
+
+        problems: list[str] = []
+        details: list[str] = []
+
         if before_h1:
             sample = ", ".join(f"{h['tag'].upper()}: {h['text']}" for h in before_h1[:3])
-            status, note = "warning", f"Wykryto {len(before_h1)} nagłówków H2/H3 przed głównym H1 (np. {sample})."
+            problems.append(f"{len(before_h1)} nagłówków H2/H3 przed głównym H1 (np. {sample})")
+            details.extend(f"{h['tag'].upper()}: {h['text']}" for h in before_h1)
+        if empty_headings:
+            problems.append(f"{len(empty_headings)} pustych nagłówków ({', '.join(empty_headings[:5])})")
+            details.extend(f"{tag}: (pusty nagłówek)" for tag in empty_headings)
+        if level_skips:
+            sample = ", ".join(f"{s['from']} -> {s['to']}" for s in level_skips[:3])
+            problems.append(f"{len(level_skips)} przeskoków poziomów nagłówków ({sample})")
+            details.extend(f"{s['from']} -> {s['to']}: {s['text']}" for s in level_skips)
+
+        if not problems:
+            status = "ok"
+            note = "Hierarchia nagłówków jest poprawna: H1 przed sekcjami, bez pustych nagłówków i przeskoków poziomów."
         else:
-            status, note = "ok", "Nagłówek H1 pojawia się przed innymi nagłówkami sekcji."
-        value = {"headings_before_h1": before_h1, "note": note}
-        current_value = (
-            "; ".join(f"{h['tag'].upper()}: {h['text']}" for h in before_h1)
-            if before_h1
-            else "(H1 jest pierwszym nagłówkiem na stronie)"
-        )
+            # Puste nagłówki i przeskoki poziomów są usterką struktury dokumentu, ale
+            # nie blokują indeksacji - stąd ostrzeżenie, a nie błąd krytyczny.
+            status = "warning"
+            note = "Wykryto problemy w hierarchii nagłówków: " + "; ".join(problems) + "."
+
+        value = {
+            "headings_before_h1": before_h1,
+            "empty_headings": empty_headings,
+            "level_skips": level_skips,
+            "note": note,
+        }
+        current_value = "; ".join(details) if details else "(hierarchia nagłówków bez zastrzeżeń)"
         return self._make_metric("structure", "heading_order", value, status, current_value=current_value)
 
     def _evaluate_heading_noise(self, data: dict) -> dict:
@@ -664,7 +891,7 @@ class AuditService:
             robots = self.scraper.check_robots_txt(url)
         except Exception:
             logger.exception("Błąd podczas sprawdzania robots.txt dla %s.", url)
-            robots = {"checked": False, "exists": False, "disallows_all": False}
+            robots = {"checked": False, "exists": False, "disallows_all": False, "blocked_ai_bots": []}
 
         try:
             http_errors = self.scraper.check_custom_404_page(url)
@@ -680,9 +907,56 @@ class AuditService:
 
         return [
             self._evaluate_robots_txt(robots),
+            self._evaluate_robots_ai_bots(robots),
             self._evaluate_http_errors(http_errors),
             self._evaluate_image_compression(image_sizes),
         ]
+
+    def _evaluate_robots_ai_bots(self, robots: dict) -> dict:
+        """AI & GEO: czy robots.txt nie odcina witryny od modeli językowych.
+
+        Zablokowanie GPTBot/ClaudeBot/PerplexityBot/Bytespider wyklucza treść z
+        odpowiedzi generowanych przez AI. To świadoma decyzja biznesowa u części
+        wydawców (ochrona treści przed trenowaniem modeli), dlatego zgłaszamy to jako
+        OSTRZEŻENIE do weryfikacji, a nie błąd krytyczny.
+        """
+        if not robots.get("checked") or not robots.get("exists"):
+            return self._make_metric(
+                "technical",
+                "robots_ai_bots",
+                {
+                    "blocked_bots": [],
+                    "checked_bots": list(AI_BOT_USER_AGENTS),
+                    "note": "Brak pliku robots.txt - boty AI nie są blokowane (mają pełny dostęp).",
+                },
+                "ok",
+                current_value="(brak pliku robots.txt - domyślnie pełny dostęp dla botów AI)",
+                generate_recommendation=False,
+            )
+
+        blocked = robots.get("blocked_ai_bots") or []
+        if blocked:
+            status = "warning"
+            note = (
+                f"Plik robots.txt blokuje {len(blocked)} bot(ów) AI: {', '.join(blocked)} - "
+                "treść tej witryny nie trafi do odpowiedzi generowanych przez modele językowe."
+            )
+            current_value = "\n".join(f"User-agent: {bot}\nDisallow: /" for bot in blocked)
+        else:
+            status = "ok"
+            note = (
+                f"Boty AI ({', '.join(AI_BOT_USER_AGENTS)}) mają dostęp do witryny - "
+                "treść może być cytowana w odpowiedziach generowanych przez AI."
+            )
+            current_value = "(żaden z botów AI nie jest zablokowany w robots.txt)"
+
+        return self._make_metric(
+            "technical",
+            "robots_ai_bots",
+            {"blocked_bots": blocked, "checked_bots": list(AI_BOT_USER_AGENTS), "note": note},
+            status,
+            current_value=current_value,
+        )
 
     def _evaluate_robots_txt(self, robots: dict) -> dict:
         if not robots.get("exists"):

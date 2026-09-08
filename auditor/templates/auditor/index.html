@@ -7,7 +7,8 @@
     <h1>Nowy audyt SEO</h1>
     <form class="audit-form" id="audit-form" method="post" action="{% url 'auditor:index' %}">
         {% csrf_token %}
-        <input type="url" name="url" id="audit-url" placeholder="https://przyklad.pl" required>
+        <input type="text" name="url" id="audit-url" placeholder="przyklad.pl lub https://przyklad.pl"
+               inputmode="url" autocomplete="url" spellcheck="false" required>
         <button type="submit" id="audit-submit">Uruchom audyt</button>
     </form>
 
@@ -46,6 +47,17 @@
         submitBtn.textContent = "Uruchom audyt";
     }
 
+    function normalizeUrl() {
+        var value = urlInput.value.trim();
+        if (value && !/^https?:\/\//i.test(value)) {
+            value = "https://" + value;
+        }
+        urlInput.value = value;
+        return value;
+    }
+
+    urlInput.addEventListener("blur", normalizeUrl);
+
     form.addEventListener("submit", function (event) {
         event.preventDefault();
 
@@ -53,6 +65,8 @@
             urlInput.reportValidity();
             return;
         }
+
+        normalizeUrl();
 
         urlInput.readOnly = true;
         submitBtn.style.pointerEvents = "none";

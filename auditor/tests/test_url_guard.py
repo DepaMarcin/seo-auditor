@@ -97,3 +97,16 @@ class IsPublicUrlTests(SimpleTestCase):
 
     def test_returns_false_instead_of_raising(self):
         self.assertFalse(is_public_url("http://127.0.0.1/"))
+
+
+class BareDomainNormalizationTests(SimpleTestCase):
+    """Formularz przyjmuje samą domenę - schemat dokleja JS, a serwer robi to samo
+    niezależnie (formularz działa też przy wyłączonym JavaScripcie)."""
+
+    @patch("auditor.services.url_guard.socket.getaddrinfo", return_value=_resolves_to("93.184.216.34"))
+    def test_bare_domain_gets_https_scheme(self, _mock_dns):
+        self.assertEqual(validate_public_url("earlystage.pl"), "https://earlystage.pl")
+
+    @patch("auditor.services.url_guard.socket.getaddrinfo", return_value=_resolves_to("93.184.216.34"))
+    def test_existing_scheme_is_preserved(self, _mock_dns):
+        self.assertEqual(validate_public_url("http://earlystage.pl/x"), "http://earlystage.pl/x")
