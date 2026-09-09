@@ -13,6 +13,7 @@ from .pagespeed import PageSpeedService
 from .rag import RAGEngine
 from .scraper import AI_BOT_USER_AGENTS, ScraperError, SEOScraper
 from .senuto import SenutoService
+from .wayback import WaybackService
 
 if TYPE_CHECKING:
     from google.oauth2.credentials import Credentials
@@ -65,6 +66,10 @@ EEAT_REQUIRED_PAGE_TYPES = {"article"}
 # Minimalna liczba linków wewnętrznych, poniżej której zgłaszamy ostrzeżenie.
 INTERNAL_LINKING_MIN = 3
 
+# Progi wieku domeny wg archiwum Internet Archive (patrz _evaluate_wayback_domain_age).
+DOMAIN_AGE_ESTABLISHED_YEARS = 2.0
+DOMAIN_AGE_YOUNG_YEARS = 0.5
+
 # Progi testu "thin content" (liczba słów widocznej treści).
 THIN_CONTENT_MIN_WORDS = 300
 THIN_CONTENT_CRITICAL_WORDS = 100
@@ -87,6 +92,7 @@ class AuditService:
         senuto_service: SenutoService | None = None,
         ga4_service: GA4OAuthService | None = None,
         gsc_service: GSCService | None = None,
+        wayback_service: WaybackService | None = None,
     ):
         self.scraper = scraper or SEOScraper()
         self.rag_engine = rag_engine or RAGEngine()
@@ -94,6 +100,7 @@ class AuditService:
         self.senuto_service = senuto_service or SenutoService()
         self.ga4_service = ga4_service or GA4OAuthService()
         self.gsc_service = gsc_service or GSCService()
+        self.wayback_service = wayback_service or WaybackService()
 
     def run_audit(self, audit: "Audit") -> "Audit":
         from auditor.models import Audit, AuditMetric
@@ -905,12 +912,101 @@ class AuditService:
             logger.exception("Błąd podczas sprawdzania wagi obrazków dla %s.", url)
             image_sizes = {"checked_count": 0, "oversized": []}
 
+        try:
+            wayback = self.wayback_service.fetch_domain_history(url)
+        except Exception:
+            logger.exception("Błąd podczas sprawdzania historii domeny w Wayback Machine dla %s.", url)
+            wayback = {"available": False, "archived": False, "first_snapshot": None,
+                       "age_years": None, "age_days": None, "snapshot_url": None,
+                       "error": "Nie udało się odpytać archiwum."}
+
         return [
             self._evaluate_robots_txt(robots),
             self._evaluate_robots_ai_bots(robots),
             self._evaluate_http_errors(http_errors),
             self._evaluate_image_compression(image_sizes),
+            self._evaluate_wayback_domain_age(wayback),
         ]
+
+    def _evaluate_wayback_domain_age(self, wayback: dict) -> dict:
+        """Wiek domeny oszacowany na podstawie pierwszej migawki w Internet Archive.
+
+        Archiwum nie jest rejestrem domen - data pierwszej migawki mówi tylko, od kiedy
+        Internet Archive zna ten adres, więc wynik jest oszacowaniem "od dołu" (domena
+        może być starsza niż wskazuje archiwum). Dlatego młoda domena to INFO/WARNING
+        wymagające weryfikacji, a nigdy błąd krytyczny - brak w archiwum nie jest usterką
+        strony, tylko kontekstem do budowania autorytetu.
+        """
+        if not wayback.get("available"):
+            return self._make_metric(
+                "technical",
+                "wayback_domain_age",
+                {
+                    "archived": False,
+                    "first_snapshot": None,
+                    "age_years": None,
+                    "note": "Nie udało się sprawdzić historii domeny w archiwum Internet Archive.",
+                },
+                "info",
+                current_value="(archiwum Internet Archive niedostępne podczas audytu)",
+                generate_recommendation=False,
+            )
+
+        if not wayback.get("archived"):
+            note = (
+                "Domena nie występuje w archiwum Internet Archive - to typowe dla adresów "
+                "zarejestrowanych niedawno. Nowa domena startuje bez historii i zaufania, "
+                "więc na efekty SEO trzeba poczekać dłużej."
+            )
+            return self._make_metric(
+                "technical",
+                "wayback_domain_age",
+                {"archived": False, "first_snapshot": None, "age_years": None, "note": note},
+                "warning",
+                current_value="(brak jakiejkolwiek migawki w Wayback Machine)",
+            )
+
+        age_years = wayback.get("age_years") or 0
+        first_snapshot = wayback.get("first_snapshot")
+
+        if age_years >= DOMAIN_AGE_ESTABLISHED_YEARS:
+            status = "ok"
+            note = (
+                f"Domena ma ugruntowaną historię - pierwsza migawka w archiwum pochodzi z "
+                f"{first_snapshot} (ok. {age_years} lat temu)."
+            )
+        elif age_years >= DOMAIN_AGE_YOUNG_YEARS:
+            status = "info"
+            note = (
+                f"Domena jest stosunkowo młoda - pierwsza migawka z {first_snapshot} "
+                f"(ok. {age_years} lat temu). Historia dopiero się buduje."
+            )
+        else:
+            status = "warning"
+            note = (
+                f"Bardzo młoda domena - pierwsza migawka w archiwum pochodzi dopiero z "
+                f"{first_snapshot} (ok. {age_years} lat temu). Warto zaplanować budowę "
+                "autorytetu: regularne publikacje i wartościowe linki zewnętrzne."
+            )
+
+        current_value = f"Pierwsza migawka w Wayback Machine: {first_snapshot} (szacowany wiek: {age_years} lat)"
+        if wayback.get("snapshot_url"):
+            current_value += "\nAdres migawki: " + wayback["snapshot_url"]
+
+        return self._make_metric(
+            "technical",
+            "wayback_domain_age",
+            {
+                "archived": True,
+                "first_snapshot": first_snapshot,
+                "age_years": age_years,
+                "age_days": wayback.get("age_days"),
+                "snapshot_url": wayback.get("snapshot_url"),
+                "note": note,
+            },
+            status,
+            current_value=current_value,
+        )
 
     def _evaluate_robots_ai_bots(self, robots: dict) -> dict:
         """AI & GEO: czy robots.txt nie odcina witryny od modeli językowych.

@@ -224,6 +224,8 @@ CACHE_TTL_SENUTO = 60 * 60 * 24         # Senuto przelicza widoczność raz na d
 CACHE_TTL_GSC = 60 * 60 * 12            # GSC ma 2-3 dni opóźnienia w danych
 CACHE_TTL_GA4_EVENTS = 60 * 60 * 6      # lista zdarzeń GA4 zmienia się rzadko
 CACHE_TTL_GA4_PROPERTIES = 60 * 60      # lista usług GA4 konta Google
+CACHE_TTL_WAYBACK = 60 * 60 * 24        # historia domeny w Internet Archive zmienia się miesiącami
+CACHE_TTL_WAYBACK_FAILURE = 60 * 15     # krótko, żeby limit 429 archiwum nie blokował testu na dobę
 
 # ----------------------------------------------------------------------
 # Limit uruchamiania audytów (auditor.ratelimit) - jeden audyt to kilkanaście

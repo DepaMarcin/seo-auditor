@@ -45,6 +45,7 @@ CATEGORY_ICONS = {
 # Krótkie, biznesowe wyjaśnienia metryk ("Co to jest?") wyświetlane na kartach metryk -
 # tłumaczą nietechnicznemu odbiorcy, czym jest dana metryka i dlaczego ma znaczenie dla SEO.
 METRIC_DEFINITIONS = {
+    "wayback_domain_age": "Wiek domeny szacowany na podstawie pierwszej migawki w archiwum Internet Archive (Wayback Machine). Domeny z wieloletnią historią cieszą się większym zaufaniem wyszukiwarek, a nowe potrzebują czasu i konsekwentnych publikacji, żeby zbudować autorytet. Archiwum nie jest rejestrem domen, więc data pierwszej migawki to oszacowanie od dołu - domena może być starsza.",
     "robots_ai_bots": "Boty modeli językowych (GPTBot, ClaudeBot, PerplexityBot, Bytespider) zbierają treść stron, żeby móc ją cytować w odpowiedziach generowanych przez AI. Zablokowanie ich w pliku robots.txt wyklucza witrynę z tych odpowiedzi — bywa to świadomą decyzją (ochrona treści), ale powinno być wyborem, a nie przypadkiem.",
     "schema_validity": "Dane strukturalne JSON-LD muszą być poprawne składniowo — blok z błędem jest przez wyszukiwarki i modele AI pomijany w całości, tak jakby go nie było. Typy Organization, SoftwareApplication, FAQPage i Product to te, po których AI buduje odpowiedzi o firmie i jej ofercie.",
     "twitter_cards": "Tagi Twitter Card sterują wyglądem linku udostępnionego w serwisie X: typem podglądu, tytułem, opisem i miniaturą. Bez nich (i bez Open Graph) udostępniony link wyświetla się jako goły adres URL, co drastycznie obniża klikalność.",
@@ -84,6 +85,7 @@ METRIC_DEFINITIONS = {
 # `annotate_metric_labels`). Kilka technicznych kluczy dzieli tę samą oficjalną
 # nazwę, gdy audyt opisuje je jako jeden łączny test.
 OFFICIAL_TEST_NAMES = {
+    "wayback_domain_age": "Wiek i historia domeny w archiwum (Wayback Machine)",
     "robots_ai_bots": "Dostęp botów AI/LLM (GPTBot, ClaudeBot, PerplexityBot) w robots.txt",
     "schema_validity": "Poprawność składni JSON-LD i pokrycie typów istotnych dla AI",
     "twitter_cards": "Podgląd linku w mediach społecznościowych (Open Graph i Twitter Card)",
@@ -182,12 +184,17 @@ SCHEMA_METRIC_KEYS = {"schema_page_type", "schema_breadcrumbs", "schema_faq", "s
 # które tabela reprezentuje w całości i osobna karta tylko dublowałaby informację.
 SCHEMA_CARD_KEYS = ("schema_validity",)
 
+# Zbiorcza metryka PageSpeed ma własny panel podsumowania na szczycie zakładki
+# technicznej (patrz `extract_pagespeed_summary`), dlatego jest CELOWO wyłączona z
+# akordeonów tematycznych - inaczej ta sama karta pojawiałaby się dwa razy.
+PAGESPEED_SUMMARY_KEY = "pagespeed_score"
+
 TECHNICAL_ACCORDIONS = [
     (
         "indexing",
         "🌐 Indeksacja, Renderowanie & Nawigacja",
         {"javascript_rendering", "robots_txt", "robots_ai_bots", "canonical", "redirect_chain",
-         "internal_linking", "http_errors", "favicon"},
+         "internal_linking", "http_errors", "favicon", "wayback_domain_age"},
     ),
     (
         "content",
@@ -202,7 +209,7 @@ TECHNICAL_ACCORDIONS = [
         "images_performance",
         "⚡ Obrazy, Wydajność & Bezpieczeństwo",
         {"images_alt", "image_quality", "image_compression", "ssl_certificate",
-         "pagespeed_score", "lcp", "cls", "fcp", "inp"},
+         "lcp", "cls", "fcp", "inp"},
     ),
 ]
 
@@ -223,7 +230,7 @@ def group_technical_accordions(metrics: list[AuditMetric]) -> list[dict]:
     widoczne bez przewijania."""
     groups = {group_id: [] for group_id, _, _ in TECHNICAL_ACCORDIONS}
     for metric in metrics:
-        if metric.short_key in SCHEMA_METRIC_KEYS:
+        if metric.short_key in SCHEMA_METRIC_KEYS or metric.short_key == PAGESPEED_SUMMARY_KEY:
             continue
         for group_id, _, keys in TECHNICAL_ACCORDIONS:
             if metric.short_key in keys:
@@ -369,3 +376,28 @@ def extract_schema_cards(metrics: list[AuditMetric]) -> list[AuditMetric]:
     """
     by_key = {m.short_key: m for m in metrics}
     return [by_key[key] for key in SCHEMA_CARD_KEYS if key in by_key]
+
+
+def extract_pagespeed_summary(metrics: list[AuditMetric]) -> AuditMetric | None:
+    """Zbiorcza metryka PageSpeed (Mobile + Desktop) do panelu podsumowania.
+
+    W `value` niesie już `mobile_score`/`desktop_score` (patrz
+    `AuditService._build_pagespeed_summary_metric`), więc panel rysuje wskaźniki
+    bezpośrednio z metryki - bez dodatkowych pól w kontekście.
+    """
+    return next((m for m in metrics if m.short_key == PAGESPEED_SUMMARY_KEY), None)
+
+
+def pagespeed_score_bucket(score: int | None) -> str:
+    """Klasa koloru wskaźnika PageSpeed wg progów Google (0-49 / 50-89 / 90-100).
+
+    Świadomie NIE korzysta z `score_bucket` (progi 50/80 dla ogólnej oceny audytu) -
+    Google stosuje dla wydajności własne, ostrzejsze granice.
+    """
+    if score is None:
+        return "warning"
+    if score >= 90:
+        return "ok"
+    if score >= 50:
+        return "warning"
+    return "error"

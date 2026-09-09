@@ -169,6 +169,39 @@
             border-radius: 50%;
             animation: spin 0.8s linear infinite;
         }
+        .pagespeed-gauges {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 1.25rem;
+            margin-bottom: 1rem;
+        }
+        .pagespeed-gauge {
+            background: var(--surface-inset);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+        }
+        .pagespeed-gauge-header {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 0.75rem;
+            margin-bottom: 0.6rem;
+        }
+        .pagespeed-gauge-label { font-weight: 600; color: var(--muted); }
+        .pagespeed-gauge-score { font-size: 2rem; font-weight: 700; line-height: 1; }
+        .pagespeed-gauge-max { font-size: 0.9rem; font-weight: 600; color: var(--muted); }
+        .pagespeed-gauge .progress-track { margin-top: 0; }
+        .pagespeed-ok, .pagespeed-gauge-score.pagespeed-ok { color: var(--ok); }
+        .pagespeed-warning, .pagespeed-gauge-score.pagespeed-warning { color: var(--warning); }
+        .pagespeed-error, .pagespeed-gauge-score.pagespeed-error { color: var(--error); }
+        .progress-bar.pagespeed-bar-ok { background: var(--ok); }
+        .progress-bar.pagespeed-bar-warning { background: var(--warning); }
+        .progress-bar.pagespeed-bar-error { background: var(--error); }
+        .pagespeed-panel-note { margin: 0 0 0.5rem; color: var(--text); }
+        .pagespeed-panel-legend { margin: 0 0 0.5rem; font-size: 0.85rem; }
+        .pagespeed-panel .test-card-list { margin-top: 0.75rem; }
+
         .priority-findings-panel { border-color: rgba(239, 68, 68, 0.25); }
         .priority-findings-intro { margin: 0 0 1rem; }
         .priority-findings-panel .test-card-list { margin-top: 0; }

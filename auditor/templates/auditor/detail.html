@@ -481,6 +481,56 @@
     {% endif %}
 </div>
 
+{% if pagespeed_summary %}
+<div class="panel pagespeed-panel">
+    <h2 class="section-heading">⚡ Wydajność — Google PageSpeed Insights</h2>
+    <div class="pagespeed-gauges">
+        <div class="pagespeed-gauge">
+            <div class="pagespeed-gauge-header">
+                <span class="pagespeed-gauge-label">📱 Mobile</span>
+                <span class="pagespeed-gauge-score pagespeed-{{ pagespeed_mobile_bucket }}">
+                    {% if pagespeed_summary.value.mobile_score is not None %}{{ pagespeed_summary.value.mobile_score }}<span class="pagespeed-gauge-max">/100</span>{% else %}—{% endif %}
+                </span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-bar pagespeed-bar-{{ pagespeed_mobile_bucket }}"
+                     style="width: {{ pagespeed_summary.value.mobile_score|default:0 }}%;"></div>
+            </div>
+        </div>
+
+        <div class="pagespeed-gauge">
+            <div class="pagespeed-gauge-header">
+                <span class="pagespeed-gauge-label">🖥️ Desktop</span>
+                <span class="pagespeed-gauge-score pagespeed-{{ pagespeed_desktop_bucket }}">
+                    {% if pagespeed_summary.value.desktop_score is not None %}{{ pagespeed_summary.value.desktop_score }}<span class="pagespeed-gauge-max">/100</span>{% else %}—{% endif %}
+                </span>
+            </div>
+            <div class="progress-track">
+                <div class="progress-bar pagespeed-bar-{{ pagespeed_desktop_bucket }}"
+                     style="width: {{ pagespeed_summary.value.desktop_score|default:0 }}%;"></div>
+            </div>
+        </div>
+    </div>
+
+    <p class="pagespeed-panel-note">{{ pagespeed_summary.value.note }}</p>
+    <p class="priority-empty pagespeed-panel-legend">
+        Progi Google: <span class="pagespeed-error">0–49 słaby</span> ·
+        <span class="pagespeed-warning">50–89 wymaga poprawy</span> ·
+        <span class="pagespeed-ok">90–100 dobry</span>
+    </p>
+
+    {% if pagespeed_card_in_panel %}
+    <div class="test-card-list">
+        {% include "auditor/_test_card.html" with metric=pagespeed_summary %}
+    </div>
+    {% else %}
+    <p class="priority-empty" style="margin: 0;">
+        Pełna rekomendacja dla tego testu znajduje się w sekcji „Krytyczne problemy i ostrzeżenia” powyżej.
+    </p>
+    {% endif %}
+</div>
+{% endif %}
+
 <div class="tech-accordion-list">
     {% for group in technical_accordions %}
     <details class="tech-accordion" {% if forloop.first %}open{% endif %}>

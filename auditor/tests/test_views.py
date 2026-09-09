@@ -262,27 +262,25 @@ class AuditDetailViewTests(AuthenticatedTestCase):
         self.assertEqual(stats["warnings_count"], len(response.context["warnings"]))
         self.assertEqual(stats["passed_count"], len(response.context["passed_tests"]))
 
-    def test_merged_pagespeed_score_in_technical_accordion(self):
-        """Zbiorcza metryka "pagespeed_score" (z osadzonymi wynikami mobile/desktop
-        w `value`) trafia do akordeonu "Obrazy, Wydajność & Bezpieczeństwo" zakładki
-        Audyt Techniczny - dedykowane klucze kontekstu mobile_score/desktop_score
-        nie istnieją już (zastąpione jednolitym grupowaniem akordeonowym); metryki
-        score per urządzenie (mobile_/desktop_pagespeed_score) są z tej listy celowo
-        wykluczone (MERGED_PAGESPEED_SCORE_KEYS), żeby nie dublować tej samej
-        informacji, która i tak jest osadzona w `value` metryki zbiorczej."""
+    def test_merged_pagespeed_score_has_dedicated_summary_panel(self):
+        """Zbiorcza metryka "pagespeed_score" (z osadzonymi wynikami mobile/desktop w
+        `value`) NIE trafia już do akordeonów tematycznych - ma własny, wyeksponowany
+        panel podsumowania na szczycie zakładki technicznej (patrz
+        `presentation.extract_pagespeed_summary`), żeby ta sama karta nie pojawiała się
+        w dwóch miejscach. Metryki score per urządzenie (mobile_/desktop_pagespeed_score)
+        są nadal wykluczone z podsumowania (MERGED_PAGESPEED_SCORE_KEYS), bo dublowałyby
+        informację osadzoną w `value` metryki zbiorczej."""
         url = reverse("auditor:detail", kwargs={"pk": self.audit.pk})
 
         response = self.client.get(url)
 
-        images_performance_group = next(
-            g for g in response.context["technical_accordions"] if g["id"] == "images_performance"
-        )
-        pagespeed_metric = next(
-            (m for m in images_performance_group["metrics"] if m.key == "pagespeed_score"), None
-        )
+        pagespeed_metric = response.context["pagespeed_summary"]
         self.assertIsNotNone(pagespeed_metric)
         self.assertEqual(pagespeed_metric.value.get("mobile_score"), 90)
         self.assertEqual(pagespeed_metric.value.get("desktop_score"), 95)
+
+        for group in response.context["technical_accordions"]:
+            self.assertNotIn("pagespeed_score", {m.short_key for m in group["metrics"]}, group["id"])
 
     def test_errors_and_warnings_are_listed_before_passed_tests(self):
         """Kolejność kart w akordeonie: najpierw problemy, potem testy zdane."""

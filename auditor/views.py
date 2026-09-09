@@ -31,8 +31,10 @@ from .presentation import (
     annotate_metric_labels,
     build_schema_status_table,
     compute_category_scores,
+    extract_pagespeed_summary,
     extract_schema_cards,
     group_technical_accordions,
+    pagespeed_score_bucket,
     priority_for_metric,
     score_bucket,
 )
@@ -544,11 +546,21 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
         "total_count": len(summary_metrics),
     }
 
+    # Sekcja "Krytyczne problemy i ostrzeżenia" na szczycie zakładki technicznej:
+    # wszystkie testy ze statusem ERROR/WARNING, błędy przed ostrzeżeniami.
+    priority_findings = critical_errors + warnings
+
+    pagespeed_summary = extract_pagespeed_summary(summary_metrics)
+    # Pełna karta testu (z rekomendacją AI) ma pojawić się na stronie DOKŁADNIE raz:
+    # przy błędzie/ostrzeżeniu pokazuje ją panel priorytetów, w pozostałych przypadkach
+    # - panel PageSpeed. Sam panel PageSpeed zawsze rysuje wskaźniki punktowe.
+    pagespeed_card_in_panel = bool(pagespeed_summary) and pagespeed_summary not in priority_findings
+
+    ga4_lead_insights = audit.ga4_insights.get("lead_insights") or {}
+    has_ga4 = bool(audit.ga4_refresh_token)
     # Zbiorcza flaga: czy na stronie w ogóle trzeba wczytać Chart.js (Senuto i/lub GA4
     # mają jakiekolwiek dane do narysowania). Liczona tutaj, a nie jako złożony warunek
     # and/or w szablonie, żeby uniknąć pomyłek z precedencją operatorów w templatce.
-    ga4_lead_insights = audit.ga4_insights.get("lead_insights") or {}
-    has_ga4 = bool(audit.ga4_refresh_token)
     # Przy połączonym GA4 Chart.js jest potrzebny zawsze - wykresy powstają nawet z
     # pustymi danymi, żeby dynamiczna zmiana zakresu dat miała co aktualizować.
     show_charts_js = bool(has_ga4 or audit.senuto_history.get("dates"))
@@ -565,13 +577,20 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "stats": stats,
             # Zakładka "Audyt Techniczny": 4 tematyczne akordeony (Progressive Disclosure)
             # + dedykowana tabela statusów Schema.org, budowane z tych samych metryk.
-            # Sekcja "Krytyczne problemy i ostrzeżenia" na górze strony: wszystkie
-            # testy ze statusem ERROR/WARNING, niezależnie od kategorii - błędy przed
-            # ostrzeżeniami, żeby najpilniejsze pozycje były pierwsze.
-            "priority_findings": critical_errors + warnings,
+            "priority_findings": priority_findings,
             "technical_accordions": group_technical_accordions(summary_metrics),
             "schema_status_table": build_schema_status_table(summary_metrics),
             "schema_cards": extract_schema_cards(summary_metrics),
+            # Dedykowany panel podsumowania PageSpeed na szczycie zakładki technicznej -
+            # metryka jest wyłączona z akordeonów, żeby nie dublować tej samej karty.
+            "pagespeed_summary": pagespeed_summary,
+            "pagespeed_card_in_panel": pagespeed_card_in_panel,
+            "pagespeed_mobile_bucket": pagespeed_score_bucket(
+                pagespeed_summary.value.get("mobile_score") if pagespeed_summary else None
+            ),
+            "pagespeed_desktop_bucket": pagespeed_score_bucket(
+                pagespeed_summary.value.get("desktop_score") if pagespeed_summary else None
+            ),
             "category_scores": compute_category_scores(all_metrics) if audit.status == "completed" else [],
             "score_bucket": score_bucket(audit.score),
             "ga4_available_events": _fetch_ga4_available_events(audit),
