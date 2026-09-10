@@ -105,6 +105,65 @@ class AuditMetric(models.Model):
         return f"{self.audit_id} - {self.category}.{self.key} ({self.status})"
 
 
+class AuditedPage(models.Model):
+    """Pojedyncza podstrona (szablon) przebadana w ramach jednego audytu.
+
+    Audyt ocenia witrynę na podstawie kilku reprezentatywnych szablonów - strona główna
+    rządzi się innymi prawami niż karta produktu czy wpis blogowy, więc jeden adres nie
+    opisuje stanu całego serwisu.
+
+    Podział odpowiedzialności względem `AuditMetric`:
+      * `AuditMetric` trzyma metryki adresu GŁÓWNEGO i to one składają się na ogólną
+        ocenę witryny (`Audit.score`) oraz zasilają cały dotychczasowy interfejs,
+      * `AuditedPage.metrics_data` trzyma rozbicie per szablon - listę metryk w tym samym
+        formacie co `AuditMetric` (category/key/value/status/current_value), ale jako
+        JSON, bo służy do zestawień i eksportu, a nie do zapytań po pojedynczej metryce.
+    """
+
+    class PageType(models.TextChoices):
+        HOMEPAGE = "homepage", "Strona główna"
+        CATEGORY = "category", "Strona kategorii"
+        PRODUCT = "product", "Strona produktu"
+        BLOG = "blog", "Wpis na blogu"
+        OFFER = "offer", "Strona ofertowa"
+        OTHER = "other", "Inna podstrona"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Oczekujący"
+        PROCESSING = "processing", "W trakcie"
+        COMPLETED = "completed", "Zakończony"
+        FAILED = "failed", "Błąd"
+
+    audit = models.ForeignKey(Audit, on_delete=models.CASCADE, related_name="pages")
+    url = models.URLField(max_length=2048)
+    page_type = models.CharField(max_length=20, choices=PageType.choices, default=PageType.OTHER)
+    metrics_data = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    score = models.IntegerField(default=0)
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["id"]
+        constraints = [
+            # Ten sam adres w jednym audycie nie ma sensu - dublowałby skan i zestawienia.
+            models.UniqueConstraint(fields=["audit", "url"], name="unique_page_url_per_audit"),
+        ]
+
+    def __str__(self):
+        return f"{self.get_page_type_display()}: {self.url}"
+
+    @property
+    def status_counts(self) -> dict[str, int]:
+        """Zliczenie metryk wg statusu - do kolumn zestawienia szablonów."""
+        counts = {"error": 0, "warning": 0, "ok": 0, "info": 0}
+        for metric in self.metrics_data or []:
+            status = metric.get("status")
+            if status in counts:
+                counts[status] += 1
+        return counts
+
+
 class KnowledgeDocument(models.Model):
     title = models.CharField(max_length=255)
     content = models.TextField()

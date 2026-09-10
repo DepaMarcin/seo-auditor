@@ -235,18 +235,31 @@ class GSCService:
             logger.exception("Błąd podczas pobierania danych Search Console (%s) dla %s.", dimension, audit_url)
             return self._fallback()
 
-        current_by_key = {row["keys"][0]: row.get("clicks", 0) for row in rows_current if row.get("keys")}
-        previous_by_key = {row["keys"][0]: row.get("clicks", 0) for row in rows_previous if row.get("keys")}
+        # Zachowujemy CAŁY wiersz z API, nie same kliknięcia - Search Console zwraca przy
+        # okazji wyświetlenia, CTR i średnią pozycję, a te trafiają do zakładki "Ruch
+        # i Widoczność" w eksporcie (auditor.services.exporter). Pobranie ich osobno
+        # oznaczałoby dodatkowe zapytania do API po dane, które już mamy w odpowiedzi.
+        current_by_key = {row["keys"][0]: row for row in rows_current if row.get("keys")}
+        previous_by_key = {row["keys"][0]: row for row in rows_previous if row.get("keys")}
 
         deltas = []
         for key in set(current_by_key) | set(previous_by_key):
-            clicks_current = round(current_by_key.get(key, 0))
-            clicks_previous = round(previous_by_key.get(key, 0))
+            current_row = current_by_key.get(key, {})
+            previous_row = previous_by_key.get(key, {})
+            clicks_current = round(current_row.get("clicks", 0))
+            clicks_previous = round(previous_row.get("clicks", 0))
             deltas.append({
                 key_name: key,
                 "clicks_current": clicks_current,
                 "clicks_previous": clicks_previous,
                 "delta": clicks_current - clicks_previous,
+                "impressions_current": round(current_row.get("impressions", 0)),
+                "impressions_previous": round(previous_row.get("impressions", 0)),
+                # GSC podaje CTR jako ułamek (0.0521), a w raporcie czytelniejszy jest procent.
+                "ctr_current": round(current_row.get("ctr", 0) * 100, 2),
+                "ctr_previous": round(previous_row.get("ctr", 0) * 100, 2),
+                "position_current": round(current_row.get("position", 0), 1),
+                "position_previous": round(previous_row.get("position", 0), 1),
             })
 
         top_gainers = sorted((d for d in deltas if d["delta"] > 0), key=lambda d: d["delta"], reverse=True)[:TOP_N]

@@ -24,7 +24,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from google_auth_oauthlib.flow import Flow
 
-from .models import Audit, AuditMetric
+from .models import Audit, AuditedPage, AuditMetric
 from .presentation import (
     MERGED_PAGESPEED_SCORE_KEYS,
     TEAM_BY_CATEGORY,
@@ -51,6 +51,10 @@ from .services.ga4_insights import analyze_channel_trends
 from .services.ga4_service import GA4OAuthService
 from .services.gsc_insights import generate_page_commentary, generate_query_commentary
 from .services.gsc_service import GSCService
+from .services.exporter import build_report, report_filename
+from .services.sheets import GoogleSheetsService, MissingSheetsScopeError, SheetsExportError
+from .services.sitemap import SitemapService
+from .services.spreadsheet import build_csv, build_xlsx
 from .services.url_guard import UnsafeUrlError, validate_public_url
 from .tasks import enqueue_audit
 
@@ -61,6 +65,19 @@ RECENT_AUDITS_LIMIT = 10
 
 # Zakres pokazywany w sekcjach GA4/GSC przy pierwszym wejściu na stronę audytu.
 DEFAULT_ANALYTICS_RANGE_DAYS = 30
+
+# Dodatkowe szablony podstron w formularzu nowego audytu. Kolejność odpowiada kolejności
+# pól na ekranie, a `page_type` musi pochodzić z `AuditedPage.PageType`.
+TEMPLATE_SLOTS = [
+    {"field": "url_category", "page_type": AuditedPage.PageType.CATEGORY,
+     "label": "Strona kategorii", "placeholder": "przyklad.pl/kategoria/buty"},
+    {"field": "url_product", "page_type": AuditedPage.PageType.PRODUCT,
+     "label": "Strona produktu", "placeholder": "przyklad.pl/produkt/but-sportowy"},
+    {"field": "url_blog", "page_type": AuditedPage.PageType.BLOG,
+     "label": "Wpis na blogu", "placeholder": "przyklad.pl/blog/jak-dobrac-buty"},
+    {"field": "url_offer", "page_type": AuditedPage.PageType.OFFER,
+     "label": "Strona ofertowa", "placeholder": "przyklad.pl/oferta"},
+]
 
 
 def _get_owned_audit(request: HttpRequest, pk: int) -> Audit:
@@ -88,14 +105,81 @@ def index(request: HttpRequest) -> HttpResponse:
             messages.error(request, str(exc))
             return redirect("auditor:index")
 
+        try:
+            template_pages = _collect_template_pages(request, primary_url=url)
+        except UnsafeUrlError as exc:
+            messages.error(request, f"Adres dodatkowego szablonu jest nieprawidłowy: {exc}")
+            return redirect("auditor:index")
+
         audit = Audit.objects.create(url=url, owner=request.user)
+        if template_pages:
+            AuditedPage.objects.bulk_create([
+                AuditedPage(audit=audit, url=page_url, page_type=page_type)
+                for page_url, page_type in template_pages
+            ])
         # Audyt trwa minuty (PageSpeed + rekomendacje AI), więc leci w tle - strona
         # szczegółów odpytuje potem `audit_status` i odświeża się po zakończeniu.
         enqueue_audit(audit.pk)
         return redirect("auditor:detail", pk=audit.pk)
 
     audits = Audit.objects.filter(owner=request.user).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
-    return render(request, "auditor/index.html", {"audits": audits})
+    return render(
+        request,
+        "auditor/index.html",
+        {"audits": audits, "template_slots": TEMPLATE_SLOTS},
+    )
+
+
+def _collect_template_pages(request: HttpRequest, primary_url: str) -> list[tuple[str, str]]:
+    """Odczytuje z formularza adresy dodatkowych szablonów podstron.
+
+    Każdy adres przechodzi tę samą walidację co adres główny (`validate_public_url`) -
+    podstrony są skanowane przez serwer, więc dotyczy ich dokładnie to samo ryzyko SSRF.
+    Duplikaty (także powtórzenie adresu głównego) są pomijane, bo `AuditedPage` ma
+    ograniczenie unikalności na parę (audyt, adres).
+    """
+    pages: list[tuple[str, str]] = []
+    seen = {primary_url.rstrip("/")}
+
+    for slot in TEMPLATE_SLOTS:
+        raw_url = request.POST.get(slot["field"], "").strip()
+        if not raw_url:
+            continue
+
+        safe_url = validate_public_url(raw_url)
+        if safe_url.rstrip("/") in seen:
+            continue
+
+        seen.add(safe_url.rstrip("/"))
+        pages.append((safe_url, slot["page_type"]))
+
+    return pages
+
+
+@login_required
+def sitemap_suggestions(request: HttpRequest) -> JsonResponse:
+    """Podpowiedzi adresów per szablon, wyciągnięte z `sitemap.xml` audytowanej domeny.
+
+    Odpytywany asynchronicznie z formularza nowego audytu. Brak mapy witryny nie jest
+    błędem - użytkownik po prostu uzupełnia adresy ręcznie.
+    """
+    url = request.GET.get("url", "").strip()
+    if not url:
+        return JsonResponse({"error": "Podaj adres domeny."}, status=400)
+
+    # Ten sam licznik co przy uruchamianiu audytu - parsowanie mapy witryny to kilka
+    # żądań HTTP do obcego serwera, więc nie może być wywoływane bez ograniczeń.
+    if is_rate_limited(request, scope="sitemap"):
+        return JsonResponse({"error": "Zbyt wiele zapytań o mapę witryny. Spróbuj za chwilę."}, status=429)
+
+    result = SitemapService().suggest_pages(url)
+    return JsonResponse({
+        "available": result["available"],
+        "sitemap_url": result["sitemap_url"],
+        "suggestions": result["suggestions"],
+        "scanned_urls": result["scanned_urls"],
+        "error": result["error"],
+    })
 
 
 @login_required
@@ -585,6 +669,8 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
             # metryka jest wyłączona z akordeonów, żeby nie dublować tej samej karty.
             "pagespeed_summary": pagespeed_summary,
             "pagespeed_card_in_panel": pagespeed_card_in_panel,
+            # Zestawienie przebadanych szablonów podstron (auditor.models.AuditedPage).
+            "audited_pages": list(audit.pages.all()),
             "pagespeed_mobile_bucket": pagespeed_score_bucket(
                 pagespeed_summary.value.get("mobile_score") if pagespeed_summary else None
             ),
@@ -601,6 +687,83 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "audit_in_progress": audit.status in (Audit.Status.PENDING, Audit.Status.PROCESSING),
         },
     )
+
+
+# ----------------------------------------------------------------------
+# Eksport raportu: plik do pobrania (XLSX/CSV) albo arkusz Google Sheets
+# ----------------------------------------------------------------------
+
+EXPORT_CONTENT_TYPES = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "csv": "text/csv; charset=utf-8",
+}
+
+
+@login_required
+def export_report(request: HttpRequest, pk: int) -> HttpResponse:
+    """Serwuje raport audytu jako plik do pobrania (`?format=xlsx` albo `?format=csv`)."""
+    audit = _get_owned_audit(request, pk)
+
+    export_format = request.GET.get("format", "xlsx").strip().lower()
+    if export_format not in EXPORT_CONTENT_TYPES:
+        messages.error(request, "Nieobsługiwany format eksportu - wybierz XLSX albo CSV.")
+        return redirect("auditor:detail", pk=audit.pk)
+
+    sheets = build_report(audit)
+
+    if export_format == "xlsx":
+        payload: bytes = build_xlsx(sheets)
+    else:
+        # BOM pozwala Excelowi rozpoznać UTF-8 - bez niego polskie znaki w CSV
+        # wyświetlają się jako "krzaki" przy otwarciu podwójnym kliknięciem.
+        payload = build_csv(sheets).encode("utf-8-sig")
+
+    response = HttpResponse(payload, content_type=EXPORT_CONTENT_TYPES[export_format])
+    response["Content-Disposition"] = f'attachment; filename="{report_filename(audit, export_format)}"'
+    return response
+
+
+@login_required
+def export_to_google_sheets(request: HttpRequest, pk: int) -> HttpResponse:
+    """Tworzy arkusz z raportem na koncie Google użytkownika i przekierowuje do niego.
+
+    Wymaga POST - utworzenie arkusza jest operacją zapisującą na koncie użytkownika,
+    więc nie może dać się wywołać zwykłym odnośnikiem (ochrona CSRF).
+    """
+    audit = _get_owned_audit(request, pk)
+
+    if request.method != "POST":
+        return redirect("auditor:detail", pk=audit.pk)
+
+    if not audit.ga4_refresh_token:
+        messages.error(
+            request,
+            "Połącz konto Google (sekcja GA4), żeby wyeksportować raport do Google Sheets.",
+        )
+        return redirect("auditor:detail", pk=audit.pk)
+
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
+        messages.error(request, "Konfiguracja Google jest niekompletna. Połącz konto ponownie.")
+        return redirect("auditor:detail", pk=audit.pk)
+
+    title = f"Audyt SEO - {urlparse(audit.url).netloc or audit.url} ({audit.created_at:%Y-%m-%d})"
+
+    try:
+        spreadsheet_url = GoogleSheetsService().create_report(credentials, title, build_report(audit))
+    except MissingSheetsScopeError as exc:
+        # Tokeny wydane przed dodaniem zakresu `spreadsheets` nie mają uprawnienia do
+        # arkuszy - użytkownik musi jednorazowo przejść ekran zgody Google ponownie.
+        messages.error(request, str(exc))
+        return redirect("auditor:detail", pk=audit.pk)
+    except SheetsExportError as exc:
+        messages.error(request, str(exc))
+        return redirect("auditor:detail", pk=audit.pk)
+
+    messages.success(request, "Raport został utworzony w Google Sheets.")
+    return redirect(spreadsheet_url)
 
 
 @login_required

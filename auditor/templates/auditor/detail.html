@@ -42,6 +42,24 @@
             <a class="pdf-button" href="{% url 'auditor:download_pdf_report' audit.pk %}" target="_blank" rel="noopener">
                 📄 Pobierz Raport PDF
             </a>
+            <div class="export-actions">
+                <a class="export-button" href="{% url 'auditor:export_report' audit.pk %}?format=xlsx">
+                    📊 Pobierz raport (.xlsx)
+                </a>
+                <a class="export-button export-button-secondary"
+                   href="{% url 'auditor:export_report' audit.pk %}?format=csv">
+                    Pobierz jako .csv
+                </a>
+                <form method="post" action="{% url 'auditor:export_to_google_sheets' audit.pk %}"
+                      class="export-sheets-form" id="export-sheets-form">
+                    {% csrf_token %}
+                    <button type="submit" class="export-button export-button-sheets" id="export-sheets-submit"
+                            {% if not audit.ga4_refresh_token %}disabled
+                            title="Połącz konto Google w sekcji GA4, żeby eksportować do Arkuszy"{% endif %}>
+                        📗 Otwórz w Google Sheets
+                    </button>
+                </form>
+            </div>
         </div>
 
         <div class="overview-col overview-bars-col">
@@ -480,6 +498,44 @@
     </div>
     {% endif %}
 </div>
+
+{% if audited_pages %}
+<div class="panel">
+    <h2 class="section-heading">🧩 Przebadane szablony podstron</h2>
+    <p class="priority-empty" style="margin: 0 0 1rem;">
+        Ocena ogólna witryny liczona jest z adresu głównego. Poniższe zestawienie pokazuje,
+        jak wypadły pozostałe szablony — pełne rozbicie znajdziesz w eksportowanym raporcie.
+    </p>
+    <div class="table-scroll">
+        <table class="gsc-table">
+            <thead>
+                <tr>
+                    <th>Typ szablonu</th><th>Adres URL</th><th>Wynik</th>
+                    <th>Błędy</th><th>Ostrzeżenia</th><th>Zdane</th><th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for page in audited_pages %}
+                <tr>
+                    <td>{{ page.get_page_type_display }}</td>
+                    <td><a class="link" href="{{ page.url }}" target="_blank" rel="noopener">{{ page.url }}</a></td>
+                    <td>{% if page.status == "completed" %}{{ page.score }}/100{% else %}—{% endif %}</td>
+                    <td class="gsc-delta-negative">{{ page.status_counts.error }}</td>
+                    <td>{{ page.status_counts.warning }}</td>
+                    <td class="gsc-delta-positive">{{ page.status_counts.ok }}</td>
+                    <td>
+                        <span class="badge badge-{{ page.status }}">{{ page.get_status_display }}</span>
+                        {% if page.error_message %}
+                        <div class="priority-empty" style="margin-top: 0.35rem;">{{ page.error_message }}</div>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
 
 {% if pagespeed_summary %}
 <div class="panel pagespeed-panel">

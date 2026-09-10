@@ -85,11 +85,18 @@ class RunAuditTests(TestCase):
         INSERT-cie na metrykę (wcześniej ~30 zapytań na audyt)."""
         service = _service_with_mocks()
 
-        # Cały audyt mieści się w 6 zapytaniach (UPDATE statusu, SELECT + DELETE starych
-        # metryk, jeden zbiorczy INSERT, savepoint transakcji i UPDATE wyniku).
-        # Wcześniejsza pętla `audit.metrics.create()` generowała ich ok. 30.
-        with self.assertNumQueries(6):
+        # Metryki nadal trafiają do bazy JEDNYM zbiorczym INSERT-em (wcześniejsza pętla
+        # `audit.metrics.create()` generowała ok. 30 zapytań). Pozostałe zapytania to
+        # obsługa statusu audytu oraz zapis zestawienia szablonów podstron
+        # (`AuditedPage`) - patrz `AuditService._store_primary_page`.
+        with self.assertNumQueries(13):
             service.run_audit(self.audit)
+
+        self.assertEqual(
+            self.audit.metrics.count(),
+            len(self.audit.pages.get(url=self.audit.url).metrics_data),
+            "adres główny musi trafić do zestawienia szablonów z kompletem metryk",
+        )
 
     def test_scraper_error_marks_audit_as_failed(self):
         service = _service_with_mocks()

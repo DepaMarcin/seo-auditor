@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TYPE_CHECKING
 
 from django.db import transaction
@@ -13,6 +14,7 @@ from .pagespeed import PageSpeedService
 from .rag import RAGEngine
 from .scraper import AI_BOT_USER_AGENTS, ScraperError, SEOScraper
 from .senuto import SenutoService
+from .url_guard import UnsafeUrlError, validate_public_url
 from .wayback import WaybackService
 
 if TYPE_CHECKING:
@@ -80,6 +82,23 @@ AI_RELEVANT_SCHEMA_TYPES = ("Organization", "SoftwareApplication", "FAQPage", "P
 
 SCORE_WEIGHTS = {"ok": 100, "info": 100, "warning": 50, "error": 0}
 
+# Ile szablonów podstron skanujemy równolegle. Każdy wątek to scraping + 2 zapytania do
+# PageSpeed, więc wyższa wartość nie przyspieszy audytu (limity API Google), a zwiększy
+# ryzyko odrzucenia żądań po stronie audytowanego serwera.
+MAX_PARALLEL_PAGE_SCANS = 3
+
+
+class _NullRecommendationEngine:
+    """Zamiennik `RAGEngine` dla skanu podstron - nie generuje rekomendacji AI.
+
+    Skanowanie 4-5 szablonów z pełnym RAG oznaczałoby kilkukrotnie większy koszt i czas
+    audytu przy niemal identycznych poradach (problemy szablonowe powtarzają się na
+    całej witrynie). Rekomendacje powstają raz, dla adresu głównego.
+    """
+
+    def generate_recommendation(self, *args, **kwargs) -> str:
+        return ""
+
 
 class AuditService:
     """Orkiestrator audytu SEO: SEOScraper + PageSpeedService -> analiza metryk -> RAGEngine -> zapis do bazy."""
@@ -127,6 +146,11 @@ class AuditService:
                     [AuditMetric(audit=audit, **metric) for metric in metrics]
                 )
 
+            # Adres główny trafia też do zestawienia szablonów - bez ponownego skanowania,
+            # bo jego metryki są już policzone powyżej.
+            self._store_primary_page(audit, metrics)
+            self._scan_additional_pages(audit)
+
             senuto_stats = self.senuto_service.get_visibility_stats(audit.url)
             audit.senuto_top3 = senuto_stats["top3"]
             audit.senuto_top10 = senuto_stats["top10"]
@@ -153,6 +177,116 @@ class AuditService:
             if audit.status == Audit.Status.PROCESSING:
                 audit.status = Audit.Status.FAILED
                 audit.save(update_fields=["status"])
+
+    # ------------------------------------------------------------------
+    # Audyt wielu szablonów podstron (auditor.models.AuditedPage)
+    # ------------------------------------------------------------------
+    def _store_primary_page(self, audit: "Audit", metrics: list[dict]) -> None:
+        """Zapisuje metryki adresu głównego jako `AuditedPage` typu "homepage".
+
+        Bez ponownego skanowania - te same metryki, które właśnie trafiły do
+        `AuditMetric`, lądują w zestawieniu szablonów, żeby matryca eksportu obejmowała
+        całą witrynę, a nie tylko podstrony dodatkowe.
+        """
+        from auditor.models import AuditedPage
+
+        AuditedPage.objects.update_or_create(
+            audit=audit,
+            url=audit.url,
+            defaults={
+                "page_type": AuditedPage.PageType.HOMEPAGE,
+                "metrics_data": metrics,
+                "status": AuditedPage.Status.COMPLETED,
+                "score": self._calculate_score(metrics),
+                "error_message": "",
+            },
+        )
+
+    def _scan_additional_pages(self, audit: "Audit") -> None:
+        """Skanuje wszystkie dodatkowe szablony podstron zadeklarowane przy audycie.
+
+        Podział pracy: wątki robocze wykonują WYŁĄCZNIE operacje sieciowe i obliczenia
+        (scraping, PageSpeed, ocena metryk), a wszystkie zapisy do bazy wykonuje wątek
+        główny po zebraniu wyników. Zapisywanie z wątków roboczych blokowało SQLite
+        ("database table is locked") i wymagałoby ręcznego zarządzania połączeniami.
+
+        Błąd pojedynczej podstrony nie przerywa audytu ani nie wpływa na pozostałe -
+        rekord dostaje status FAILED i komunikat.
+        """
+        from auditor.models import AuditedPage
+
+        pages = list(audit.pages.exclude(url=audit.url))
+        if not pages:
+            return
+
+        logger.info("Audyt %s: skanowanie %s dodatkowych szablonów podstron.", audit.pk, len(pages))
+
+        results: dict[int, dict] = {}
+        with ThreadPoolExecutor(max_workers=min(len(pages), MAX_PARALLEL_PAGE_SCANS)) as executor:
+            futures = {executor.submit(self._compute_page_metrics, page.url): page for page in pages}
+            for future in as_completed(futures):
+                page = futures[future]
+                try:
+                    results[page.pk] = future.result()
+                except Exception:
+                    logger.exception("Nie udało się przeskanować podstrony %s (audyt %s).", page.url, audit.pk)
+                    results[page.pk] = {
+                        "metrics": [],
+                        "error": "Nieoczekiwany błąd podczas skanowania podstrony.",
+                    }
+
+        for page in pages:
+            result = results.get(page.pk, {"metrics": [], "error": "Brak wyniku skanowania."})
+            if result["error"]:
+                page.status = AuditedPage.Status.FAILED
+                page.error_message = result["error"]
+                page.metrics_data = []
+                page.score = 0
+            else:
+                page.status = AuditedPage.Status.COMPLETED
+                page.error_message = ""
+                page.metrics_data = result["metrics"]
+                page.score = self._calculate_score(result["metrics"])
+            page.save(update_fields=["status", "error_message", "metrics_data", "score"])
+
+    def _compute_page_metrics(self, url: str) -> dict:
+        """Liczy metryki jednej podstrony. NIE dotyka bazy danych - patrz `_scan_additional_pages`.
+
+        Rekomendacje AI są tu CELOWO pomijane (`_NullRecommendationEngine`): generowanie
+        ich osobno dla każdego szablonu oznaczałoby kilkukrotnie większy koszt i czas
+        OpenAI, a problemy szablonowe najczęściej powtarzają się na całej witrynie.
+        Eksport uzupełnia kolumnę "Rekomendacja AI" rekomendacją z audytu głównego dla
+        tego samego klucza metryki (patrz `auditor.services.exporter`).
+
+        Zwraca {"metrics": [...], "error": str} - błąd zamiast wyjątku, żeby wątek
+        roboczy nie przerywał skanowania pozostałych szablonów.
+        """
+        # Wstrzyknięte zależności przekazujemy dalej (mockowalność w testach), podmieniając
+        # wyłącznie silnik rekomendacji.
+        service = AuditService(
+            scraper=self.scraper,
+            rag_engine=_NullRecommendationEngine(),
+            pagespeed_service=self.pagespeed_service,
+            senuto_service=self.senuto_service,
+            ga4_service=self.ga4_service,
+            gsc_service=self.gsc_service,
+            wayback_service=self.wayback_service,
+        )
+
+        try:
+            safe_url = validate_public_url(url)
+        except UnsafeUrlError as exc:
+            return {"metrics": [], "error": str(exc)}
+
+        try:
+            data = service.scraper.scrape(safe_url)
+        except ScraperError as exc:
+            return {"metrics": [], "error": f"Nie udało się pobrać podstrony: {exc}"}
+
+        metrics = service._build_metrics(data)
+        metrics.extend(service._build_pagespeed_metrics(safe_url))
+        metrics.extend(service._build_extra_checks_metrics(safe_url, data))
+        return {"metrics": metrics, "error": ""}
 
     # ------------------------------------------------------------------
     # Google Analytics 4 (OAuth 2.0) -> ruch organiczny
@@ -1303,7 +1437,10 @@ class AuditService:
             recommendation = self.rag_engine.generate_recommendation(
                 value.get("note", key), category=category, current_value=current_value
             )
-            value = {**value, "recommendation": recommendation}
+            # Pusty wynik zwraca _NullRecommendationEngine przy skanie podstron - nie ma
+            # sensu zapisywać pustego klucza "recommendation" w metryce.
+            if recommendation:
+                value = {**value, "recommendation": recommendation}
         return {
             "category": category,
             "key": key,

@@ -12,6 +12,37 @@
         <button type="submit" id="audit-submit">Uruchom audyt</button>
     </form>
 
+    <details class="template-slots" id="template-slots">
+        <summary class="template-slots-summary">
+            Zbadaj dodatkowe szablony podstron (opcjonalnie)
+        </summary>
+        <div class="template-slots-body">
+            <p class="priority-empty template-slots-intro">
+                Strona główna rządzi się innymi prawami niż karta produktu czy wpis blogowy.
+                Podaj po jednym przykładowym adresie, żeby audyt objął cały serwis, a nie jeden szablon.
+            </p>
+
+            <div class="template-slots-actions">
+                <button type="button" id="sitemap-suggest">🔍 Podpowiedz z sitemap.xml</button>
+                <span class="spinner hidden" id="sitemap-spinner"></span>
+                <span class="template-slots-status" id="sitemap-status"></span>
+            </div>
+
+            <div class="template-slots-grid">
+                {% for slot in template_slots %}
+                <div class="template-slot">
+                    <label for="id-{{ slot.field }}">{{ slot.label }}</label>
+                    <input type="text" name="{{ slot.field }}" id="id-{{ slot.field }}"
+                           form="audit-form" class="template-slot-input"
+                           data-page-type="{{ slot.page_type }}"
+                           placeholder="{{ slot.placeholder }}"
+                           inputmode="url" autocomplete="off" spellcheck="false">
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </details>
+
     <div id="loading-container" class="loading-container hidden">
         <div class="loading-header">
             <span class="spinner"></span>
@@ -57,6 +88,69 @@
     }
 
     urlInput.addEventListener("blur", normalizeUrl);
+
+    var templateInputs = document.querySelectorAll(".template-slot-input");
+    templateInputs.forEach(function (input) {
+        input.addEventListener("blur", function () {
+            var value = input.value.trim();
+            if (value && !/^https?:\/\//i.test(value)) {
+                input.value = "https://" + value;
+            }
+        });
+    });
+
+    var suggestBtn = document.getElementById("sitemap-suggest");
+    var suggestSpinner = document.getElementById("sitemap-spinner");
+    var suggestStatus = document.getElementById("sitemap-status");
+
+    if (suggestBtn) {
+        suggestBtn.addEventListener("click", function () {
+            var domain = normalizeUrl();
+            if (!domain) {
+                suggestStatus.textContent = "Najpierw podaj adres domeny powyżej.";
+                return;
+            }
+
+            suggestBtn.disabled = true;
+            suggestSpinner.classList.remove("hidden");
+            suggestStatus.textContent = "Szukam mapy witryny…";
+
+            fetch("{% url 'auditor:sitemap_suggestions' %}?url=" + encodeURIComponent(domain),
+                  { headers: { "X-Requested-With": "XMLHttpRequest" } })
+                .then(function (response) {
+                    return response.json().then(function (payload) {
+                        if (!response.ok) throw new Error(payload.error || "Błąd " + response.status);
+                        return payload;
+                    });
+                })
+                .then(function (payload) {
+                    if (!payload.available) {
+                        suggestStatus.textContent = payload.error || "Nie znaleziono mapy witryny.";
+                        return;
+                    }
+
+                    var filled = 0;
+                    templateInputs.forEach(function (input) {
+                        var suggestion = payload.suggestions[input.dataset.pageType];
+                        if (suggestion && !input.value.trim()) {
+                            input.value = suggestion;
+                            filled += 1;
+                        }
+                    });
+
+                    suggestStatus.textContent = filled
+                        ? "Uzupełniono " + filled + " adres(ów) na podstawie " + payload.scanned_urls + " wpisów mapy witryny."
+                        : "Mapa witryny nie zawiera rozpoznawalnych adresów dla tych szablonów.";
+                })
+                .catch(function (error) {
+                    suggestStatus.textContent = error.message || "Nie udało się pobrać mapy witryny.";
+                })
+                .finally(function () {
+                    suggestBtn.disabled = false;
+                    suggestSpinner.classList.add("hidden");
+                });
+        });
+    }
 
     form.addEventListener("submit", function (event) {
         event.preventDefault();

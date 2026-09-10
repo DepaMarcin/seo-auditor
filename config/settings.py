@@ -181,9 +181,14 @@ SENUTO_API_KEY = os.environ.get('SENUTO_API_KEY', '')
 GA4_CLIENT_SECRETS_FILE = BASE_DIR / 'client_secret.json'
 # Zakres GA4 (Analytics Data API) + GSC (Search Console API, auditor.services.gsc_service.GSCService) -
 # oba proszone w jednym ekranie zgody Google, żeby nie wymagać osobnego logowania dla GSC.
+# UWAGA: dopisanie zakresu unieważnia zgodę udzieloną wcześniej - konta połączone
+# przed dodaniem 'spreadsheets' muszą przejść ekran zgody ponownie, żeby eksport do
+# Google Sheets zadziałał (patrz auditor.services.sheets.MissingSheetsScopeError).
 GA4_SCOPES = [
     'https://www.googleapis.com/auth/analytics.readonly',
     'https://www.googleapis.com/auth/webmasters.readonly',
+    # Tworzenie arkusza z raportem na koncie użytkownika (auditor.services.sheets).
+    'https://www.googleapis.com/auth/spreadsheets',
 ]
 GA4_REDIRECT_URI = os.environ.get('GA4_REDIRECT_URI', 'http://127.0.0.1:8000/ga4/callback/')
 
@@ -224,6 +229,8 @@ CACHE_TTL_SENUTO = 60 * 60 * 24         # Senuto przelicza widoczność raz na d
 CACHE_TTL_GSC = 60 * 60 * 12            # GSC ma 2-3 dni opóźnienia w danych
 CACHE_TTL_GA4_EVENTS = 60 * 60 * 6      # lista zdarzeń GA4 zmienia się rzadko
 CACHE_TTL_GA4_PROPERTIES = 60 * 60      # lista usług GA4 konta Google
+CACHE_TTL_SITEMAP = 60 * 60 * 6         # mapa witryny zmienia się rzadko, a jej pobranie to kilka żądań
+CACHE_TTL_SITEMAP_FAILURE = 60 * 15     # brak mapy nie może blokować podpowiedzi na długo
 CACHE_TTL_WAYBACK = 60 * 60 * 24        # historia domeny w Internet Archive zmienia się miesiącami
 CACHE_TTL_WAYBACK_FAILURE = 60 * 15     # krótko, żeby limit 429 archiwum nie blokował testu na dobę
 
@@ -243,8 +250,10 @@ CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', '')
 CELERY_TASK_ALWAYS_EAGER = os.environ.get('CELERY_TASK_ALWAYS_EAGER', 'False').lower() == 'true'
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
-CELERY_TASK_SOFT_TIME_LIMIT = 600
-CELERY_TASK_TIME_LIMIT = 900
+# Audyt skanuje do 5 szablonów podstron (każdy: scraping + 2x PageSpeed), więc limit
+# musi być wyraźnie wyższy niż przy pojedynczym adresie.
+CELERY_TASK_SOFT_TIME_LIMIT = int(os.environ.get('CELERY_TASK_SOFT_TIME_LIMIT', '1500'))
+CELERY_TASK_TIME_LIMIT = int(os.environ.get('CELERY_TASK_TIME_LIMIT', '1800'))
 
 # Logowanie użytkowników (django.contrib.auth) - audyty są prywatne, każdy widok
 # wymaga zalogowania (patrz auditor.views).
