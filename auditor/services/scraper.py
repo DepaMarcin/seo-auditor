@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import threading
 from urllib.parse import urljoin, urlparse
 from uuid import uuid4
 
@@ -13,9 +14,51 @@ from .url_guard import MAX_REDIRECT_HOPS, UnsafeUrlError, validate_public_url
 
 HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
 
-# Boty modeli językowych (LLM), których zablokowanie w robots.txt wyklucza witrynę
-# z odpowiedzi generowanych przez AI - kluczowe dla GEO (Generative Engine Optimization).
-AI_BOT_USER_AGENTS = ("GPTBot", "ClaudeBot", "PerplexityBot", "Bytespider")
+# Boty modeli językowych (LLM), których zablokowanie wyklucza witrynę z odpowiedzi
+# generowanych przez AI - kluczowe dla GEO (Generative Engine Optimization).
+#
+# "Google-Extended" nie jest crawlerem w zwykłym sensie: Google używa go wyłącznie jako
+# przełącznika zgody na wykorzystanie treści w Gemini i AI Overviews. Jego zablokowanie
+# NIE wpływa na zwykłą indeksację w wyszukiwarce, ale wyklucza stronę z odpowiedzi AI.
+AI_BOT_USER_AGENTS = ("GPTBot", "ClaudeBot", "PerplexityBot", "Google-Extended", "Bytespider")
+
+# Sygnały ukrycia treści możliwe do wykrycia w statycznym HTML (bez renderowania CSS).
+_HIDDEN_STYLE_RE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.I)
+_HIDDEN_CLASS_RE = re.compile(
+    r"(^|\s)(is-hidden|d-none|hidden|hide|sr-only|visually-hidden|screen-reader-text)(\s|$)", re.I
+)
+_HIDEABLE_BLOCK_TAGS = ("div", "section", "article", "aside", "ul", "ol", "dl", "table", "p")
+
+# Minimalna liczba słów, od której ukryty blok uznajemy za istotną utratę treści.
+HIDDEN_BLOCK_MIN_WORDS = 25
+
+# Elementy, w których realnie występuje cena, oraz wzorce jej rozpoznania.
+_PRICE_CARRIER_TAGS = ("span", "div", "p", "b", "strong", "em", "ins", "bdi", "td", "dd", "li")
+_PRICE_HINT_RE = re.compile(r"(zł|pln|eur|usd|€|\$|gbp|£)", re.I)
+_PRICE_NUMBER_RE = re.compile(r"\d[\d\s\u00a0.,]*\d|\d")
+
+# Domeny uznawane za autorytatywne źródła zewnętrzne (weryfikacja faktów w treści).
+_TRUSTED_DOMAIN_RE = re.compile(
+    # (^|\.) obejmuje zarówno "gov.pl", jak i "www.sejm.gov.pl" - bez tego domeny
+    # rządowe i edukacyjne bez subdomeny nie były rozpoznawane jako źródła zaufane.
+    r"((^|\.)gov(\.[a-z]{2})?$|(^|\.)edu(\.[a-z]{2})?$|\.ac\.uk$"
+    r"|wikipedia\.org$|who\.int$|europa\.eu$|nature\.com$|ncbi\.nlm\.nih\.gov$)", re.I
+)
+
+# Teksty zastępcze, które nie powinny trafić na produkcję.
+PLACEHOLDER_TEXT_MARKERS = (
+    "lorem ipsum", "dolor sit amet", "tekst zastępczy", "tekst do uzupełnienia",
+    "opis w przygotowaniu", "wpisz opis", "todo:", "placeholder",
+    "brak opisu", "przykładowy tekst",
+)
+
+# Maksymalna głębokość rozwijania dokumentu JSON-LD przy spłaszczaniu encji.
+SCHEMA_MAX_DEPTH = 12
+
+# Zakres długości akapitu uznawanego za bezpośrednią odpowiedź pod nagłówkiem sekcji
+# (wzorzec "Answer-First" w optymalizacji pod modele językowe).
+ANSWER_FIRST_MIN_WORDS = 20
+ANSWER_FIRST_MAX_WORDS = 40
 
 # Próg (liczba słów widocznego tekstu) i minimalna liczba <script>, poniżej/powyżej
 # których strona jest podejrzewana o renderowanie wyłącznie po stronie klienta (CSR) -
@@ -95,10 +138,26 @@ class SEOScraper:
         self.headers = {
             "User-Agent": user_agent or "SEOAuditorBot/1.0 (+https://example.com)"
         }
-        # Ustawiane przez fetch() - liczba przekierowań (301/302) napotkanych po drodze
-        # do finalnego URL-a. Domyślnie 0, żeby parse() wywołane samodzielnie (np. w
-        # testach, bez wcześniejszego fetch()) miało bezpieczną wartość.
-        self._last_redirect_count = 0
+        # Stan ostatniej odpowiedzi ustawiany przez fetch(). Trzymany PER WĄTEK, bo
+        # audyt skanuje szablony podstron równolegle jedną instancją scrapera - wspólne
+        # pole instancji mieszałoby liczbę przekierowań i nagłówki między podstronami.
+        self._state = threading.local()
+
+    @property
+    def _last_redirect_count(self) -> int:
+        return getattr(self._state, "redirect_count", 0)
+
+    @_last_redirect_count.setter
+    def _last_redirect_count(self, value: int) -> None:
+        self._state.redirect_count = value
+
+    @property
+    def _last_response_headers(self) -> dict:
+        return getattr(self._state, "response_headers", {})
+
+    @_last_response_headers.setter
+    def _last_response_headers(self, value: dict) -> None:
+        self._state.response_headers = value
 
     def scrape(self, url: str) -> dict:
         normalized_url = self._normalize_url(url)
@@ -139,6 +198,9 @@ class SEOScraper:
         # Liczba przekierowań napotkanych po drodze - parse() zgłasza na jej podstawie
         # test "Przekierowania 301/302" (zero dodatkowych zapytań).
         self._last_redirect_count = hops
+        # X-Robots-Tag istnieje WYŁĄCZNIE w nagłówkach HTTP - bez ich zapamiętania
+        # dyrektywa noindex podana po stronie serwera byłaby dla audytu niewidoczna.
+        self._last_response_headers = dict(response.headers)
         return response.text
 
     def _normalize_url(self, url: str) -> str:
@@ -162,9 +224,18 @@ class SEOScraper:
             f"h{level}": [h.get_text(strip=True) for h in soup.find_all(f"h{level}")]
             for level in range(1, 7)
         }
+        # Nagłówek bez treści (<h1></h1>, <h1>   </h1>) istnieje w drzewie DOM, ale nie
+        # niesie żadnej informacji dla wyszukiwarki. Liczymy je osobno, żeby testy
+        # nagłówków (h1_structure i heading_order) opierały się na TEJ SAMEJ definicji
+        # "nagłówka, który się liczy" - wcześniej pusty H1 dawał OK w jednym teście
+        # i OSTRZEŻENIE w drugim.
+        h1_non_empty = [text for text in headings["h1"] if text]
 
         canonical_tag = soup.find("link", rel="canonical")
-        canonical = canonical_tag.get("href") if canonical_tag else None
+        # .strip() jest istotne: <link rel="canonical" href="   "> to canonical PUSTY,
+        # a bez przycięcia białych znaków wartość byłaby prawdziwa logicznie i test
+        # zwracałby OK dla znacznika, który niczego nie wskazuje.
+        canonical = (canonical_tag.get("href") or "").strip() or None if canonical_tag else None
 
         open_graph = {
             tag["property"][3:]: tag.get("content", "")
@@ -184,6 +255,15 @@ class SEOScraper:
         js_rendering = self._analyze_js_rendering(soup)
         twitter_card = self._extract_twitter_card(soup)
         favicon = self._extract_favicon(soup, url)
+        meta_robots = self._extract_meta_robots(soup)
+        x_robots_tag = self._analyze_x_robots_tag()
+        answer_first = self._analyze_answer_first(soup)
+        visible_prices = self._extract_visible_prices(soup)
+        hidden_content = self._analyze_hidden_content(soup)
+        heading_visibility = self._analyze_heading_visibility(soup)
+        outbound_links = self._analyze_outbound_links(soup, url)
+        placeholder_hits = self._find_placeholder_text(soup)
+        structured_content = self._analyze_structured_content(soup)
 
         return {
             "url": url,
@@ -194,6 +274,9 @@ class SEOScraper:
             "meta_keywords_present": meta_keywords_present,
             "headings": headings,
             "h1_count": len(headings["h1"]),
+            "h1_non_empty": h1_non_empty,
+            "h1_non_empty_count": len(h1_non_empty),
+            "h1_empty_count": len(headings["h1"]) - len(h1_non_empty),
             "canonical": canonical,
             "open_graph": open_graph,
             "images_total": images["total"],
@@ -218,7 +301,355 @@ class SEOScraper:
             "word_count": js_rendering.get("word_count", 0),
             "twitter_card": twitter_card,
             "favicon": favicon,
+            "meta_robots": meta_robots,
+            "x_robots_tag": x_robots_tag,
+            "answer_first": answer_first,
+            "structured_content": structured_content,
+            "visible_prices": visible_prices,
+            "hidden_content": hidden_content,
+            "heading_visibility": heading_visibility,
+            "outbound_links": outbound_links,
+            "placeholder_hits": placeholder_hits,
             "redirect_count": self._last_redirect_count,
+        }
+
+    def _is_hidden_element(self, element) -> bool:
+        """Czy element (lub któryś z jego przodków) jest ukryty stylem inline albo klasą CSS.
+
+        Sprawdzamy wyłącznie sygnały widoczne w statycznym HTML - atrybut `hidden`,
+        `style="display:none"`, `aria-hidden` oraz popularne klasy frameworków. Reguł
+        z zewnętrznych arkuszy CSS nie da się ocenić bez renderowania strony, więc
+        analiza jest zachowawcza: wykryje typowe przypadki, ale nie wszystkie.
+        """
+        for node in [element, *element.parents]:
+            if getattr(node, "name", None) in (None, "[document]"):
+                continue
+            if node.has_attr("hidden"):
+                return True
+            if _HIDDEN_STYLE_RE.search(node.get("style", "") or ""):
+                return True
+            classes = " ".join(node.get("class") or []).lower()
+            if classes and _HIDDEN_CLASS_RE.search(classes):
+                return True
+            if (node.get("aria-hidden") or "").lower() == "true":
+                return True
+        return False
+
+    def _parse_prices(self, text: str) -> list[float]:
+        """Zamienia liczby z tekstu na wartości, obsługując zapis PL (1 234,56) i EN (1,234.56)."""
+        wartosci: list[float] = []
+        for surowa in _PRICE_NUMBER_RE.findall(text):
+            znormalizowana = surowa.replace("\u00a0", "").replace(" ", "")
+            if "," in znormalizowana and "." in znormalizowana:
+                # Ostatni separator decyduje o roli przecinka i kropki.
+                if znormalizowana.rfind(",") > znormalizowana.rfind("."):
+                    znormalizowana = znormalizowana.replace(".", "").replace(",", ".")
+                else:
+                    znormalizowana = znormalizowana.replace(",", "")
+            elif "," in znormalizowana:
+                znormalizowana = znormalizowana.replace(",", ".")
+            try:
+                wartosc = float(znormalizowana)
+            except ValueError:
+                continue
+            if 0 < wartosc < 10_000_000:
+                wartosci.append(wartosc)
+        return wartosci
+
+    def _extract_visible_prices(self, soup: BeautifulSoup) -> dict:
+        """Wyciąga ceny obecne w drzewie DOM, rozróżniając widoczne od ukrytych.
+
+        Służy do porównania z ceną zadeklarowaną w danych strukturalnych: rozbieżność
+        oznacza, że wyszukiwarka i modele AI pokazują inną cenę niż ta, którą użytkownik
+        realnie zobaczy na stronie.
+        """
+        kandydaci: list[dict] = []
+
+        for element in soup.find_all(_PRICE_CARRIER_TAGS):
+            if element.find(_PRICE_CARRIER_TAGS):
+                continue  # bierzemy tylko najgłębsze węzły, żeby nie liczyć ceny wielokrotnie
+            text = element.get_text(" ", strip=True)
+            if not text or len(text) > 60 or not _PRICE_HINT_RE.search(text):
+                continue
+            ukryty = self._is_hidden_element(element)
+            for wartosc in self._parse_prices(text):
+                kandydaci.append({"value": wartosc, "text": text[:60], "hidden": ukryty})
+
+        widoczne = [k["value"] for k in kandydaci if not k["hidden"]]
+        return {
+            "found": bool(kandydaci),
+            "values": sorted({round(k["value"], 2) for k in kandydaci}),
+            "visible_values": sorted(set(widoczne)),
+            "min_visible": min(widoczne) if widoczne else None,
+            "max_visible": max(widoczne) if widoczne else None,
+            "samples": kandydaci[:10],
+        }
+
+    def _analyze_hidden_content(self, soup: BeautifulSoup) -> dict:
+        """Wykrywa duże bloki treści ukryte przed crawlerem stylem CSS.
+
+        Crawlery RAG czytają tekst z DOM bez renderowania stylów, ale wyszukiwarki
+        traktują treść ukrytą jako mniej istotną lub pomijają ją zupełnie. Opinie, FAQ
+        i specyfikacje schowane pod "pokaż więcej" tracą wtedy wartość dla widoczności
+        w odpowiedziach generatywnych.
+        """
+        bloki: list[dict] = []
+        ukryte_slowa = 0
+
+        for element in soup.find_all(_HIDEABLE_BLOCK_TAGS):
+            if not self._is_hidden_element(element):
+                continue
+            # Element zagnieżdżony w już zliczonym bloku liczyłby te same słowa drugi raz.
+            if any(element in blok["element"].descendants for blok in bloki):
+                continue
+            tekst = element.get_text(" ", strip=True)
+            liczba_slow = len(tekst.split())
+            if liczba_slow < HIDDEN_BLOCK_MIN_WORDS:
+                continue
+            bloki.append({
+                "element": element,
+                "tag": element.name,
+                "words": liczba_slow,
+                "preview": tekst[:120],
+                "class": " ".join(element.get("class") or [])[:80],
+            })
+            ukryte_slowa += liczba_slow
+
+        wszystkie_slowa = len(soup.get_text(" ", strip=True).split())
+        widoczne_slowa = max(wszystkie_slowa - ukryte_slowa, 0)
+        laczne = ukryte_slowa + widoczne_slowa
+        return {
+            "blocks": [{k: v for k, v in b.items() if k != "element"} for b in bloki[:10]],
+            "blocks_count": len(bloki),
+            "hidden_words": ukryte_slowa,
+            "visible_words": widoczne_slowa,
+            "hidden_share": round(ukryte_slowa / laczne, 2) if laczne else 0.0,
+        }
+
+    def _analyze_heading_visibility(self, soup: BeautifulSoup) -> dict:
+        """Nagłówki obecne w HTML, ale niewidoczne dla użytkownika.
+
+        Taki nagłówek zaburza strukturę dokumentu dla robotów, choć w interfejsie nie
+        istnieje - typowy przypadek to komunikat "Nie znaleziono produktów" ukryty pod
+        prawidłowym H1, tworzący dla crawlera sztuczny poziom hierarchii.
+        """
+        ukryte = [
+            {"tag": heading.name.upper(), "text": heading.get_text(strip=True)[:100]}
+            for heading in soup.find_all(HEADING_TAGS)
+            if heading.get_text(strip=True) and self._is_hidden_element(heading)
+        ]
+        return {"hidden_headings": ukryte, "hidden_count": len(ukryte)}
+
+    def _analyze_outbound_links(self, soup: BeautifulSoup, page_url: str) -> dict:
+        """Linki wychodzące poza domenę - dowód opierania treści na źródłach zewnętrznych."""
+        host = urlparse(page_url).netloc.lower().replace("www.", "")
+        wychodzace: list[dict] = []
+        zaufane: list[dict] = []
+
+        for link in soup.find_all("a", href=True):
+            href = link["href"].strip()
+            if not href.startswith(("http://", "https://")):
+                continue
+            target_host = urlparse(href).netloc.lower().replace("www.", "")
+            if not target_host or target_host == host or target_host.endswith("." + host):
+                continue
+
+            rel = " ".join(link.get("rel") or []).lower()
+            wpis = {
+                "url": href[:200],
+                "host": target_host,
+                "nofollow": "nofollow" in rel,
+                "anchor": link.get_text(strip=True)[:80],
+            }
+            wychodzace.append(wpis)
+            if _TRUSTED_DOMAIN_RE.search(target_host):
+                zaufane.append(wpis)
+
+        return {
+            "total": len(wychodzace),
+            "trusted": len(zaufane),
+            "followed_trusted": len([w for w in zaufane if not w["nofollow"]]),
+            "trusted_hosts": sorted({w["host"] for w in zaufane})[:10],
+            "samples": wychodzace[:10],
+        }
+
+    def _find_placeholder_text(self, soup: BeautifulSoup) -> list[dict]:
+        """Znajduje teksty zastępcze w WIDOCZNEJ treści strony.
+
+        Analiza musi objąć całą treść, a nie tylko nagłówki i meta tagi - "lorem ipsum"
+        najczęściej zostaje właśnie w akapitach opisu, gdzie nikt go nie szuka.
+        Skrypty i style pomijamy, bo biblioteki frontendowe bywają nimi naszpikowane.
+        """
+        for niechciany in soup(["script", "style", "noscript"]):
+            niechciany.extract()
+
+        tekst = soup.get_text(" ", strip=True)
+        lowered = tekst.lower()
+        trafienia: list[dict] = []
+        for marker in PLACEHOLDER_TEXT_MARKERS:
+            pozycja = lowered.find(marker)
+            if pozycja >= 0:
+                trafienia.append({
+                    "marker": marker,
+                    "context": tekst[max(pozycja - 30, 0):pozycja + 70].strip(),
+                })
+        return trafienia
+
+    def _analyze_x_robots_tag(self) -> dict:
+        """Dyrektywy indeksacji podane w nagłówku HTTP `X-Robots-Tag`.
+
+        Nagłówek jest równoważny znacznikowi `<meta name="robots">`, ale bywa
+        przeoczony, bo nie widać go w źródle strony - ustawia go serwer lub CDN.
+        Obsługiwana jest składnia z nazwą bota ("X-Robots-Tag: googlebot: noindex"),
+        dzięki czemu wykrywamy też blokady wymierzone w konkretne crawlery AI.
+
+        Zwraca dyrektywy globalne (`directives`) oraz mapę bot -> dyrektywy
+        (`per_bot`), z nazwami botów w oryginalnej pisowni.
+        """
+        raw_value = ""
+        for name, value in (self._last_response_headers or {}).items():
+            if name.lower() == "x-robots-tag":
+                raw_value = value
+                break
+
+        directives: set[str] = set()
+        per_bot: dict[str, set[str]] = {}
+
+        for rule in raw_value.split(","):
+            rule = rule.strip()
+            if not rule:
+                continue
+            # "googlebot: noindex" -> reguła dla konkretnego bota; "noindex" -> globalna.
+            if ":" in rule:
+                bot, _, value = rule.partition(":")
+                bot, value = bot.strip(), value.strip().lower()
+                if value:
+                    per_bot.setdefault(bot, set()).add(value)
+                    continue
+            directives.add(rule.lower())
+
+        def blocks(values: set[str]) -> bool:
+            return "noindex" in values or "none" in values
+
+        return {
+            "present": bool(raw_value),
+            "raw": raw_value,
+            "directives": sorted(directives),
+            "per_bot": {bot: sorted(values) for bot, values in per_bot.items()},
+            "noindex": blocks(directives),
+            "nofollow": "nofollow" in directives or "none" in directives,
+            "blocked_bots": sorted(bot for bot, values in per_bot.items() if blocks(values)),
+        }
+
+    def _analyze_answer_first(self, soup: BeautifulSoup) -> dict:
+        """Sprawdza wzorzec "Answer-First" pod nagłówkami sekcji H2/H3.
+
+        Modele językowe cytują fragmenty, które odpowiadają na pytanie od razu -
+        zwięzły akapit ({ANSWER_FIRST_MIN_WORDS}-{ANSWER_FIRST_MAX_WORDS} słów)
+        bezpośrednio pod nagłówkiem, przed rozbudowanym wyjaśnieniem. Sekcja, która
+        zaczyna się od długiego wstępu, rzadko trafia do odpowiedzi AI w całości.
+
+        Za "pierwszy akapit sekcji" uznajemy pierwszy element <p> z treścią następujący
+        po nagłówku - listy i tabele pomijamy, bo opisuje je osobny test gęstości
+        elementów ustrukturyzowanych.
+        """
+        sections: list[dict] = []
+
+        for heading in soup.find_all(["h2", "h3"]):
+            heading_text = heading.get_text(strip=True)
+            if not heading_text:
+                continue
+
+            first_paragraph = ""
+            for element in heading.find_all_next():
+                # Kolejny nagłówek kończy sekcję - nie znaleziono akapitu wprowadzającego.
+                if element.name in HEADING_TAGS:
+                    break
+                if element.name == "p":
+                    text = element.get_text(" ", strip=True)
+                    if text:
+                        first_paragraph = text
+                        break
+
+            word_count = len(first_paragraph.split())
+            sections.append({
+                "heading": heading_text[:120],
+                "word_count": word_count,
+                "answer_first": ANSWER_FIRST_MIN_WORDS <= word_count <= ANSWER_FIRST_MAX_WORDS,
+                "has_paragraph": bool(first_paragraph),
+            })
+
+        compliant = [s for s in sections if s["answer_first"]]
+        return {
+            "sections_total": len(sections),
+            "sections_compliant": len(compliant),
+            "ratio": round(len(compliant) / len(sections), 2) if sections else 0.0,
+            "sections": sections[:20],
+        }
+
+    def _analyze_structured_content(self, soup: BeautifulSoup) -> dict:
+        """Zlicza natywne elementy ustrukturyzowane: tabele i listy.
+
+        Modele językowe wyciągają dane z tabel i list znacznie pewniej niż z prozy -
+        `<table>`, `<ul>` i `<ol>` niosą jawną strukturę, której nie trzeba wnioskować
+        z tekstu. Liczymy wyłącznie elementy Z TREŚCIĄ i pomijamy listy nawigacyjne
+        (wewnątrz <nav>, <header>, <footer>), bo menu nie jest treścią merytoryczną.
+        """
+        def is_content_element(element) -> bool:
+            if not element.get_text(strip=True):
+                return False
+            return not element.find_parent(["nav", "header", "footer"])
+
+        tables = [t for t in soup.find_all("table") if is_content_element(t)]
+        lists = [lst for lst in soup.find_all(["ul", "ol"]) if is_content_element(lst)]
+        # Zagnieżdżone listy liczymy raz - podlista jest częścią tej samej struktury.
+        top_level_lists = [lst for lst in lists if not lst.find_parent(["ul", "ol"])]
+        # <dl> to w e-commerce typowy nośnik specyfikacji produktu (para cecha-wartość),
+        # czyli dokładnie ten format, z którego LLM najłatwiej wyciąga dane.
+        definition_lists = [dl for dl in soup.find_all("dl") if is_content_element(dl)]
+
+        paragraphs = [p for p in soup.find_all("p") if p.get_text(strip=True)]
+        structured_count = len(tables) + len(top_level_lists) + len(definition_lists)
+        total_blocks = structured_count + len(paragraphs)
+
+        return {
+            "tables": len(tables),
+            "lists": len(top_level_lists),
+            "definition_lists": len(definition_lists),
+            "definition_pairs": sum(len(dl.find_all("dt", recursive=False)) for dl in definition_lists),
+            "list_items": sum(len(lst.find_all("li", recursive=False)) for lst in top_level_lists),
+            "paragraphs": len(paragraphs),
+            "structured_blocks": structured_count,
+            "share": round(structured_count / total_blocks, 2) if total_blocks else 0.0,
+        }
+
+    def _extract_meta_robots(self, soup: BeautifulSoup) -> dict:
+        """Odczytuje dyrektywy `<meta name="robots">` sterujące indeksacją strony.
+
+        Uwzględnia warianty dla konkretnych botów (`googlebot`), bo `noindex` podany
+        wyłącznie dla Googlebota wyklucza stronę z Google tak samo skutecznie jak
+        dyrektywa ogólna. Wartości zbieramy ze WSZYSTKICH znaczników - strony bywają
+        sklejane z kilku szablonów i dyrektywy potrafią się powtarzać.
+        """
+        directives: set[str] = set()
+        raw_values: list[str] = []
+
+        for tag in soup.find_all("meta"):
+            name = (tag.get("name") or "").strip().lower()
+            if name not in ("robots", "googlebot"):
+                continue
+            content = (tag.get("content") or "").strip()
+            if not content:
+                continue
+            raw_values.append(f"{name}: {content}")
+            directives |= {part.strip().lower() for part in content.split(",") if part.strip()}
+
+        return {
+            "present": bool(raw_values),
+            "directives": sorted(directives),
+            "raw": raw_values,
+            "noindex": "noindex" in directives or "none" in directives,
+            "nofollow": "nofollow" in directives or "none" in directives,
         }
 
     def _extract_twitter_card(self, soup: BeautifulSoup) -> dict:
@@ -382,6 +813,9 @@ class SEOScraper:
         scripts = soup.find_all("script", type="application/ld+json")
         json_ld_types: set[str] = set()
         parse_errors = 0
+        # Surowe encje są potrzebne do walidacji grafu (@id, relacje, ceny, czystość
+        # danych) - sam zbiór typów nie pozwala sprawdzić, jak encje się ze sobą łączą.
+        entities: list[dict] = []
 
         for script in scripts:
             raw = script.string or script.get_text()
@@ -393,6 +827,7 @@ class SEOScraper:
                 parse_errors += 1
                 continue
             json_ld_types |= self._collect_schema_types(payload)
+            entities.extend(self._flatten_schema_entities(payload))
 
         microdata_types = self._extract_microdata_types(soup)
         types_found = json_ld_types | microdata_types
@@ -403,7 +838,42 @@ class SEOScraper:
             "json_ld_types": sorted(json_ld_types),
             "microdata_types": sorted(microdata_types),
             "parse_errors": parse_errors,
+            "entities": entities,
         }
+
+    def _flatten_schema_entities(self, node, depth: int = 0) -> list[dict]:
+        """Spłaszcza dokument JSON-LD do listy encji (słowników z kluczem @type).
+
+        Rozwija `@graph` oraz encje zagnieżdżone w właściwościach, bo walidacja
+        powiązań musi widzieć WSZYSTKIE encje dokumentu niezależnie od tego, czy autor
+        użył płaskiego grafu, czy zagnieżdżenia. `depth` chroni przed zapętleniem na
+        wyjątkowo głęboko zagnieżdżonych (lub złośliwych) dokumentach.
+        """
+        if depth > SCHEMA_MAX_DEPTH:
+            return []
+
+        entities: list[dict] = []
+        if isinstance(node, list):
+            for item in node:
+                entities.extend(self._flatten_schema_entities(item, depth + 1))
+            return entities
+
+        if not isinstance(node, dict):
+            return entities
+
+        if "@graph" in node:
+            entities.extend(self._flatten_schema_entities(node["@graph"], depth + 1))
+
+        if node.get("@type"):
+            entities.append(node)
+
+        for key, value in node.items():
+            if key in ("@graph", "@context", "@type"):
+                continue
+            if isinstance(value, (dict, list)):
+                entities.extend(self._flatten_schema_entities(value, depth + 1))
+
+        return entities
 
     def _collect_schema_types(self, node) -> set[str]:
         types: set[str] = set()

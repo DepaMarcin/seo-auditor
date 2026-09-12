@@ -12,7 +12,13 @@ from .gsc_insights import generate_page_commentary, generate_query_commentary
 from .gsc_service import GSCService
 from .pagespeed import PageSpeedService
 from .rag import RAGEngine
-from .scraper import AI_BOT_USER_AGENTS, ScraperError, SEOScraper
+from .scraper import (
+    AI_BOT_USER_AGENTS,
+    ANSWER_FIRST_MAX_WORDS,
+    ANSWER_FIRST_MIN_WORDS,
+    ScraperError,
+    SEOScraper,
+)
 from .senuto import SenutoService
 from .url_guard import UnsafeUrlError, validate_public_url
 from .wayback import WaybackService
@@ -79,6 +85,83 @@ THIN_CONTENT_CRITICAL_WORDS = 100
 # Typy Schema.org, po których modele językowe budują odpowiedzi o firmie i jej ofercie -
 # ich obecność zwiększa szansę na cytowanie witryny w wynikach generowanych przez AI.
 AI_RELEVANT_SCHEMA_TYPES = ("Organization", "SoftwareApplication", "FAQPage", "Product")
+
+# Progi wzorca Answer-First: jaki udział sekcji musi zaczynać się zwięzłą odpowiedzią,
+# żeby treść uznać za przygotowaną pod cytowanie w odpowiedziach AI.
+# Tolerancja różnicy cen (zaokrąglenia, prezentacja brutto/netto) przed zgłoszeniem błędu.
+PRICE_DISCREPANCY_TOLERANCE = 0.02
+
+# Od tylu brakujących właściwości e-commerce zgłaszamy błąd zamiast ostrzeżenia.
+ECOMMERCE_CRITICAL_MISSING = 3
+
+# Minimalna liczba słów, poniżej której strona kolekcji jest praktycznie pusta.
+COLLECTION_MIN_WORDS = 50
+
+ANSWER_FIRST_GOOD_RATIO = 0.5
+ANSWER_FIRST_WEAK_RATIO = 0.2
+
+# Udział tabel i list wśród bloków treści, powyżej którego strukturę uznajemy za dobrą.
+STRUCTURED_CONTENT_GOOD_SHARE = 0.2
+
+# --- MODUŁ: głęboka walidacja grafu Schema.org ------------------------------
+# Właściwości, przez które encje powinny wskazywać na siebie referencją @id zamiast
+# powielać pełne definicje (klucz: typ encji, wartość: (właściwość, oczekiwany typ celu)).
+#
+# Lista obejmuje WYŁĄCZNIE encje współdzielone między podstronami - firmę, witrynę
+# i autora opisuje się raz, a kolejne strony powinny je referencjonować. Encje należące
+# do jednego obiektu (Product.offers, Product.brand, Offer.priceSpecification) są
+# zagnieżdżane z definicji i wymaganie dla nich @id dawałoby fałszywe alarmy na
+# poprawnie zbudowanych kartach produktu.
+SCHEMA_EXPECTED_LINKS = {
+    "WebPage": [("isPartOf", "WebSite"), ("publisher", "Organization")],
+    "WebSite": [("publisher", "Organization")],
+    "Offer": [("seller", "Organization")],
+    "Article": [("publisher", "Organization"), ("author", "Person")],
+    "BlogPosting": [("publisher", "Organization"), ("author", "Person")],
+}
+
+# Typy, których zduplikowanie (kilka encji tego samego typu z różnymi @id) oznacza
+# rozjechany graf - wyszukiwarka nie wie wtedy, która encja opisuje firmę.
+SCHEMA_SINGLETON_TYPES = ("Organization", "WebSite", "WebPage")
+
+# Ciągi zdradzające adres środowiska deweloperskiego, który wyciekł do produkcji.
+SCHEMA_ENV_LEAK_MARKERS = (".test", "localhost", ".local", "127.0.0.1", ".dev.", "staging.")
+
+# Ślady podwójnego kodowania encji HTML - tekst przepuszczony dwa razy przez escaping.
+SCHEMA_DOUBLE_ENCODING_MARKERS = ("&amp;amp;", "&amp;quot;", "&amp;#", "&amp;nbsp;", "&amp;lt;", "&amp;gt;")
+
+# Separatory, po których w nazwach produktów doklejana bywa nazwa domeny.
+SCHEMA_NAME_SEPARATORS = (" | ", " - ", " – ", " — ")
+
+# Właściwości wymagane na karcie produktu, żeby trafiła do AI Overviews i rich results.
+PRODUCT_REQUIRED_PROPERTIES = ("brand", "aggregateRating_or_review", "shippingDetails", "returnPolicy")
+
+# --- MODUŁ: E-E-A-T -------------------------------------------------------
+# Właściwości encji Person dowodzące kompetencji autora (samo imię i nazwisko nie
+# wystarcza, by wykazać "Experience" i "Expertise" z wytycznych Google).
+AUTHOR_EXPERTISE_PROPERTIES = ("jobTitle", "description", "knowsAbout", "hasCredential")
+
+# Po ilu dniach od publikacji brak aktualizacji treści uznajemy za sygnał przestarzałości.
+FRESHNESS_DECAY_DAYS = 365
+
+# Minimalna liczba linków do źródeł zewnętrznych w treści poradnikowej.
+MIN_TRUSTED_SOURCES = 1
+
+# --- MODUŁ: GEO Suppression -----------------------------------------------
+# Udział ukrytej treści, powyżej którego zgłaszamy błąd krytyczny dostępności dla AI.
+HIDDEN_CONTENT_CRITICAL_SHARE = 0.3
+HIDDEN_CONTENT_WARNING_SHARE = 0.1
+
+# Teksty zastępcze, które nie powinny trafić na produkcję.
+PLACEHOLDER_MARKERS = (
+    "lorem ipsum", "dolor sit amet", "tekst zastępczy", "tekst do uzupełnienia",
+    "opis w przygotowaniu", "wpisz opis", "todo:", "tbd", "placeholder",
+    "brak opisu", "przykładowy tekst",
+)
+
+# Progi udziału elementów ustrukturyzowanych zależne od typu podstrony - karta produktu
+# powinna mieć więcej danych tabelarycznych niż artykuł (specyfikacja, parametry).
+STRUCTURED_SHARE_BY_PAGE_TYPE = {"product": 0.15, "article": 0.10}
 
 SCORE_WEIGHTS = {"ok": 100, "info": 100, "warning": 50, "error": 0}
 
@@ -426,6 +509,19 @@ class AuditService:
             self._evaluate_schema_breadcrumbs(data),
             self._evaluate_schema_faq(data),
             self._evaluate_schema_validity(data),
+            self._evaluate_schema_entity_linking(data),
+            self._evaluate_price_discrepancy(data),
+            self._evaluate_schema_data_hygiene(data),
+            self._evaluate_ecommerce_completeness(data),
+            self._evaluate_authorship_depth(data),
+            self._evaluate_freshness_decay(data),
+            self._evaluate_external_sources(data),
+            self._evaluate_hidden_content(data),
+            self._evaluate_heading_visibility(data),
+            self._evaluate_schema_html_parity(data),
+            self._evaluate_placeholder_content(data),
+            self._evaluate_answer_first(data),
+            self._evaluate_structured_content(data),
             self._evaluate_twitter_cards(data),
             self._evaluate_favicon(data),
             self._evaluate_thin_content(data),
@@ -439,6 +535,937 @@ class AuditService:
             self._evaluate_js_rendering(data),
             self._evaluate_redirects(data),
         ]
+
+    def _evaluate_answer_first(self, data: dict) -> dict:
+        """GEO: czy sekcje treści zaczynają się od zwięzłej, bezpośredniej odpowiedzi.
+
+        Modele językowe cytują fragmenty, które odpowiadają na pytanie od razu. Sekcja
+        rozpoczynająca się od długiego wstępu rzadko trafia do odpowiedzi AI w całości -
+        model musi ją wtedy streścić sam, a wtedy równie dobrze może sięgnąć po źródło
+        konkurencji. Wzorzec "Answer-First" to akapit
+        {ANSWER_FIRST_MIN_WORDS}-{ANSWER_FIRST_MAX_WORDS} słów zaraz pod nagłówkiem.
+
+        Strona bez nagłówków sekcji (np. landing page) dostaje status INFO, a nie
+        ostrzeżenie - wzorzec dotyczy treści dzielonej na sekcje, a nie każdej strony.
+        """
+        answer_first = data.get("answer_first", {})
+        total = answer_first.get("sections_total", 0)
+        compliant = answer_first.get("sections_compliant", 0)
+        ratio = answer_first.get("ratio", 0.0)
+
+        if not total:
+            return self._make_metric(
+                "structure",
+                "answer_first",
+                {
+                    "sections_total": 0,
+                    "sections_compliant": 0,
+                    "ratio": 0.0,
+                    "note": "Strona nie ma nagłówków sekcji H2/H3 - wzorzec Answer-First nie ma tu zastosowania.",
+                },
+                "info",
+                current_value="(brak nagłówków sekcji H2/H3)",
+                generate_recommendation=False,
+            )
+
+        if ratio >= ANSWER_FIRST_GOOD_RATIO:
+            status = "ok"
+            note = (
+                f"{compliant} z {total} sekcji zaczyna się od zwięzłej odpowiedzi "
+                f"({ANSWER_FIRST_MIN_WORDS}-{ANSWER_FIRST_MAX_WORDS} słów) - treść jest gotowa do cytowania przez AI."
+            )
+        elif ratio >= ANSWER_FIRST_WEAK_RATIO:
+            status = "warning"
+            note = (
+                f"Tylko {compliant} z {total} sekcji zaczyna się od zwięzłej odpowiedzi. Dodanie "
+                f"akapitu {ANSWER_FIRST_MIN_WORDS}-{ANSWER_FIRST_MAX_WORDS} słów pod nagłówkami "
+                "zwiększa szansę na cytowanie w odpowiedziach AI."
+            )
+        else:
+            status = "warning"
+            note = (
+                f"Żadna lub prawie żadna sekcja ({compliant}/{total}) nie zaczyna się od bezpośredniej "
+                "odpowiedzi - modele językowe muszą streszczać treść samodzielnie, co obniża szansę "
+                "na zacytowanie tej strony."
+            )
+
+        przyklady = [
+            f"{s['heading']}: {s['word_count']} słów"
+            for s in answer_first.get("sections", [])[:5]
+        ]
+        return self._make_metric(
+            "structure",
+            "answer_first",
+            {
+                "sections_total": total,
+                "sections_compliant": compliant,
+                "ratio": ratio,
+                "sections": answer_first.get("sections", []),
+                "note": note,
+            },
+            status,
+            current_value="; ".join(przyklady) or "(brak akapitów pod nagłówkami sekcji)",
+        )
+
+    def _evaluate_structured_content(self, data: dict) -> dict:
+        """GEO: udział natywnych tabel i list w treści strony.
+
+        `<table>`, `<ul>` i `<ol>` niosą jawną strukturę, którą model odczytuje wprost -
+        z prozy musi ją dopiero wywnioskować. Strony z zestawieniami w tabelach i listach
+        są chętniej cytowane w odpowiedziach generatywnych, zwłaszcza przy pytaniach
+        porównawczych ("czym różni się X od Y", "ile kosztuje").
+        """
+        structured = data.get("structured_content", {})
+        tables = structured.get("tables", 0)
+        lists = structured.get("lists", 0) + structured.get("definition_lists", 0)
+        # Karta produktu powinna mieć więcej danych tabelarycznych niż artykuł - to tam
+        # mieszka specyfikacja, z której model wyciąga parametry i porównania.
+        prog_typu = STRUCTURED_SHARE_BY_PAGE_TYPE.get(
+            data.get("page_type", "generic"), STRUCTURED_CONTENT_GOOD_SHARE
+        )
+        share = structured.get("share", 0.0)
+        blocks = structured.get("structured_blocks", 0)
+        paragraphs = structured.get("paragraphs", 0)
+
+        if not blocks and not paragraphs:
+            return self._make_metric(
+                "structure",
+                "structured_content",
+                {
+                    "tables": 0, "lists": 0, "share": 0.0,
+                    "note": "Strona nie zawiera treści tekstowej, w której można zmierzyć udział tabel i list.",
+                },
+                "info",
+                current_value="(brak treści do analizy)",
+                generate_recommendation=False,
+            )
+
+        if not blocks:
+            status = "warning"
+            note = (
+                "Treść składa się wyłącznie z akapitów - brak tabel i list. Zestawienia, kroki "
+                "i porównania podane w formie listy lub tabeli są znacznie chętniej cytowane przez AI."
+            )
+        elif share >= prog_typu:
+            status = "ok"
+            note = (
+                f"Treść jest dobrze ustrukturyzowana: {tables} tabel i {lists} list "
+                f"({int(share * 100)}% bloków treści) - format czytelny dla modeli językowych."
+            )
+        else:
+            status = "warning"
+            note = (
+                f"Niski udział elementów ustrukturyzowanych: {tables} tabel i {lists} list na "
+                f"{paragraphs} akapitów ({int(share * 100)}% bloków treści). Rozważ zamianę części "
+                "wyliczeń w prozie na listy, a danych porównawczych na tabele."
+            )
+
+        return self._make_metric(
+            "structure",
+            "structured_content",
+            {
+                "tables": tables,
+                "lists": lists,
+                "definition_lists": structured.get("definition_lists", 0),
+                "definition_pairs": structured.get("definition_pairs", 0),
+                "threshold": prog_typu,
+                "list_items": structured.get("list_items", 0),
+                "paragraphs": paragraphs,
+                "share": share,
+                "note": note,
+            },
+            status,
+            current_value=(
+                f"Tabele: {tables}, listy: {lists} ({structured.get('list_items', 0)} pozycji), "
+                f"akapity: {paragraphs}"
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # MODUŁ: głęboka walidacja grafu Schema.org i jakości danych
+    # ------------------------------------------------------------------
+    def _schema_entities(self, data: dict) -> list[dict]:
+        return [e for e in (data.get("schema", {}).get("entities") or []) if isinstance(e, dict)]
+
+    def _entity_types(self, entity: dict) -> list[str]:
+        """Typ encji jako lista - JSON-LD dopuszcza zarówno string, jak i tablicę typów."""
+        raw = entity.get("@type")
+        if isinstance(raw, list):
+            return [str(t) for t in raw]
+        return [str(raw)] if raw else []
+
+    def _entities_of_type(self, entities: list[dict], type_name: str) -> list[dict]:
+        return [e for e in entities if type_name in self._entity_types(e)]
+
+    def _is_reference(self, value) -> bool:
+        """Czy wartość właściwości jest referencją @id, a nie zagnieżdżoną encją."""
+        if isinstance(value, str):
+            return True
+        if isinstance(value, dict):
+            # {"@id": "..."} bez @type to czysta referencja; z @type to duplikat definicji.
+            return "@id" in value and not value.get("@type")
+        if isinstance(value, list):
+            return any(self._is_reference(item) for item in value)
+        return False
+
+    def _evaluate_schema_entity_linking(self, data: dict) -> dict:
+        """Powiązania encji w grafie: referencje @id zamiast duplikowanych definicji.
+
+        Modele językowe budują odpowiedź z RELACJI między encjami - "ten produkt jest
+        sprzedawany przez tę firmę, opisaną na tej stronie". Graf, w którym każda encja
+        powtarza pełną definicję firmy zamiast wskazywać na nią przez @id, jest dla
+        modelu zbiorem luźnych obiektów, a nie spójnym opisem biznesu.
+        """
+        entities = self._schema_entities(data)
+        if not entities:
+            return self._make_metric(
+                "structure", "schema_entity_linking",
+                {"entities": 0, "missing_links": [], "duplicates": [], "note":
+                 "Brak danych strukturalnych JSON-LD - nie ma grafu encji do zweryfikowania."},
+                "error",
+                current_value="(brak encji JSON-LD)",
+            )
+
+        with_id = [e for e in entities if e.get("@id")]
+        duplicates: list[str] = []
+        for type_name in SCHEMA_SINGLETON_TYPES:
+            same_type = self._entities_of_type(entities, type_name)
+            unique_ids = {e.get("@id") for e in same_type if e.get("@id")}
+            # Dwie encje tego samego typu z RÓŻNYMI @id to rozjechany graf.
+            if len(same_type) > 1 and len(unique_ids) > 1:
+                duplicates.append(f"{type_name} ({len(unique_ids)} różnych @id)")
+
+        missing_links: list[str] = []
+        for entity in entities:
+            for type_name in self._entity_types(entity):
+                for prop, target in SCHEMA_EXPECTED_LINKS.get(type_name, []):
+                    if prop not in entity:
+                        continue
+                    if not self._is_reference(entity[prop]):
+                        missing_links.append(f"{type_name}.{prop} (zagnieżdżona encja zamiast @id -> {target})")
+
+        if not with_id:
+            status = "warning"
+            note = (
+                f"Żadna z {len(entities)} encji JSON-LD nie ma identyfikatora @id - encje nie mogą "
+                "się wzajemnie referencjonować, a graf pozostaje zbiorem luźnych obiektów."
+            )
+        elif duplicates:
+            status = "error"
+            note = (
+                "Graf zawiera zduplikowane encje zamiast referencji: " + ", ".join(duplicates) +
+                ". Wyszukiwarka nie wie, która encja opisuje firmę."
+            )
+        elif missing_links:
+            status = "warning"
+            note = (
+                f"Wykryto {len(missing_links)} powiązań zapisanych jako zagnieżdżone encje zamiast "
+                "referencji @id: " + "; ".join(missing_links[:3]) + "."
+            )
+        else:
+            status = "ok"
+            note = f"Graf jest spójny: {len(with_id)} z {len(entities)} encji ma @id, powiązania używają referencji."
+
+        return self._make_metric(
+            "structure", "schema_entity_linking",
+            {
+                "entities": len(entities),
+                "entities_with_id": len(with_id),
+                "missing_links": missing_links,
+                "duplicates": duplicates,
+                "note": note,
+            },
+            status,
+            current_value="; ".join(duplicates + missing_links[:5]) or f"Encje z @id: {len(with_id)}/{len(entities)}",
+        )
+
+    def _collect_schema_prices(self, entities: list[dict]) -> list[float]:
+        """Ceny zadeklarowane w grafie (Offer.price, UnitPriceSpecification.price, lowPrice)."""
+        prices: list[float] = []
+        for entity in entities:
+            for prop in ("price", "lowPrice", "highPrice"):
+                raw = entity.get(prop)
+                if raw is None:
+                    continue
+                try:
+                    value = float(str(raw).replace(",", ".").replace(" ", ""))
+                except (TypeError, ValueError):
+                    continue
+                if value > 0:
+                    prices.append(value)
+        return prices
+
+    def _evaluate_price_discrepancy(self, data: dict) -> dict:
+        """Zgodność ceny z danych strukturalnych z ceną widoczną na stronie.
+
+        Błąd krytyczny w e-commerce: gdy do Schema trafia cena hurtowa/B2B pobrana wprost
+        z bazy, a użytkownik widzi na ekranie cenę detaliczną, wyszukiwarka i modele AI
+        obiecują cenę, której na stronie nie ma. Poza utratą zaufania grozi to karą za
+        niezgodne dane strukturalne.
+        """
+        entities = self._schema_entities(data)
+        schema_prices = self._collect_schema_prices(entities)
+        visible = data.get("visible_prices", {})
+        min_visible = visible.get("min_visible")
+
+        if not schema_prices:
+            return self._make_metric(
+                "structure", "price_discrepancy",
+                {"schema_prices": [], "visible_min": min_visible, "note":
+                 "Strona nie deklaruje ceny w danych strukturalnych - test nie ma zastosowania."},
+                "info",
+                current_value="(brak ceny w JSON-LD)",
+                generate_recommendation=False,
+            )
+
+        if min_visible is None:
+            return self._make_metric(
+                "structure", "price_discrepancy",
+                {"schema_prices": schema_prices, "visible_min": None, "note":
+                 f"Schema deklaruje cenę ({min(schema_prices)}), ale na stronie nie wykryto żadnej "
+                 "widocznej ceny - zweryfikuj, czy cena nie jest dorysowywana dopiero przez JavaScript."},
+                "warning",
+                current_value=f"Cena w Schema: {min(schema_prices)}; widoczna cena: brak",
+            )
+
+        schema_min = min(schema_prices)
+        # Tolerancja na zaokrąglenia i drobne różnice brutto/netto w prezentacji.
+        prog = min_visible * (1 - PRICE_DISCREPANCY_TOLERANCE)
+
+        if schema_min < prog:
+            status = "error"
+            roznica = round((min_visible - schema_min) / min_visible * 100, 1)
+            note = (
+                f"Cena w danych strukturalnych ({schema_min}) jest o {roznica}% NIŻSZA niż najniższa "
+                f"cena widoczna na stronie ({min_visible}). Wyszukiwarka i modele AI pokażą cenę, "
+                "której użytkownik nie zobaczy - typowy skutek wysyłania do Schema ceny hurtowej B2B."
+            )
+        elif schema_min > (visible.get("max_visible") or min_visible) * (1 + PRICE_DISCREPANCY_TOLERANCE):
+            status = "warning"
+            note = (
+                f"Cena w danych strukturalnych ({schema_min}) jest wyższa niż jakakolwiek cena widoczna "
+                f"na stronie (maks. {visible.get('max_visible')}) - dane zaniżają atrakcyjność oferty."
+            )
+        else:
+            status = "ok"
+            note = f"Cena w danych strukturalnych ({schema_min}) jest zgodna z ceną widoczną na stronie."
+
+        return self._make_metric(
+            "structure", "price_discrepancy",
+            {
+                "schema_prices": sorted(set(schema_prices)),
+                "visible_min": min_visible,
+                "visible_max": visible.get("max_visible"),
+                "note": note,
+            },
+            status,
+            current_value=(
+                f"Schema: {sorted(set(schema_prices))}; widoczne na stronie: {visible.get('visible_values')}"
+            ),
+        )
+
+    def _evaluate_schema_data_hygiene(self, data: dict) -> dict:
+        """Czystość danych w JSON-LD: wycieki środowisk, podwójne kodowanie, sufiksy SEO.
+
+        Wszystkie trzy usterki mają wspólną cechę: dane strukturalne są generowane
+        maszynowo i nikt ich nie ogląda, więc błąd potrafi żyć miesiącami, zanieczyszczając
+        to, co wyszukiwarka i modele AI wiedzą o firmie.
+        """
+        entities = self._schema_entities(data)
+        if not entities:
+            return self._make_metric(
+                "structure", "schema_data_hygiene",
+                {"env_leaks": [], "double_encoded": [], "seo_suffixes": [], "note":
+                 "Brak danych strukturalnych JSON-LD - nie ma czego sprawdzać."},
+                "info",
+                current_value="(brak encji JSON-LD)",
+                generate_recommendation=False,
+            )
+
+        env_leaks: list[str] = []
+        double_encoded: list[str] = []
+        seo_suffixes: list[str] = []
+
+        for entity in entities:
+            for prop in ("url", "sameAs", "image", "@id", "logo", "contentUrl"):
+                for value in self._iter_string_values(entity.get(prop)):
+                    lowered = value.lower()
+                    if any(marker in lowered for marker in SCHEMA_ENV_LEAK_MARKERS):
+                        env_leaks.append(f"{prop}: {value[:90]}")
+
+            for prop in ("description", "name", "text", "headline", "articleBody"):
+                for value in self._iter_string_values(entity.get(prop)):
+                    if any(marker in value for marker in SCHEMA_DOUBLE_ENCODING_MARKERS):
+                        double_encoded.append(f"{prop}: {value[:90]}")
+
+            for prop in ("name", "headline"):
+                for value in self._iter_string_values(entity.get(prop)):
+                    if self._looks_like_seo_suffix(value, data.get("url", "")):
+                        seo_suffixes.append(f"{prop}: {value[:90]}")
+
+        problemy = len(env_leaks) + len(double_encoded) + len(seo_suffixes)
+        if env_leaks:
+            status = "error"
+            note = (
+                f"Dane strukturalne zawierają adresy środowiska testowego ({len(env_leaks)}): "
+                f"{env_leaks[0]}. Takie adresy trafiają do wyszukiwarki jako oficjalne zasoby firmy."
+            )
+        elif double_encoded:
+            status = "warning"
+            note = (
+                f"Wykryto podwójnie zakodowane encje HTML w {len(double_encoded)} wartościach - "
+                "tekst wyświetli się z artefaktami typu &amp;amp; zamiast znaku."
+            )
+        elif seo_suffixes:
+            status = "warning"
+            note = (
+                f"Nazwy w danych strukturalnych zawierają sufiks z nazwą domeny ({len(seo_suffixes)}): "
+                f"{seo_suffixes[0]}. Do Schema powinna trafiać czysta nazwa produktu."
+            )
+        else:
+            status = "ok"
+            note = "Dane strukturalne są czyste: bez adresów testowych, podwójnego kodowania i sufiksów SEO."
+
+        return self._make_metric(
+            "structure", "schema_data_hygiene",
+            {
+                "env_leaks": env_leaks,
+                "double_encoded": double_encoded,
+                "seo_suffixes": seo_suffixes,
+                "issues": problemy,
+                "note": note,
+            },
+            status,
+            current_value="; ".join((env_leaks + double_encoded + seo_suffixes)[:5]) or "(dane bez zastrzeżeń)",
+        )
+
+    def _iter_string_values(self, value):
+        """Wszystkie wartości tekstowe właściwości - JSON-LD dopuszcza string, listę i obiekt."""
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, list):
+            for item in value:
+                yield from self._iter_string_values(item)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if key not in ("@type", "@context"):
+                    yield from self._iter_string_values(item)
+
+    def _looks_like_seo_suffix(self, value: str, page_url: str) -> bool:
+        """Czy nazwa kończy się separatorem i nazwą domeny (np. "Kosz | FreshGift.pl")."""
+        from urllib.parse import urlparse
+
+        host = urlparse(page_url or "").netloc.lower().replace("www.", "")
+        brand = host.split(".")[0] if host else ""
+        if not brand:
+            return False
+
+        for separator in SCHEMA_NAME_SEPARATORS:
+            if separator in value:
+                suffix = value.rsplit(separator, 1)[-1].strip().lower()
+                if brand and brand in suffix:
+                    return True
+        return False
+
+    def _evaluate_ecommerce_completeness(self, data: dict) -> dict:
+        """Kompletność danych e-commerce wymagana przez AI Overviews i rich results.
+
+        Karta produktu bez oceny, marki, danych wysyłki i polityki zwrotów nie kwalifikuje
+        się do rozszerzonych wyników Google i rzadko trafia do odpowiedzi generatywnych -
+        modelowi brakuje wtedy informacji, których oczekuje pytający ("ile kosztuje wysyłka",
+        "czy mogę zwrócić").
+        """
+        entities = self._schema_entities(data)
+        products = self._entities_of_type(entities, "Product")
+        collections = self._entities_of_type(entities, "CollectionPage")
+
+        if not products and not collections:
+            return self._make_metric(
+                "structure", "ecommerce_completeness",
+                {"missing": [], "note":
+                 "Strona nie deklaruje typu Product ani CollectionPage - test dotyczy stron sklepowych."},
+                "info",
+                current_value="(brak encji e-commerce w JSON-LD)",
+                generate_recommendation=False,
+            )
+
+        braki: list[str] = []
+
+        for product in products:
+            if not (product.get("aggregateRating") or product.get("review")):
+                braki.append("Product: brak AggregateRating ani Review")
+            brand = product.get("brand")
+            if not brand or (isinstance(brand, dict) and not (brand.get("name") or brand.get("@id"))):
+                braki.append("Product: właściwość brand jest pusta lub nie istnieje")
+            oferty = [product.get("offers")] if isinstance(product.get("offers"), dict) else (product.get("offers") or [])
+            oferty = [o for o in oferty if isinstance(o, dict)]
+            if not any(o.get("shippingDetails") for o in oferty) and not product.get("shippingDetails"):
+                braki.append("Product: brak OfferShippingDetails")
+            if not any(o.get("hasMerchantReturnPolicy") for o in oferty) and not product.get("hasMerchantReturnPolicy"):
+                braki.append("Product: brak MerchantReturnPolicy")
+
+        for collection in collections:
+            item_list = collection.get("mainEntity") or collection.get("hasPart") or collection.get("itemListElement")
+            elementy = item_list.get("itemListElement") if isinstance(item_list, dict) else item_list
+            if not elementy:
+                braki.append("CollectionPage: brak obiektu ItemList z produktami (pusta kolekcja)")
+
+        if not braki:
+            status = "ok"
+            note = (
+                f"Dane e-commerce są kompletne ({len(products)} Product, {len(collections)} CollectionPage) - "
+                "strona kwalifikuje się do rozszerzonych wyników i odpowiedzi AI."
+            )
+        elif len(braki) >= ECOMMERCE_CRITICAL_MISSING:
+            status = "error"
+            note = f"Brakuje {len(braki)} kluczowych właściwości e-commerce: " + "; ".join(braki[:4]) + "."
+        else:
+            status = "warning"
+            note = f"Niekompletne dane e-commerce: " + "; ".join(braki) + "."
+
+        return self._make_metric(
+            "structure", "ecommerce_completeness",
+            {
+                "products": len(products),
+                "collections": len(collections),
+                "missing": braki,
+                "note": note,
+            },
+            status,
+            current_value="; ".join(braki) or "(komplet wymaganych właściwości)",
+        )
+
+    # ------------------------------------------------------------------
+    # MODUŁ: automatyczna ewaluacja E-E-A-T
+    # ------------------------------------------------------------------
+    def _evaluate_authorship_depth(self, data: dict) -> dict:
+        """Głębia sygnałów autorstwa: kim jest autor i czym to potwierdza.
+
+        Google ocenia "Experience" i "Expertise" po tym, czy da się ustalić kompetencje
+        autora. Samo imię i nazwisko w stopce nie niesie tej informacji - potrzebne jest
+        stanowisko lub opis oraz powiązanie z profilem zewnętrznym (`sameAs`), które
+        pozwala połączyć autora z jego dorobkiem poza witryną.
+        """
+        entities = self._schema_entities(data)
+        persons = self._entities_of_type(entities, "Person")
+        page_type = data.get("page_type", "generic")
+        wymagane = page_type in EEAT_REQUIRED_PAGE_TYPES
+
+        if not persons:
+            if not wymagane:
+                return self._make_metric(
+                    "structure", "authorship_depth",
+                    {"persons": 0, "complete": 0, "note":
+                     "Strona nie deklaruje autora w danych strukturalnych - dla tego typu podstrony "
+                     "to dopuszczalne (wymóg dotyczy przede wszystkim treści poradnikowych)."},
+                    "info",
+                    current_value="(brak encji Person w JSON-LD)",
+                    generate_recommendation=False,
+                )
+            return self._make_metric(
+                "structure", "authorship_depth",
+                {"persons": 0, "complete": 0, "note":
+                 "Treść poradnikowa bez encji Person w danych strukturalnych - wyszukiwarka nie ma "
+                 "jak ustalić, kto jest autorem ani jakie ma kompetencje."},
+                "warning",
+                current_value="(brak encji Person w JSON-LD)",
+            )
+
+        braki: list[str] = []
+        kompletni = 0
+        for person in persons:
+            imie = str(person.get("name") or "autor bez nazwy")
+            ma_kompetencje = any(person.get(prop) for prop in AUTHOR_EXPERTISE_PROPERTIES)
+            ma_powiazanie = bool(person.get("sameAs"))
+            if ma_kompetencje and ma_powiazanie:
+                kompletni += 1
+                continue
+            czego_brak = []
+            if not ma_kompetencje:
+                czego_brak.append("stanowiska/opisu (jobTitle lub description)")
+            if not ma_powiazanie:
+                czego_brak.append("powiązania zewnętrznego (sameAs)")
+            braki.append(f"{imie}: brak {' i '.join(czego_brak)}")
+
+        if kompletni == len(persons):
+            status = "ok"
+            note = (
+                f"Autorstwo jest udokumentowane: {kompletni} autor(ów) ma opisane kompetencje "
+                "i powiązanie z profilem zewnętrznym."
+            )
+        elif kompletni:
+            status = "warning"
+            note = f"Część autorów ma niepełne dane E-E-A-T ({len(braki)} z {len(persons)}): " + braki[0] + "."
+        else:
+            status = "warning"
+            note = (
+                "Autor jest podany, ale bez dowodów kompetencji: " + braki[0] +
+                ". Samo imię i nazwisko nie wykazuje doświadczenia ani eksperckości."
+            )
+
+        return self._make_metric(
+            "structure", "authorship_depth",
+            {"persons": len(persons), "complete": kompletni, "missing": braki, "note": note},
+            status,
+            current_value="; ".join(braki[:5]) or f"Kompletni autorzy: {kompletni}/{len(persons)}",
+        )
+
+    def _evaluate_freshness_decay(self, data: dict) -> dict:
+        """Sygnał odświeżenia treści: różnica między datePublished a dateModified.
+
+        Treść opublikowana lata temu i nigdy nieaktualizowana traci wiarygodność - dla
+        wyszukiwarki identyczne daty publikacji i modyfikacji po roku oznaczają, że nikt
+        nie zweryfikował, czy informacje są nadal prawdziwe.
+        """
+        from datetime import date, datetime
+
+        entities = self._schema_entities(data)
+        published = modified = None
+        for entity in entities:
+            published = published or self._parse_schema_date(entity.get("datePublished"))
+            modified = modified or self._parse_schema_date(entity.get("dateModified"))
+
+        if not published:
+            return self._make_metric(
+                "structure", "freshness_decay",
+                {"published": None, "modified": None, "note":
+                 "Dane strukturalne nie zawierają daty publikacji - nie da się ocenić aktualności treści."},
+                "info",
+                current_value="(brak datePublished w JSON-LD)",
+                generate_recommendation=False,
+            )
+
+        wiek_dni = (date.today() - published).days
+        if modified and modified > published:
+            status = "ok"
+            note = (
+                f"Treść ma sygnał odświeżenia: opublikowana {published.isoformat()}, "
+                f"zaktualizowana {modified.isoformat()}."
+            )
+        elif wiek_dni > FRESHNESS_DECAY_DAYS:
+            status = "warning"
+            note = (
+                f"Treść opublikowana {published.isoformat()} (ponad {wiek_dni // 365} lat temu) nie ma "
+                "sygnału aktualizacji - dateModified jest identyczna z datą publikacji lub jej brak. "
+                "Przegląd merytoryczny i aktualizacja daty wzmacniają wiarygodność."
+            )
+        else:
+            status = "ok"
+            note = f"Treść jest świeża: opublikowana {published.isoformat()} ({wiek_dni} dni temu)."
+
+        return self._make_metric(
+            "structure", "freshness_decay",
+            {
+                "published": published.isoformat(),
+                "modified": modified.isoformat() if modified else None,
+                "age_days": wiek_dni,
+                "note": note,
+            },
+            status,
+            current_value=(
+                f"datePublished: {published.isoformat()}; "
+                f"dateModified: {modified.isoformat() if modified else 'brak'}"
+            ),
+        )
+
+    def _parse_schema_date(self, value):
+        """Data z JSON-LD (ISO 8601, także z częścią czasową) na obiekt date."""
+        from datetime import datetime
+
+        if not isinstance(value, str) or not value.strip():
+            return None
+        tekst = value.strip().replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(tekst).date()
+        except ValueError:
+            try:
+                return datetime.strptime(tekst[:10], "%Y-%m-%d").date()
+            except ValueError:
+                return None
+
+    def _evaluate_external_sources(self, data: dict) -> dict:
+        """Linki do źródeł zewnętrznych jako dowód weryfikacji faktów.
+
+        Treść poradnikowa, która nie powołuje się na żadne źródło, jest dla wyszukiwarki
+        i modeli AI twierdzeniem bez pokrycia. Linki do domen rządowych, edukacyjnych czy
+        uznanych publikacji świadczą, że autor opiera się na zewnętrznej wiedzy.
+        """
+        outbound = data.get("outbound_links", {})
+        page_type = data.get("page_type", "generic")
+        zaufane = outbound.get("trusted", 0)
+        followed = outbound.get("followed_trusted", 0)
+
+        if page_type not in EEAT_REQUIRED_PAGE_TYPES:
+            return self._make_metric(
+                "structure", "external_sources",
+                {"outbound": outbound.get("total", 0), "trusted": zaufane, "note":
+                 "Test dotyczy treści poradnikowych i blogowych - na tym typie podstrony "
+                 "powoływanie się na źródła zewnętrzne nie jest wymagane."},
+                "info",
+                current_value=f"Linki wychodzące: {outbound.get('total', 0)} (zaufane: {zaufane})",
+                generate_recommendation=False,
+            )
+
+        if zaufane >= MIN_TRUSTED_SOURCES and followed:
+            status = "ok"
+            note = (
+                f"Treść powołuje się na {zaufane} źródeł zewnętrznych "
+                f"({', '.join(outbound.get('trusted_hosts', [])[:3])}) - sygnał weryfikacji faktów."
+            )
+        elif zaufane:
+            status = "warning"
+            note = (
+                f"Wszystkie {zaufane} linków do źródeł zewnętrznych mają atrybut nofollow - "
+                "wyszukiwarka nie odczyta ich jako świadomego powołania się na źródło."
+            )
+        else:
+            status = "warning"
+            note = (
+                "Treść poradnikowa nie zawiera linków do zewnętrznych źródeł (domeny rządowe, "
+                "edukacyjne, uznane publikacje) - brak dowodu weryfikacji przedstawionych faktów."
+            )
+
+        return self._make_metric(
+            "structure", "external_sources",
+            {
+                "outbound": outbound.get("total", 0),
+                "trusted": zaufane,
+                "followed_trusted": followed,
+                "hosts": outbound.get("trusted_hosts", []),
+                "note": note,
+            },
+            status,
+            current_value=", ".join(outbound.get("trusted_hosts", [])) or "(brak linków do źródeł zewnętrznych)",
+        )
+
+    # ------------------------------------------------------------------
+    # MODUŁ: GEO Suppression - treść ukryta przed modelami językowymi
+    # ------------------------------------------------------------------
+    def _evaluate_hidden_content(self, data: dict) -> dict:
+        """Treść ukryta stylem CSS, niedostępna dla crawlerów i modeli językowych.
+
+        Opinie klientów, FAQ i specyfikacje schowane pod "pokaż więcej" są dla robotów
+        treścią drugiej kategorii albo nie istnieją wcale. To najkosztowniejszy rodzaj
+        straty w GEO: materiał, który najbardziej przekonuje modele (doświadczenia
+        klientów), jest dokładnie tym, co najczęściej zwija się do przycisku.
+        """
+        hidden = data.get("hidden_content", {})
+        udzial = hidden.get("hidden_share", 0.0)
+        bloki = hidden.get("blocks_count", 0)
+        slowa = hidden.get("hidden_words", 0)
+
+        if not bloki:
+            return self._make_metric(
+                "structure", "hidden_content",
+                {"blocks": 0, "hidden_words": 0, "share": 0.0, "note":
+                 "Nie wykryto dużych bloków treści ukrytych stylem CSS - treść jest dostępna dla robotów."},
+                "ok",
+                current_value="(brak ukrytych bloków treści)",
+                generate_recommendation=False,
+            )
+
+        przyklady = "; ".join(
+            f"<{b['tag']} class=\"{b['class']}\">: {b['words']} słów"
+            for b in hidden.get("blocks", [])[:3]
+        )
+
+        if udzial >= HIDDEN_CONTENT_CRITICAL_SHARE:
+            status = "error"
+            note = (
+                f"KRYTYCZNE dla widoczności w AI: {int(udzial * 100)}% treści strony ({slowa} słów "
+                f"w {bloki} blokach) jest ukryte stylem CSS. Modele językowe nie zobaczą tej treści "
+                "- to zwykle opinie klientów, FAQ lub specyfikacje zwinięte pod \"pokaż więcej\"."
+            )
+        elif udzial >= HIDDEN_CONTENT_WARNING_SHARE:
+            status = "warning"
+            note = (
+                f"{int(udzial * 100)}% treści ({slowa} słów w {bloki} blokach) jest ukryte stylem CSS. "
+                "Rozważ renderowanie tej treści w HTML i zwijanie jej dopiero po stronie klienta."
+            )
+        else:
+            status = "warning"
+            note = (
+                f"Wykryto {bloki} ukrytych bloków treści ({slowa} słów). Sprawdź, czy nie są to "
+                "opinie, FAQ lub specyfikacje istotne dla widoczności w odpowiedziach AI."
+            )
+
+        return self._make_metric(
+            "structure", "hidden_content",
+            {
+                "blocks": bloki,
+                "hidden_words": slowa,
+                "visible_words": hidden.get("visible_words", 0),
+                "share": udzial,
+                "examples": hidden.get("blocks", []),
+                "note": note,
+            },
+            status,
+            current_value=przyklady or f"Ukrytych bloków: {bloki}",
+        )
+
+    # ------------------------------------------------------------------
+    # Testy autorskie - zabezpieczenie przed wzorcami usterek z audytów
+    # ------------------------------------------------------------------
+    def _evaluate_heading_visibility(self, data: dict) -> dict:
+        """Nagłówki obecne w HTML, ale niewidoczne w interfejsie.
+
+        Wzorzec z audytu: pod prawidłowym H1 kryje się ukryty komunikat ("Nie znaleziono
+        produktów") w znaczniku nagłówka, po którym następuje H2. Użytkownik widzi
+        poprawną stronę, a robot - hierarchię z nieistniejącym poziomem i sprzecznym
+        komunikatem o braku treści.
+        """
+        visibility = data.get("heading_visibility", {})
+        ukryte = visibility.get("hidden_headings", [])
+
+        if not ukryte:
+            return self._make_metric(
+                "structure", "heading_visibility",
+                {"hidden_headings": [], "note":
+                 "Wszystkie nagłówki obecne w HTML są widoczne dla użytkownika."},
+                "ok",
+                current_value="(brak ukrytych nagłówków)",
+                generate_recommendation=False,
+            )
+
+        opisy = [f"{h['tag']}: {h['text']}" for h in ukryte]
+        komunikaty_o_braku = [
+            h for h in ukryte
+            if any(fraza in h["text"].lower() for fraza in ("nie znaleziono", "brak wyników", "brak produktów"))
+        ]
+
+        if komunikaty_o_braku:
+            status = "error"
+            note = (
+                f"Ukryty nagłówek z komunikatem o braku treści ({komunikaty_o_braku[0]['tag']}: "
+                f"\"{komunikaty_o_braku[0]['text']}\") jest niewidoczny dla użytkownika, ale robot "
+                "odczytuje go jako treść strony - sprzeczny sygnał o zawartości podstrony."
+            )
+        else:
+            status = "warning"
+            note = (
+                f"Wykryto {len(ukryte)} nagłówków ukrytych stylem CSS - dla robota tworzą poziomy "
+                "hierarchii, które w interfejsie nie istnieją."
+            )
+
+        return self._make_metric(
+            "structure", "heading_visibility",
+            {"hidden_headings": ukryte, "hidden_count": len(ukryte), "note": note},
+            status,
+            current_value="; ".join(opisy[:5]),
+        )
+
+    def _evaluate_schema_html_parity(self, data: dict) -> dict:
+        """Zgodność deklaracji w danych strukturalnych z rzeczywistą treścią HTML.
+
+        Wzorzec z audytu: strona deklaruje FAQPage w JSON-LD, ale w HTML nie ma żadnej
+        semantycznej struktury pytań i odpowiedzi. Google traktuje takie dane jako
+        niezgodne z treścią widoczną dla użytkownika, co grozi ręczną karą - a model
+        językowy i tak nie znajdzie w DOM materiału, który Schema obiecuje.
+        """
+        entities = self._schema_entities(data)
+        rozbieznosci: list[str] = []
+
+        deklaruje_faq = bool(self._entities_of_type(entities, "FAQPage")) or bool(
+            self._entities_of_type(entities, "Question")
+        )
+        if deklaruje_faq and not data.get("faq_detected"):
+            rozbieznosci.append(
+                "Schema deklaruje FAQPage, ale w HTML nie wykryto sekcji pytań i odpowiedzi"
+            )
+
+        produkty = self._entities_of_type(entities, "Product")
+        if produkty and not (data.get("visible_prices", {}).get("min_visible")):
+            rozbieznosci.append(
+                "Schema deklaruje Product, ale na stronie nie widać ceny"
+            )
+
+        kolekcje = self._entities_of_type(entities, "CollectionPage")
+        if kolekcje and data.get("word_count", 0) < COLLECTION_MIN_WORDS:
+            rozbieznosci.append(
+                "Schema deklaruje CollectionPage, ale strona praktycznie nie zawiera treści"
+            )
+
+        if not entities:
+            return self._make_metric(
+                "structure", "schema_html_parity",
+                {"mismatches": [], "note":
+                 "Brak danych strukturalnych - nie ma deklaracji do skonfrontowania z HTML."},
+                "info",
+                current_value="(brak encji JSON-LD)",
+                generate_recommendation=False,
+            )
+
+        if rozbieznosci:
+            status = "error"
+            note = (
+                "Dane strukturalne obiecują treść, której nie ma w HTML: " +
+                "; ".join(rozbieznosci) + ". Google uznaje to za dane niezgodne z zawartością strony."
+            )
+        else:
+            status = "ok"
+            note = "Deklaracje w danych strukturalnych mają pokrycie w treści HTML."
+
+        return self._make_metric(
+            "structure", "schema_html_parity",
+            {"mismatches": rozbieznosci, "note": note},
+            status,
+            current_value="; ".join(rozbieznosci) or "(deklaracje zgodne z treścią)",
+        )
+
+    def _evaluate_placeholder_content(self, data: dict) -> dict:
+        """Teksty zastępcze pozostawione na produkcji.
+
+        "Lorem ipsum", "TODO" czy "opis w przygotowaniu" w treści lub danych
+        strukturalnych to sygnał niedokończonej strony. Wyszukiwarka indeksuje je jak
+        każdą inną treść, a model językowy może je zacytować jako opis oferty.
+        """
+        znalezione: list[str] = []
+
+        # Treść widoczna na stronie (analizowana w scraperze na pełnym tekście) - to tam
+        # najczęściej zostaje "lorem ipsum", a nie w nagłówkach czy meta tagach.
+        for trafienie in data.get("placeholder_hits", []):
+            znalezione.append(f"treść: {trafienie['context'][:70]}")
+
+        for heading_list in (data.get("headings") or {}).values():
+            for tekst in heading_list:
+                dopasowanie = self._find_placeholder(tekst)
+                if dopasowanie:
+                    znalezione.append(f"nagłówek: {tekst[:70]}")
+
+        for pole in ("title", "meta_description"):
+            wartosc = data.get(pole)
+            if wartosc and self._find_placeholder(wartosc):
+                znalezione.append(f"{pole}: {str(wartosc)[:70]}")
+
+        for entity in self._schema_entities(data):
+            for prop in ("name", "description", "headline"):
+                for wartosc in self._iter_string_values(entity.get(prop)):
+                    if self._find_placeholder(wartosc):
+                        znalezione.append(f"Schema.{prop}: {wartosc[:70]}")
+
+        if not znalezione:
+            return self._make_metric(
+                "seo", "placeholder_content",
+                {"found": [], "note": "Nie wykryto tekstów zastępczych w treści ani danych strukturalnych."},
+                "ok",
+                current_value="(brak tekstów zastępczych)",
+                generate_recommendation=False,
+            )
+
+        return self._make_metric(
+            "seo", "placeholder_content",
+            {"found": znalezione, "count": len(znalezione), "note":
+             f"Na stronie pozostały teksty zastępcze ({len(znalezione)}): {znalezione[0]}. "
+             "Wyszukiwarka indeksuje je jak zwykłą treść, a modele AI mogą je zacytować."},
+            "error",
+            current_value="; ".join(znalezione[:5]),
+        )
+
+    def _find_placeholder(self, text) -> str | None:
+        if not isinstance(text, str):
+            return None
+        lowered = text.lower()
+        return next((marker for marker in PLACEHOLDER_MARKERS if marker in lowered), None)
 
     def _evaluate_schema_validity(self, data: dict) -> dict:
         """AI & GEO: poprawność składniowa JSON-LD i pokrycie typów istotnych dla AI.
@@ -663,19 +1690,47 @@ class AuditService:
         )
 
     def _evaluate_h1(self, data: dict) -> dict:
+        """Ocena nagłówka H1 liczona na nagłówkach Z TREŚCIĄ.
+
+        Pusty `<h1></h1>` istnieje w drzewie DOM, ale nie niesie żadnej informacji dla
+        wyszukiwarki - liczenie go jako poprawnego H1 tworzyło sprzeczność z testem
+        hierarchii nagłówków (`_evaluate_heading_order`), który zgłaszał puste nagłówki
+        jako problem, podczas gdy ten test raportował "Struktura H1 jest prawidłowa".
+        Oba testy opierają się teraz na tej samej definicji nagłówka, który się liczy.
+        """
         h1_headings = data.get("headings", {}).get("h1", [])
-        h1_count = data.get("h1_count", 0)
-        current_value = "; ".join(h1_headings) if h1_headings else "(brak nagłówka H1)"
-        if h1_count == 0:
+        non_empty = data.get("h1_non_empty", [text for text in h1_headings if text])
+        empty_count = data.get("h1_empty_count", len(h1_headings) - len(non_empty))
+
+        current_value = "; ".join(non_empty) if non_empty else "(brak nagłówka H1 z treścią)"
+        if empty_count:
+            current_value += f" [pustych znaczników H1: {empty_count}]"
+
+        if not non_empty and empty_count:
+            status = "error"
+            note = f"Nagłówek H1 jest pusty ({empty_count} znacznik(ów) H1 bez treści)."
+        elif not non_empty:
             status, note = "error", "Brak nagłówka H1."
-        elif h1_count > 1:
-            status, note = "warning", f"Wykryto {h1_count} nagłówków H1 (zalecany dokładnie 1)."
+        elif len(non_empty) > 1:
+            status = "warning"
+            note = f"Wykryto {len(non_empty)} nagłówków H1 z treścią (zalecany dokładnie 1)."
+        elif empty_count:
+            status = "warning"
+            note = (
+                f"Strona ma poprawny nagłówek H1, ale obok niego występuje {empty_count} "
+                "pusty znacznik H1 - usuń go, żeby nie rozmywał struktury dokumentu."
+            )
         else:
             status, note = "ok", "Struktura H1 jest prawidłowa."
         return self._make_metric(
             "technical",
             "h1_structure",
-            {"count": h1_count, "headings": h1_headings, "note": note},
+            {
+                "count": len(non_empty),
+                "empty_count": empty_count,
+                "headings": h1_headings,
+                "note": note,
+            },
             status,
             current_value=current_value,
         )
@@ -1056,11 +2111,81 @@ class AuditService:
 
         return [
             self._evaluate_robots_txt(robots),
-            self._evaluate_robots_ai_bots(robots),
+            self._evaluate_robots_ai_bots(robots, data),
+            # Liczona TUTAJ, a nie w `_build_metrics`, bo potrzebuje kontekstu robots.txt -
+            # oba testy mówią o indeksacji i nie mogą sobie przeczyć.
+            self._evaluate_meta_robots(data, robots),
             self._evaluate_http_errors(http_errors),
             self._evaluate_image_compression(image_sizes),
             self._evaluate_wayback_domain_age(wayback),
         ]
+
+    def _evaluate_meta_robots(self, data: dict, robots: dict) -> dict:
+        """Dyrektywy `<meta name="robots">` sterujące indeksacją tej konkretnej podstrony.
+
+        Test świadomie uwzględnia stan `robots.txt`: jeśli plik blokuje całą witrynę,
+        komunikat nie może twierdzić, że strona "jest dostępna do indeksowania" - to
+        byłaby sprzeczność z testem `robots_txt`, który zgłasza wtedy błąd krytyczny.
+        Dwa różne mechanizmy opisują ten sam skutek, więc raportują go spójnie.
+        """
+        meta_robots = data.get("meta_robots", {})
+        x_robots = data.get("x_robots_tag", {})
+        # Nagłówek X-Robots-Tag jest RÓWNOWAŻNY znacznikowi meta - jedna dyrektywa
+        # wystarczy, żeby strona wypadła z indeksu, więc oceniamy oba źródła łącznie.
+        noindex = meta_robots.get("noindex", False) or x_robots.get("noindex", False)
+        nofollow = meta_robots.get("nofollow", False) or x_robots.get("nofollow", False)
+        directives = sorted(set(meta_robots.get("directives", [])) | set(x_robots.get("directives", [])))
+        site_blocked = bool(robots.get("exists") and robots.get("disallows_all"))
+        source = "nagłówek HTTP X-Robots-Tag" if x_robots.get("noindex") else 'znacznik <meta name="robots">'
+
+        zrodla = list(meta_robots.get("raw", []))
+        if x_robots.get("raw"):
+            zrodla.append(f"X-Robots-Tag: {x_robots['raw']}")
+        current_value = "; ".join(zrodla) or '(brak dyrektyw robots w meta i nagłówkach HTTP)'
+
+        if noindex:
+            status = "error"
+            note = (
+                f'Dyrektywa "noindex" ({source}) - ta podstrona jest celowo wykluczona '
+                "z indeksu wyszukiwarki i nie pojawi się w wynikach."
+            )
+        elif nofollow:
+            status = "warning"
+            note = (
+                'Dyrektywa "nofollow" - wyszukiwarka nie podąży za linkami z tej strony, '
+                "co ogranicza przepływ mocy do podstron."
+            )
+        elif site_blocked:
+            # Bez tego warunku test mówiłby "strona jest dostępna do indeksowania" w audycie,
+            # w którym robots.txt blokuje cały serwis - dwa wykluczające się komunikaty.
+            status = "warning"
+            note = (
+                "Znaczniki meta nie blokują indeksacji tej podstrony, ale plik robots.txt "
+                "blokuje całą witrynę - to blokada nadrzędna (patrz test pliku robots.txt)."
+            )
+        elif directives:
+            status = "ok"
+            note = f"Dyrektywy robots nie blokują indeksacji ({', '.join(directives)})."
+        else:
+            status = "ok"
+            note = "Brak dyrektyw robots w meta i nagłówkach HTTP - domyślnie strona jest indeksowana."
+
+        return self._make_metric(
+            "technical",
+            "meta_robots",
+            {
+                "present": meta_robots.get("present", False),
+                "directives": directives,
+                "noindex": noindex,
+                "nofollow": nofollow,
+                "blocked_by_robots_txt": site_blocked,
+                "x_robots_tag_present": x_robots.get("present", False),
+                "x_robots_tag_raw": x_robots.get("raw", ""),
+                "note": note,
+            },
+            status,
+            current_value=current_value,
+        )
 
     def _evaluate_wayback_domain_age(self, wayback: dict) -> dict:
         """Wiek domeny oszacowany na podstawie pierwszej migawki w Internet Archive.
@@ -1142,20 +2267,35 @@ class AuditService:
             current_value=current_value,
         )
 
-    def _evaluate_robots_ai_bots(self, robots: dict) -> dict:
-        """AI & GEO: czy robots.txt nie odcina witryny od modeli językowych.
+    def _evaluate_robots_ai_bots(self, robots: dict, data: dict | None = None) -> dict:
+        """AI & GEO: czy witryna nie jest odcięta od modeli językowych.
 
-        Zablokowanie GPTBot/ClaudeBot/PerplexityBot/Bytespider wyklucza treść z
-        odpowiedzi generowanych przez AI. To świadoma decyzja biznesowa u części
+        Sprawdzane są DWA mechanizmy blokowania, bo wystarczy jeden, żeby wykluczyć
+        treść z odpowiedzi AI:
+          * `robots.txt` (Disallow dla user-agenta bota),
+          * nagłówek HTTP `X-Robots-Tag` z nazwą bota (np. "GPTBot: noindex").
+
+        Zablokowanie GPTBot/ClaudeBot/PerplexityBot/Google-Extended/Bytespider wyklucza
+        treść z odpowiedzi generowanych przez AI. To świadoma decyzja biznesowa u części
         wydawców (ochrona treści przed trenowaniem modeli), dlatego zgłaszamy to jako
         OSTRZEŻENIE do weryfikacji, a nie błąd krytyczny.
         """
-        if not robots.get("checked") or not robots.get("exists"):
+        x_robots = (data or {}).get("x_robots_tag", {})
+        header_blocked = [
+            bot for bot in AI_BOT_USER_AGENTS
+            if any(bot.lower() == blocked.lower() for blocked in x_robots.get("blocked_bots", []))
+        ]
+        # Globalny "noindex" w nagłówku dotyczy wszystkich crawlerów, także AI.
+        if x_robots.get("noindex"):
+            header_blocked = list(AI_BOT_USER_AGENTS)
+        if (not robots.get("checked") or not robots.get("exists")) and not header_blocked:
             return self._make_metric(
                 "technical",
                 "robots_ai_bots",
                 {
                     "blocked_bots": [],
+                    "blocked_in_robots_txt": [],
+                    "blocked_in_http_header": [],
                     "checked_bots": list(AI_BOT_USER_AGENTS),
                     "note": "Brak pliku robots.txt - boty AI nie są blokowane (mają pełny dostęp).",
                 },
@@ -1164,14 +2304,19 @@ class AuditService:
                 generate_recommendation=False,
             )
 
-        blocked = robots.get("blocked_ai_bots") or []
+        # Zbiór z obu mechanizmów, w kolejności zgodnej z AI_BOT_USER_AGENTS.
+        blocked_set = set(robots.get("blocked_ai_bots") or []) | set(header_blocked)
+        blocked = [bot for bot in AI_BOT_USER_AGENTS if bot in blocked_set]
         if blocked:
             status = "warning"
             note = (
                 f"Plik robots.txt blokuje {len(blocked)} bot(ów) AI: {', '.join(blocked)} - "
                 "treść tej witryny nie trafi do odpowiedzi generowanych przez modele językowe."
             )
-            current_value = "\n".join(f"User-agent: {bot}\nDisallow: /" for bot in blocked)
+            zrodla = [f"User-agent: {bot}\nDisallow: /" for bot in (robots.get("blocked_ai_bots") or [])]
+            if header_blocked:
+                zrodla.append(f"X-Robots-Tag: {x_robots.get('raw', 'noindex')}")
+            current_value = "\n".join(zrodla)
         else:
             status = "ok"
             note = (
@@ -1183,7 +2328,13 @@ class AuditService:
         return self._make_metric(
             "technical",
             "robots_ai_bots",
-            {"blocked_bots": blocked, "checked_bots": list(AI_BOT_USER_AGENTS), "note": note},
+            {
+                "blocked_bots": blocked,
+                "blocked_in_robots_txt": robots.get("blocked_ai_bots") or [],
+                "blocked_in_http_header": header_blocked,
+                "checked_bots": list(AI_BOT_USER_AGENTS),
+                "note": note,
+            },
             status,
             current_value=current_value,
         )

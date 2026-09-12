@@ -176,6 +176,10 @@ PAGESPEED_API_KEY = os.environ.get('PAGESPEED_API_KEY', '')
 
 SENUTO_API_KEY = os.environ.get('SENUTO_API_KEY', '')
 
+# Id bazy danych Senuto. Pusta wartość = domyślna baza z auditor.services.senuto
+# (200 = "Polska (baza 2.0)", ta sama, którą pokazuje panel Senuto).
+SENUTO_COUNTRY_ID = os.environ.get('SENUTO_COUNTRY_ID', '')
+
 # Google Analytics 4 - integracja OAuth 2.0 "Zaloguj się przez Google"
 # (auditor.services.ga4_service.GA4OAuthService, auditor.views.start_ga4_auth/ga4_callback).
 GA4_CLIENT_SECRETS_FILE = BASE_DIR / 'client_secret.json'

@@ -45,8 +45,22 @@ CATEGORY_ICONS = {
 # Krótkie, biznesowe wyjaśnienia metryk ("Co to jest?") wyświetlane na kartach metryk -
 # tłumaczą nietechnicznemu odbiorcy, czym jest dana metryka i dlaczego ma znaczenie dla SEO.
 METRIC_DEFINITIONS = {
+    "schema_entity_linking": "Encje w grafie JSON-LD powinny wskazywać na siebie referencjami @id zamiast powielać pełne definicje. Modele językowe budują odpowiedzi z relacji między encjami - graf, w którym każda strona opisuje firmę od nowa, jest dla modelu zbiorem luźnych obiektów zamiast spójnego opisu biznesu.",
+    "price_discrepancy": "Cena w danych strukturalnych musi odpowiadać cenie widocznej na stronie. Gdy do Schema trafia cena hurtowa pobrana wprost z bazy, wyszukiwarka i modele AI obiecują użytkownikowi kwotę, której na stronie nie znajdzie - poza utratą zaufania grozi to karą za niezgodne dane.",
+    "schema_data_hygiene": "Dane strukturalne są generowane maszynowo i nikt ich nie ogląda, więc błędy potrafią żyć miesiącami: adresy środowiska testowego, podwójnie zakodowane encje HTML czy nazwa domeny doklejona do nazwy produktu zanieczyszczają to, co wyszukiwarka wie o firmie.",
+    "ecommerce_completeness": "Karta produktu bez oceny, marki, danych wysyłki i polityki zwrotów nie kwalifikuje się do rozszerzonych wyników Google i rzadko trafia do odpowiedzi AI - modelowi brakuje informacji, o które pyta użytkownik (koszt wysyłki, możliwość zwrotu).",
+    "authorship_depth": "Google ocenia doświadczenie i eksperckość autora po tym, czy da się ustalić jego kompetencje. Samo imię i nazwisko nie wystarcza - potrzebne jest stanowisko lub opis oraz powiązanie z profilem zewnętrznym (sameAs), które łączy autora z dorobkiem poza witryną.",
+    "freshness_decay": "Identyczne daty publikacji i modyfikacji po ponad roku oznaczają, że nikt nie zweryfikował, czy treść jest nadal aktualna. Przegląd merytoryczny i odświeżenie daty to sygnał wiarygodności, szczególnie istotny w tematach, w których wiedza szybko się dezaktualizuje.",
+    "external_sources": "Treść poradnikowa bez odwołań do źródeł zewnętrznych jest dla wyszukiwarki twierdzeniem bez pokrycia. Linki do domen rządowych, edukacyjnych i uznanych publikacji świadczą, że autor opiera się na zewnętrznej wiedzy, a nie wyłącznie na własnej opinii.",
+    "hidden_content": "Crawlery i modele językowe czytają tekst z kodu strony, ale treść ukryta stylem CSS jest traktowana jako mniej istotna lub pomijana. Opinie klientów i FAQ zwinięte pod przyciskiem „pokaż więcej” to zwykle najcenniejszy materiał dla AI - i dokładnie ten, który znika.",
+    "heading_visibility": "Nagłówek obecny w kodzie, ale niewidoczny w interfejsie, tworzy dla robota poziom hierarchii, który dla użytkownika nie istnieje. Szczególnie mylące są ukryte komunikaty typu „Nie znaleziono produktów” - robot odczytuje je jako treść strony.",
+    "schema_html_parity": "Dane strukturalne muszą mieć pokrycie w treści widocznej na stronie. Deklaracja FAQPage bez sekcji pytań w kodzie albo Product bez ceny to dla Google dane niezgodne z zawartością, za co grozi ręczna kara - a model językowy i tak nie znajdzie obiecanego materiału.",
+    "placeholder_content": "Teksty zastępcze („lorem ipsum”, „TODO”, „opis w przygotowaniu”) pozostawione na produkcji są indeksowane jak każda inna treść, a modele językowe mogą je zacytować jako opis oferty.",
+    "answer_first": "Wzorzec \"Answer-First\" to zwięzła, bezpośrednia odpowiedź (20-40 słów) umieszczona zaraz pod nagłówkiem sekcji, przed rozbudowanym wyjaśnieniem. Modele językowe cytują właśnie takie fragmenty - sekcja zaczynająca się od długiego wstępu wymaga od modelu samodzielnego streszczenia, co obniża szansę na zacytowanie strony.",
+    "structured_content": "Natywne tabele (<table>) i listy (<ul>, <ol>) niosą strukturę wprost, podczas gdy z prozy model musi ją dopiero wywnioskować. Strony z zestawieniami w tabelach i listach są chętniej cytowane w odpowiedziach AI, zwłaszcza przy pytaniach porównawczych i cenowych.",
+    "meta_robots": "Znacznik <meta name=\"robots\"> steruje tym, czy wyszukiwarka może zaindeksować daną podstronę i podążać za jej linkami. Dyrektywa \"noindex\" całkowicie wyklucza stronę z wyników wyszukiwania - bywa zostawiona przez pomyłkę po migracji ze środowiska testowego, co jest jedną z najkosztowniejszych usterek SEO.",
     "wayback_domain_age": "Wiek domeny szacowany na podstawie pierwszej migawki w archiwum Internet Archive (Wayback Machine). Domeny z wieloletnią historią cieszą się większym zaufaniem wyszukiwarek, a nowe potrzebują czasu i konsekwentnych publikacji, żeby zbudować autorytet. Archiwum nie jest rejestrem domen, więc data pierwszej migawki to oszacowanie od dołu - domena może być starsza.",
-    "robots_ai_bots": "Boty modeli językowych (GPTBot, ClaudeBot, PerplexityBot, Bytespider) zbierają treść stron, żeby móc ją cytować w odpowiedziach generowanych przez AI. Zablokowanie ich w pliku robots.txt wyklucza witrynę z tych odpowiedzi — bywa to świadomą decyzją (ochrona treści), ale powinno być wyborem, a nie przypadkiem.",
+    "robots_ai_bots": "Boty modeli językowych (GPTBot, ClaudeBot, PerplexityBot, Google-Extended, Bytespider) zbierają treść stron, żeby móc ją cytować w odpowiedziach generowanych przez AI. Zablokowanie ich w pliku robots.txt lub nagłówku X-Robots-Tag wyklucza witrynę z tych odpowiedzi — bywa to świadomą decyzją (ochrona treści), ale powinno być wyborem, a nie przypadkiem.",
     "schema_validity": "Dane strukturalne JSON-LD muszą być poprawne składniowo — blok z błędem jest przez wyszukiwarki i modele AI pomijany w całości, tak jakby go nie było. Typy Organization, SoftwareApplication, FAQPage i Product to te, po których AI buduje odpowiedzi o firmie i jej ofercie.",
     "twitter_cards": "Tagi Twitter Card sterują wyglądem linku udostępnionego w serwisie X: typem podglądu, tytułem, opisem i miniaturą. Bez nich (i bez Open Graph) udostępniony link wyświetla się jako goły adres URL, co drastycznie obniża klikalność.",
     "favicon": "Favicon to mała ikona witryny widoczna w karcie przeglądarki, na liście zakładek i w wynikach wyszukiwania na urządzeniach mobilnych. Jej brak sprawia, że strona wygląda niedokończenie i trudniej ją rozpoznać wśród wielu otwartych kart.",
@@ -85,6 +99,20 @@ METRIC_DEFINITIONS = {
 # `annotate_metric_labels`). Kilka technicznych kluczy dzieli tę samą oficjalną
 # nazwę, gdy audyt opisuje je jako jeden łączny test.
 OFFICIAL_TEST_NAMES = {
+    "schema_entity_linking": "Powiązania encji w grafie Schema.org (@id)",
+    "price_discrepancy": "Zgodność ceny w Schema.org z ceną widoczną na stronie",
+    "schema_data_hygiene": "Czystość danych strukturalnych (środowiska testowe, kodowanie, sufiksy)",
+    "ecommerce_completeness": "Kompletność danych e-commerce dla AI Overviews",
+    "authorship_depth": "Sygnały autorstwa E-E-A-T (kompetencje i profil zewnętrzny)",
+    "freshness_decay": "Aktualność treści (datePublished vs dateModified)",
+    "external_sources": "Powoływanie się na zewnętrzne źródła (weryfikacja faktów)",
+    "hidden_content": "Treść ukryta przed modelami językowymi (GEO Suppression)",
+    "heading_visibility": "Nagłówki niewidoczne w interfejsie",
+    "schema_html_parity": "Zgodność deklaracji Schema.org z treścią HTML",
+    "placeholder_content": "Teksty zastępcze pozostawione na produkcji",
+    "answer_first": "Wzorzec Answer-First w sekcjach treści (gotowość do cytowania przez AI)",
+    "structured_content": "Gęstość elementów ustrukturyzowanych (tabele i listy)",
+    "meta_robots": "Dyrektywy indeksacji (meta robots: noindex/nofollow)",
     "wayback_domain_age": "Wiek i historia domeny w archiwum (Wayback Machine)",
     "robots_ai_bots": "Dostęp botów AI/LLM (GPTBot, ClaudeBot, PerplexityBot) w robots.txt",
     "schema_validity": "Poprawność składni JSON-LD i pokrycie typów istotnych dla AI",
@@ -194,7 +222,7 @@ TECHNICAL_ACCORDIONS = [
         "indexing",
         "🌐 Indeksacja, Renderowanie & Nawigacja",
         {"javascript_rendering", "robots_txt", "robots_ai_bots", "canonical", "redirect_chain",
-         "internal_linking", "http_errors", "favicon", "wayback_domain_age"},
+         "internal_linking", "http_errors", "favicon", "wayback_domain_age", "meta_robots"},
     ),
     (
         "content",
@@ -202,6 +230,7 @@ TECHNICAL_ACCORDIONS = [
         {
             "title", "meta_description", "meta_keywords", "open_graph", "twitter_cards",
             "h1_structure", "heading_order", "heading_noise", "thin_content",
+            "answer_first", "structured_content", "placeholder_content",
             "eeat_authorship", "eeat_freshness",
         },
     ),
@@ -210,6 +239,16 @@ TECHNICAL_ACCORDIONS = [
         "⚡ Obrazy, Wydajność & Bezpieczeństwo",
         {"images_alt", "image_quality", "image_compression", "ssl_certificate",
          "lcp", "cls", "fcp", "inp"},
+    ),
+    (
+        "geo_ai",
+        "🤖 GEO: Dane Strukturalne, E-E-A-T i Dostępność dla AI",
+        {
+            "schema_entity_linking", "price_discrepancy", "schema_data_hygiene",
+            "ecommerce_completeness", "authorship_depth", "freshness_decay",
+            "external_sources", "hidden_content", "heading_visibility",
+            "schema_html_parity",
+        },
     ),
 ]
 

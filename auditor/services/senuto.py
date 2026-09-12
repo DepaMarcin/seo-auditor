@@ -17,9 +17,21 @@ logger = logging.getLogger(__name__)
 API_BASE_URL = "https://api.senuto.com/api"
 DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
-# Id kraju wymagany przez API Senuto dla wszystkich zapytań o widoczność - zgodnie
-# z GET /visibility_analysis/app/getCountriesList, Polska ma id = 1 (NIE 208).
-COUNTRY_ID_PL = 1
+# Id bazy danych wymagane przez API Senuto dla wszystkich zapytań o widoczność.
+#
+# UWAGA: Senuto wystawia dla Polski DWIE bazy (GET /visibility_analysis/app/getCountriesList):
+#   id=1   -> "Polska (baza 1.0)" - stara, węższa baza słów kluczowych,
+#   id=200 -> "Polska (baza 2.0)" - aktualna baza, TĘ pokazuje domyślnie panel Senuto.
+#
+# Aplikacja odpytywała wcześniej bazę 1.0, przez co raporty pokazywały ok. 3-6x mniej fraz
+# niż panel (sensu.pl: 23/143/1450 zamiast 141/488/3127). Wartość można nadpisać zmienną
+# SENUTO_COUNTRY_ID, gdyby Senuto ponownie zmieniło numerację baz.
+SENUTO_DATABASE_PL_LEGACY = 1
+SENUTO_DATABASE_PL_CURRENT = 200
+
+COUNTRY_ID_PL = int(
+    getattr(settings, "SENUTO_COUNTRY_ID", None) or SENUTO_DATABASE_PL_CURRENT
+)
 
 # "topLevelDomain" analizuje cały serwis (nie tylko konkretną subdomenę/ścieżkę) -
 # to odpowiada temu, jak audytujemy domenę w tym projekcie.
@@ -64,7 +76,9 @@ class SenutoService:
 
         # Senuto przelicza widoczność raz na dobę, więc powtórny audyt tej samej domeny
         # w ciągu dnia nie ma czego pobierać - odpowiedź bierzemy z cache.
-        cache_key = f"senuto:{domain}"
+        # Klucz zawiera id bazy - po przełączeniu na bazę 2.0 wpisy z bazy 1.0 nie mogą
+        # wracać z cache jako aktualne dane.
+        cache_key = f"senuto:{COUNTRY_ID_PL}:{domain}"
         cached = cache.get(cache_key)
         if cached is not None:
             logger.info("Senuto: statystyki widoczności dla %s pobrane z cache.", domain)
