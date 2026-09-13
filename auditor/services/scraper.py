@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import re
 import threading
+import time
 from urllib.parse import urljoin, urlparse
 from uuid import uuid4
 
@@ -12,7 +14,43 @@ from bs4 import BeautifulSoup
 
 from .url_guard import MAX_REDIRECT_HOPS, UnsafeUrlError, validate_public_url
 
+logger = logging.getLogger(__name__)
+
 HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
+# ------------------------------------------------------------------
+# Pobieranie strony: limity czasu, nagłówki i ponawianie
+# ------------------------------------------------------------------
+# Nawiązanie połączenia musi być szybkie - host, który nie odpowiada na handshake,
+# nie ma po co blokować audytu. Na samo wygenerowanie strony dajemy znacznie więcej
+# czasu: serwisy na współdzielonym hostingu potrafią budować stronę główną 10-20 s.
+CONNECT_TIMEOUT_SECONDS = 15.0
+READ_TIMEOUT_SECONDS = 30.0
+
+# Limit odczytu ROŚNIE z każdą kolejną próbą. Pomiary na niestabilnym serwerze
+# pokazały rozrzut od 7 s do 39 s dla tej samej strony, więc stały limit wymuszałby
+# wybór między szybkim audytem a skutecznością. Pierwsze podejście jest szybkie,
+# a dopiero ostatnie naprawdę cierpliwe - strony sprawne kończą się w kilka sekund.
+READ_TIMEOUT_MULTIPLIERS = (1.0, 1.5, 2.0)
+
+# Ile razy łącznie próbujemy pobrać stronę (pierwsze podejście + ponowienia).
+FETCH_MAX_ATTEMPTS = 3
+
+# Odstęp między próbami. Krótki, bo audyt skanuje do 5 szablonów i każda sekunda
+# zwłoki mnoży się przez liczbę podstron.
+FETCH_RETRY_BACKOFF_SECONDS = 1.5
+
+# User-Agent używany w pierwszej próbie: uczciwie przedstawia bota, co część serwerów
+# traktuje ulgowo (pomija dla nich ciężkie skrypty antybotowe).
+DEFAULT_USER_AGENT = "SEOAuditorBot/1.0 (+https://example.com)"
+
+# Zapasowy User-Agent przeglądarki. Niektóre WAF-y spowalniają ("tarpitują") ruch
+# deklarowany jako bot, inne odwrotnie - podejrzewają automat udający przeglądarkę.
+# Zamiast zgadywać, która strategia zadziała, kolejne próby ROTUJĄ User-Agenta.
+FALLBACK_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+)
 
 # Boty modeli językowych (LLM), których zablokowanie wyklucza witrynę z odpowiedzi
 # generowanych przez AI - kluczowe dla GEO (Generative Engine Optimization).
@@ -133,11 +171,24 @@ class ScraperError(Exception):
 class SEOScraper:
     """Pobiera stronę HTTP i wyciąga z niej dane istotne dla audytu SEO/GEO."""
 
-    def __init__(self, timeout: float = 15.0, user_agent: str | None = None):
-        self.timeout = timeout
-        self.headers = {
-            "User-Agent": user_agent or "SEOAuditorBot/1.0 (+https://example.com)"
-        }
+    def __init__(
+        self,
+        timeout: httpx.Timeout | float | None = None,
+        user_agent: str | None = None,
+        max_attempts: int = FETCH_MAX_ATTEMPTS,
+    ):
+        # Rozdzielony limit czasu: nawiązanie połączenia musi być szybkie (martwy host
+        # nie ma po co blokować audytu), ale samo wygenerowanie strony bywa wolne -
+        # pojedynczy wspólny timeout zmuszał do wyboru między jednym a drugim.
+        self._timeout_override = (
+            httpx.Timeout(timeout) if isinstance(timeout, (int, float)) else timeout
+        )
+        self.timeout = self._timeout_override or httpx.Timeout(
+            READ_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS
+        )
+        self.max_attempts = max(1, max_attempts)
+        self.user_agent_override = user_agent
+        self.headers = self._build_headers(user_agent or DEFAULT_USER_AGENT)
         # Stan ostatniej odpowiedzi ustawiany przez fetch(). Trzymany PER WĄTEK, bo
         # audyt skanuje szablony podstron równolegle jedną instancją scrapera - wspólne
         # pole instancji mieszałoby liczbę przekierowań i nagłówki między podstronami.
@@ -159,41 +210,120 @@ class SEOScraper:
     def _last_response_headers(self, value: dict) -> None:
         self._state.response_headers = value
 
+    def _build_headers(self, user_agent: str) -> dict:
+        """Komplet nagłówków zwykłego klienta HTTP.
+
+        Sam User-Agent to za mało: serwery i systemy antybotowe oceniają spójność
+        całego zestawu, a żądanie bez `Accept` czy `Accept-Language` wygląda na
+        automat nawet wtedy, gdy przedstawia się jako przeglądarka.
+        """
+        return {
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+        }
+
+    def _headers_for_attempt(self, attempt: int) -> dict:
+        """Nagłówki dla danej próby - kolejne podejścia rotują User-Agenta.
+
+        Jawnie podany `user_agent` wyłącza rotację: skoro ktoś go narzucił, zmiana
+        byłaby zaskoczeniem.
+        """
+        if self.user_agent_override:
+            return self.headers
+        agents = (DEFAULT_USER_AGENT, FALLBACK_USER_AGENT)
+        return self._build_headers(agents[attempt % len(agents)])
+
+    def _timeout_for_attempt(self, attempt: int) -> httpx.Timeout:
+        """Limit czasu dla danej próby - odczyt wydłuża się z każdym podejściem.
+
+        Gdy `timeout` podano jawnie w konstruktorze, zostaje bez zmian: narzucona
+        wartość ma być respektowana (korzystają z tego testy i wywołania specjalne).
+        """
+        if self._timeout_override is not None:
+            return self._timeout_override
+
+        mnoznik = READ_TIMEOUT_MULTIPLIERS[min(attempt, len(READ_TIMEOUT_MULTIPLIERS) - 1)]
+        return httpx.Timeout(READ_TIMEOUT_SECONDS * mnoznik, connect=CONNECT_TIMEOUT_SECONDS)
+
     def scrape(self, url: str) -> dict:
         normalized_url = self._normalize_url(url)
         html = self.fetch(normalized_url)
         return self.parse(html, normalized_url)
 
     def fetch(self, url: str) -> str:
-        # Przekierowania obsługujemy ręcznie (follow_redirects=False), bo publiczny adres
-        # może przekierować w głąb sieci lokalnej - każdy skok musi przejść tę samą
-        # walidację co adres podany przez użytkownika (ochrona przed SSRF).
+        """Pobiera stronę, ponawiając próbę przy błędach przejściowych.
+
+        Ponawiamy WYŁĄCZNIE błędy sieciowe (timeout, zerwane połączenie) i odpowiedzi
+        5xx - przy 404 czy 403 kolejna identyczna próba nic nie zmieni, a tylko wydłuży
+        audyt. Każde podejście rotuje User-Agenta, bo w praktyce spotykamy serwery
+        spowalniające ruch botów ORAZ takie, które blokują automaty udające przeglądarkę.
+        """
+        ostatni_blad: Exception | None = None
+
+        for attempt in range(self.max_attempts):
+            if attempt:
+                time.sleep(FETCH_RETRY_BACKOFF_SECONDS * attempt)
+
+            try:
+                return self._fetch_once(
+                    url, self._headers_for_attempt(attempt), self._timeout_for_attempt(attempt)
+                )
+            except ScraperError:
+                # Adres odrzucony przez walidację (SSRF) - ponawianie nic nie da.
+                raise
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code < 500:
+                    raise ScraperError(f"Nie udało się pobrać {url}: {exc}") from exc
+                ostatni_blad = exc
+                logger.info(
+                    "Pobranie %s nie powiodło się (HTTP %s), próba %s/%s.",
+                    url, exc.response.status_code, attempt + 1, self.max_attempts,
+                )
+            except httpx.HTTPError as exc:
+                ostatni_blad = exc
+                logger.info(
+                    "Pobranie %s nie powiodło się (%s), próba %s/%s.",
+                    url, type(exc).__name__, attempt + 1, self.max_attempts,
+                )
+
+        raise ScraperError(
+            f"Nie udało się pobrać {url} po {self.max_attempts} próbach: {ostatni_blad}"
+        ) from ostatni_blad
+
+    def _fetch_once(self, url: str, headers: dict, timeout: httpx.Timeout | None = None) -> str:
+        """Pojedyncze podejście do pobrania strony wraz z obsługą przekierowań.
+
+        Przekierowania obsługujemy ręcznie (follow_redirects=False), bo publiczny adres
+        może przekierować w głąb sieci lokalnej - każdy skok musi przejść tę samą
+        walidację co adres podany przez użytkownika (ochrona przed SSRF).
+        """
         try:
             safe_url = validate_public_url(url)
         except UnsafeUrlError as exc:
             raise ScraperError(f"Nie udało się pobrać {url}: {exc}") from exc
 
         hops = 0
-        try:
-            with httpx.Client(
-                headers=self.headers, timeout=self.timeout, follow_redirects=False
-            ) as client:
+        with httpx.Client(
+            headers=headers, timeout=timeout or self.timeout, follow_redirects=False
+        ) as client:
+            response = client.get(safe_url)
+            while response.is_redirect and hops < MAX_REDIRECT_HOPS:
+                next_request = response.next_request
+                if next_request is None:
+                    break
+                try:
+                    safe_url = validate_public_url(str(next_request.url))
+                except UnsafeUrlError as exc:
+                    raise ScraperError(
+                        f"Przekierowanie z {url} prowadzi do niedozwolonego adresu: {exc}"
+                    ) from exc
                 response = client.get(safe_url)
-                while response.is_redirect and hops < MAX_REDIRECT_HOPS:
-                    next_request = response.next_request
-                    if next_request is None:
-                        break
-                    try:
-                        safe_url = validate_public_url(str(next_request.url))
-                    except UnsafeUrlError as exc:
-                        raise ScraperError(
-                            f"Przekierowanie z {url} prowadzi do niedozwolonego adresu: {exc}"
-                        ) from exc
-                    response = client.get(safe_url)
-                    hops += 1
-                response.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise ScraperError(f"Nie udało się pobrać {url}: {exc}") from exc
+                hops += 1
+            response.raise_for_status()
 
         # Liczba przekierowań napotkanych po drodze - parse() zgłasza na jej podstawie
         # test "Przekierowania 301/302" (zero dodatkowych zapytań).

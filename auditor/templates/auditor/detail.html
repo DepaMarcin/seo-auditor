@@ -33,12 +33,13 @@
     <h2 class="section-heading" style="margin-top: 1.25rem;">Przegląd</h2>
     <div class="overview-grid">
         <div class="overview-col overview-score-col">
-            <div class="score-donut score-donut-{{ score_bucket }}" style="--score: {{ audit.score }};">
-                <div class="score-donut-inner">
-                    <span class="score-donut-value">{{ audit.score }}</span>
-                    <span class="score-donut-label">Wynik SEO</span>
+            <div class="score-ring score-ring-{{ score_bucket }}" style="--score: {{ audit.score }};">
+                <div class="score-ring-inner">
+                    <span class="score-ring-value">{{ audit.score }}</span>
+                    <span class="score-ring-unit">na 100</span>
                 </div>
             </div>
+            <div class="score-ring-caption">Ogólny wynik audytu</div>
             <a class="pdf-button" href="{% url 'auditor:download_pdf_report' audit.pk %}" target="_blank" rel="noopener">
                 📄 Pobierz Raport PDF
             </a>
@@ -62,20 +63,6 @@
             </div>
         </div>
 
-        <div class="overview-col overview-bars-col">
-            {% for item in category_scores %}
-            <div class="category-bar">
-                <div class="category-bar-header">
-                    <span>{{ item.label }}</span>
-                    <span>{{ item.score }}%</span>
-                </div>
-                <div class="progress-track">
-                    <div class="progress-bar" style="width: {{ item.score }}%;"></div>
-                </div>
-            </div>
-            {% endfor %}
-        </div>
-
         <div class="overview-col overview-preview-col">
             <div class="page-preview-card">
                 <div class="page-preview-frame">
@@ -85,6 +72,29 @@
                 <a class="link" href="{{ audit.url }}" target="_blank" rel="noopener">Otwórz stronę ↗</a>
             </div>
         </div>
+    </div>
+
+    <div class="kpi-grid">
+        {% for item in category_scores %}
+        <div class="kpi-card kpi-card-{{ item.bucket }}">
+            <div class="kpi-card-head">
+                <span class="kpi-card-icon">{{ item.icon }}</span>
+                <span class="kpi-card-label">{{ item.label }}</span>
+            </div>
+            <div class="kpi-card-score">
+                <span class="kpi-card-value">{{ item.score }}</span>
+                <span class="kpi-card-unit">/ 100</span>
+            </div>
+            <div class="progress-track kpi-card-track">
+                <div class="progress-bar kpi-card-fill" style="width: {{ item.score }}%;"></div>
+            </div>
+            <div class="kpi-card-breakdown">
+                <span class="kpi-chip kpi-chip-error">Błędy: {{ item.errors }}</span>
+                <span class="kpi-chip kpi-chip-warning">Ostrzeżenia: {{ item.warnings }}</span>
+                <span class="kpi-chip kpi-chip-ok">Zdane: {{ item.passed }}</span>
+            </div>
+        </div>
+        {% endfor %}
     </div>
 
     <div class="stats-row">
@@ -679,8 +689,8 @@
             animation: { duration: 400, easing: "easeInOutQuart" },
             plugins: { legend: { labels: { color: "#94A3B8" } } },
             scales: {
-                x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
-                y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
+                x: { ticks: { color: "#94A3B8" }, grid: { color: "rgba(255, 255, 255, 0.07)" } },
+                y: { ticks: { color: "#94A3B8" }, grid: { color: "rgba(255, 255, 255, 0.07)" }, beginAtZero: true },
             },
         },
     });
@@ -730,8 +740,8 @@
             animation: { duration: 400, easing: "easeInOutQuart" },
             plugins: { legend: { labels: { color: "#94A3B8" } } },
             scales: {
-                x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
-                y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
+                x: { ticks: { color: "#94A3B8" }, grid: { color: "rgba(255, 255, 255, 0.07)" } },
+                y: { ticks: { color: "#94A3B8" }, grid: { color: "rgba(255, 255, 255, 0.07)" }, beginAtZero: true },
             },
         },
     });
@@ -776,8 +786,8 @@
             animation: { duration: 400 },
             plugins: { legend: { display: false } },
             scales: {
-                x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
-                y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
+                x: { ticks: { color: "#94A3B8" }, grid: { color: "rgba(255, 255, 255, 0.07)" } },
+                y: { ticks: { color: "#94A3B8" }, grid: { color: "rgba(255, 255, 255, 0.07)" }, beginAtZero: true },
             },
         },
     });
@@ -835,8 +845,8 @@
             animation: { duration: 400 },
             plugins: { legend: { labels: { color: "#94A3B8" } } },
             scales: {
-                x: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" } },
-                y: { ticks: { color: "#94A3B8" }, grid: { color: "#334155" }, beginAtZero: true },
+                x: { ticks: { color: "#94A3B8" }, grid: { color: "rgba(255, 255, 255, 0.07)" } },
+                y: { ticks: { color: "#94A3B8" }, grid: { color: "rgba(255, 255, 255, 0.07)" }, beginAtZero: true },
             },
         },
     });

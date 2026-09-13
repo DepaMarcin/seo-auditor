@@ -1,11 +1,11 @@
 {% if metric.recommendation_segments %}
 <div class="recommendation">
-    <div class="recommendation-label">💡 Rekomendacja AI</div>
+    <div class="recommendation-label">Rekomendacja AI</div>
     {% for segment in metric.recommendation_segments %}
     {% if segment.type == "code" %}
     <div class="code-frame">
         <div class="code-frame-header">
-            <span>Kod</span>
+            <span>Kod do wdrożenia</span>
             <button type="button" class="copy-btn" data-copy>Kopiuj kod</button>
         </div>
         <pre><code>{{ segment.content }}</code></pre>

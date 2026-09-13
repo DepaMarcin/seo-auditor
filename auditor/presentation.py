@@ -375,7 +375,7 @@ def priority_for_metric(metric: AuditMetric) -> int:
 
 
 def compute_category_scores(metrics: list[AuditMetric]) -> list[dict]:
-    """Liczy % wyniku dla każdej z 4 kategorii (paski postępu w panelu "Przegląd").
+    """Liczy wynik i rozkład statusów dla każdej z 4 kategorii (karty KPI w "Przegląd").
 
     Działa na metrykach JUŻ wczytanych do pamięci - wcześniejsza wersja wykonywała
     `audit.metrics.filter(category=...)` w pętli, czyli 4 dodatkowe zapytania do bazy
@@ -393,7 +393,20 @@ def compute_category_scores(metrics: list[AuditMetric]) -> list[dict]:
             score = round(total / len(category_metrics))
         else:
             score = 0
-        results.append({"label": label, "score": score})
+        statuses = [m.status for m in category_metrics]
+        results.append(
+            {
+                "label": label,
+                "score": score,
+                "key": category,
+                "icon": CATEGORY_ICONS.get(category, ""),
+                "bucket": score_bucket(score),
+                "errors": statuses.count("error"),
+                "warnings": statuses.count("warning"),
+                "passed": statuses.count("ok"),
+                "total": len(category_metrics),
+            }
+        )
     return results
 
 

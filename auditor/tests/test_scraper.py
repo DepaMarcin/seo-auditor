@@ -45,6 +45,12 @@ class SEOScraperFetchTests(SimpleTestCase):
 
     def setUp(self):
         self.scraper = SEOScraper()
+        # Ponawianie usypia wątek między próbami - w testach logiki pobierania to czysta
+        # strata czasu (13 s na zestaw), więc uśpienie podmieniamy na pustą operację.
+        sleep_patcher = patch("auditor.services.scraper.time.sleep")
+        sleep_patcher.start()
+        self.addCleanup(sleep_patcher.stop)
+
         guard_patcher = patch(
             "auditor.services.scraper.validate_public_url", side_effect=lambda url: url
         )
@@ -407,3 +413,144 @@ class PageTypeDetectionTests(SimpleTestCase):
         data = self.scraper.parse(html, "https://serwis.pl/informacje")
 
         self.assertEqual(data["page_type"], "generic")
+
+
+class SEOScraperRetryTests(SimpleTestCase):
+    """Ponawianie pobrania: błędy przejściowe są powtarzane, trwałe - nie.
+
+    Regresja z produkcji: audyt `arcoore.com` przerywał się przy pierwszym
+    `ReadTimeout`, mimo że serwer odpowiadał poprawnie przy kolejnej próbie.
+    """
+
+    def setUp(self):
+        sleep_patcher = patch("auditor.services.scraper.time.sleep")
+        self.mock_sleep = sleep_patcher.start()
+        self.addCleanup(sleep_patcher.stop)
+
+        guard_patcher = patch(
+            "auditor.services.scraper.validate_public_url", side_effect=lambda url: url
+        )
+        guard_patcher.start()
+        self.addCleanup(guard_patcher.stop)
+
+        client_patcher = patch("auditor.services.scraper.httpx.Client")
+        self.mock_client_cls = client_patcher.start()
+        self.addCleanup(client_patcher.stop)
+        self.mock_client = self.mock_client_cls.return_value.__enter__.return_value
+        self.scraper = SEOScraper()
+
+    def _timeout(self) -> httpx.ReadTimeout:
+        return httpx.ReadTimeout("Timed out", request=httpx.Request("GET", "https://example.com"))
+
+    def test_transient_timeout_is_retried_and_succeeds(self):
+        self.mock_client.get.side_effect = [
+            self._timeout(),
+            _fake_response(200, text="<html>ok</html>"),
+        ]
+
+        html = self.scraper.fetch("https://example.com")
+
+        self.assertEqual(html, "<html>ok</html>")
+        self.assertEqual(self.mock_client.get.call_count, 2)
+
+    def test_connection_error_is_retried(self):
+        self.mock_client.get.side_effect = [
+            httpx.ConnectError("Connection refused"),
+            _fake_response(200, text="<html>ok</html>"),
+        ]
+
+        self.assertEqual(self.scraper.fetch("https://example.com"), "<html>ok</html>")
+
+    def test_gives_up_after_max_attempts(self):
+        self.mock_client.get.side_effect = self._timeout()
+
+        with self.assertRaises(ScraperError) as ctx:
+            self.scraper.fetch("https://example.com")
+
+        self.assertEqual(self.mock_client.get.call_count, self.scraper.max_attempts)
+        self.assertIn("3 próbach", str(ctx.exception))
+
+    def test_client_error_is_not_retried(self):
+        """Przy 404 kolejna identyczna próba nic nie zmieni - tylko wydłuża audyt."""
+        self.mock_client.get.return_value = _fake_response(404, text="Not found")
+
+        with self.assertRaises(ScraperError):
+            self.scraper.fetch("https://example.com")
+
+        self.assertEqual(self.mock_client.get.call_count, 1)
+
+    def test_server_error_is_retried(self):
+        """5xx bywa przejściowe (przeciążenie), więc ponawiamy."""
+        self.mock_client.get.return_value = _fake_response(503, text="Service Unavailable")
+
+        with self.assertRaises(ScraperError):
+            self.scraper.fetch("https://example.com")
+
+        self.assertEqual(self.mock_client.get.call_count, self.scraper.max_attempts)
+
+    def test_rejected_url_is_not_retried(self):
+        """Adres odrzucony przez ochronę SSRF nie stanie się bezpieczny przy powtórce."""
+        with patch(
+            "auditor.services.scraper.validate_public_url",
+            side_effect=UnsafeUrlError("Adresy w sieci lokalnej nie podlegają audytowi."),
+        ):
+            with self.assertRaises(ScraperError):
+                self.scraper.fetch("http://127.0.0.1/")
+
+        self.assertEqual(self.mock_client.get.call_count, 0)
+
+    def test_user_agent_rotates_between_attempts(self):
+        """Serwery bywają wrogie botom ALBO automatom udającym przeglądarkę - kolejne
+        próby zmieniają User-Agenta, zamiast powtarzać to samo żądanie."""
+        from auditor.services.scraper import DEFAULT_USER_AGENT, FALLBACK_USER_AGENT
+
+        self.mock_client.get.side_effect = [self._timeout(), _fake_response(200, text="ok")]
+
+        self.scraper.fetch("https://example.com")
+
+        użyte = [call.kwargs["headers"]["User-Agent"] for call in self.mock_client_cls.call_args_list]
+        self.assertEqual(użyte, [DEFAULT_USER_AGENT, FALLBACK_USER_AGENT])
+
+    def test_explicit_user_agent_disables_rotation(self):
+        scraper = SEOScraper(user_agent="WlasnyBot/2.0")
+        self.mock_client.get.side_effect = [self._timeout(), _fake_response(200, text="ok")]
+
+        scraper.fetch("https://example.com")
+
+        użyte = {call.kwargs["headers"]["User-Agent"] for call in self.mock_client_cls.call_args_list}
+        self.assertEqual(użyte, {"WlasnyBot/2.0"})
+
+    def test_read_timeout_grows_with_each_attempt(self):
+        """Pomiary pokazały rozrzut 7-39 s dla tej samej strony - ostatnia próba musi
+        być cierpliwsza niż pierwsza."""
+        self.mock_client.get.side_effect = [self._timeout(), self._timeout(), _fake_response(200, text="ok")]
+
+        self.scraper.fetch("https://example.com")
+
+        odczyty = [call.kwargs["timeout"].read for call in self.mock_client_cls.call_args_list]
+        self.assertEqual(odczyty, sorted(odczyty))
+        self.assertGreater(odczyty[-1], odczyty[0])
+
+    def test_explicit_timeout_is_respected(self):
+        scraper = SEOScraper(timeout=5.0)
+        self.mock_client.get.side_effect = [self._timeout(), _fake_response(200, text="ok")]
+
+        scraper.fetch("https://example.com")
+
+        odczyty = {call.kwargs["timeout"].read for call in self.mock_client_cls.call_args_list}
+        self.assertEqual(odczyty, {5.0})
+
+    def test_backoff_grows_between_attempts(self):
+        self.mock_client.get.side_effect = [self._timeout(), self._timeout(), _fake_response(200, text="ok")]
+
+        self.scraper.fetch("https://example.com")
+
+        opóźnienia = [call.args[0] for call in self.mock_sleep.call_args_list]
+        self.assertEqual(len(opóźnienia), 2)
+        self.assertLess(opóźnienia[0], opóźnienia[1])
+
+    def test_headers_look_like_a_real_client(self):
+        """Sam User-Agent to za mało - systemy antybotowe oceniają spójność zestawu."""
+        for nagłówek in ("Accept", "Accept-Language", "Accept-Encoding"):
+            with self.subTest(nagłówek=nagłówek):
+                self.assertIn(nagłówek, self.scraper.headers)
