@@ -259,6 +259,24 @@ CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_TASK_SOFT_TIME_LIMIT = int(os.environ.get('CELERY_TASK_SOFT_TIME_LIMIT', '1500'))
 CELERY_TASK_TIME_LIMIT = int(os.environ.get('CELERY_TASK_TIME_LIMIT', '1800'))
 
+# ----------------------------------------------------------------------
+# Fallback przeglądarkowy scrapera (auditor.services.renderer).
+#
+# Strony renderowane po stronie klienta (React/Vue/Angular) oraz witryny za WAF-em
+# (Cloudflare) nie oddają treści zwykłemu klientowi HTTP. Gdy statyczne pobranie
+# zwróci 403/429 albo dokument bez podstawowych tagów SEO, scraper dorenderowuje
+# stronę bezgłownym Chromium.
+#
+# Wymaga OPCJONALNEJ zależności:  pip install playwright && playwright install chromium
+# Bez niej flaga nie ma znaczenia - audyt po prostu zostaje przy wyniku statycznym.
+# ----------------------------------------------------------------------
+SCRAPER_RENDER_FALLBACK_ENABLED = (
+    os.environ.get('SCRAPER_RENDER_FALLBACK_ENABLED', 'True').strip().lower() in ('1', 'true', 'yes')
+)
+# Renderowanie jest wolniejsze od pobrania statycznego (wykonanie JS, oczekiwanie na
+# zasoby), ale musi zmieścić się w CELERY_TASK_SOFT_TIME_LIMIT razy liczba szablonów.
+SCRAPER_RENDER_TIMEOUT_SECONDS = float(os.environ.get('SCRAPER_RENDER_TIMEOUT_SECONDS', '30'))
+
 # Logowanie użytkowników (django.contrib.auth) - audyty są prywatne, każdy widok
 # wymaga zalogowania (patrz auditor.views).
 LOGIN_URL = 'login'

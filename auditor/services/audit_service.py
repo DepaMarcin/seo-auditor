@@ -1654,9 +1654,23 @@ class AuditService:
     def _evaluate_title(self, data: dict) -> dict:
         title = data.get("title")
         length = data.get("title_length", 0)
+        # Brak pola oznacza wynik sprzed wprowadzenia zamienników - traktujemy go jak
+        # tytuł z właściwego tagu, żeby starsze dane nie zaczęły nagle zgłaszać ostrzeżeń.
+        source = data.get("title_source") or "title"
         current_value = title if title else "(brak tagu <title>)"
+
         if not title:
             status, note = "error", "Brak tagu <title>."
+        elif source != "title":
+            # Tytuł znaleziony wyłącznie w Open Graph / Twitter Card. Treść istnieje,
+            # więc to nie jest błąd krytyczny, ale Google wyświetla w wynikach <title> -
+            # zgłoszenie "OK" ukrywałoby realny brak.
+            status, note = (
+                "warning",
+                f"Brak tagu <title> - tytuł odczytany z zamiennika {source}. "
+                "Wyszukiwarka wyświetla w wynikach <title>, więc dodaj go w sekcji <head>.",
+            )
+            current_value = f"{title}  [źródło: {source}]"
         elif length < TITLE_MIN_LENGTH or length > TITLE_MAX_LENGTH:
             status, note = (
                 "warning",
@@ -1665,17 +1679,28 @@ class AuditService:
             )
         else:
             status, note = "ok", "Długość tytułu jest prawidłowa."
+
         return self._make_metric(
-            "seo", "title", {"value": title, "length": length, "note": note}, status,
+            "seo", "title",
+            {"value": title, "length": length, "source": source, "note": note}, status,
             current_value=current_value,
         )
 
     def _evaluate_description(self, data: dict) -> dict:
         description = data.get("meta_description")
         length = data.get("meta_description_length", 0)
+        source = data.get("meta_description_source") or "description"
         current_value = description if description else "(brak meta description)"
+
         if not description:
             status, note = "error", "Brak meta description."
+        elif source != "description":
+            status, note = (
+                "warning",
+                f'Brak <meta name="description"> - opis odczytany z zamiennika {source}. '
+                "Wyszukiwarka buduje fragment wyniku z meta description, więc dodaj ją w <head>.",
+            )
+            current_value = f"{description}  [źródło: {source}]"
         elif length < DESCRIPTION_MIN_LENGTH or length > DESCRIPTION_MAX_LENGTH:
             status, note = (
                 "warning",
@@ -1684,8 +1709,10 @@ class AuditService:
             )
         else:
             status, note = "ok", "Długość meta description jest prawidłowa."
+
         return self._make_metric(
-            "seo", "meta_description", {"value": description, "length": length, "note": note}, status,
+            "seo", "meta_description",
+            {"value": description, "length": length, "source": source, "note": note}, status,
             current_value=current_value,
         )
 

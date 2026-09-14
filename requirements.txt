@@ -146,3 +146,15 @@ websockets==16.1.1
 xxhash==4.0.1
 yarl==1.24.5
 zstandard==0.25.0
+
+# ----------------------------------------------------------------------
+# Zależność OPCJONALNA - fallback przeglądarkowy scrapera (auditor.services.renderer).
+# Pozwala audytować strony renderowane po stronie klienta (React/Vue/Angular) oraz
+# witryny za WAF-em, które odrzucają zwykłego klienta HTTP. Nie jest instalowana
+# domyślnie, bo binarki przeglądarki ważą ok. 400 MB - bez niej audyt działa dalej,
+# tyle że wyłącznie na statycznym HTML-u.
+#
+#   pip install playwright
+#   playwright install chromium
+#
+# playwright==1.58.0

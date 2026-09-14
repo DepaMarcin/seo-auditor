@@ -12,6 +12,7 @@ from uuid import uuid4
 import httpx
 from bs4 import BeautifulSoup
 
+from . import renderer
 from .url_guard import MAX_REDIRECT_HOPS, UnsafeUrlError, validate_public_url
 
 logger = logging.getLogger(__name__)
@@ -40,17 +41,50 @@ FETCH_MAX_ATTEMPTS = 3
 # zwłoki mnoży się przez liczbę podstron.
 FETCH_RETRY_BACKOFF_SECONDS = 1.5
 
-# User-Agent używany w pierwszej próbie: uczciwie przedstawia bota, co część serwerów
-# traktuje ulgowo (pomija dla nich ciężkie skrypty antybotowe).
-DEFAULT_USER_AGENT = "SEOAuditorBot/1.0 (+https://example.com)"
+# Wersja Chrome deklarowana w User-Agencie i w Client Hints. JEDNO miejsce do
+# aktualizacji - rozjechanie się tych dwóch deklaracji to sygnał automatu wyraźniejszy
+# niż sam nieaktualny numer wersji, dlatego oba nagłówki budujemy z tej stałej.
+#
+# Wersja mocno wyprzedzająca rzeczywistość też szkodzi: WAF zestawia ją z odciskiem
+# TLS i kolejnością nagłówków, więc "Chrome z przyszłości" wygląda podejrzanie.
+# Przy aktualizacji podnieś numer do wersji, która NAPRAWDĘ jest wydana.
+CHROME_MAJOR_VERSION = 141
 
-# Zapasowy User-Agent przeglądarki. Niektóre WAF-y spowalniają ("tarpitują") ruch
-# deklarowany jako bot, inne odwrotnie - podejrzewają automat udający przeglądarkę.
-# Zamiast zgadywać, która strategia zadziała, kolejne próby ROTUJĄ User-Agenta.
-FALLBACK_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+# User-Agent pierwszej próby: pełnoprawna przeglądarka desktopowa. Systemy antybotowe
+# (Cloudflare, Imperva) odrzucają nieznane automaty regułą domyślną, więc uczciwe
+# przedstawienie się botem kosztowało audyt dostęp do części witryn.
+DEFAULT_USER_AGENT = (
+    f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    f"(KHTML, like Gecko) Chrome/{CHROME_MAJOR_VERSION}.0.0.0 Safari/537.36"
 )
+
+# Zapasowy User-Agent uczciwie przedstawiający bota. Część serwerów działa odwrotnie
+# niż WAF-y: przepuszcza zadeklarowane roboty (bo chce być indeksowana), a blokuje
+# automaty udające przeglądarkę. Zamiast zgadywać, która strategia zadziała na danym
+# hoście, kolejne próby ROTUJĄ User-Agenta.
+FALLBACK_USER_AGENT = "SEOAuditorBot/1.0 (+https://example.com)"
+
+# Client Hints wysyłane wyłącznie razem z User-Agentem przeglądarki - patrz
+# `SEOScraper._build_headers`. Chrome wysyła je przy KAŻDYM żądaniu nawigacyjnym,
+# więc ich brak przy UA deklarującym Chrome jest jednym z prostszych testów na automat.
+BROWSER_CLIENT_HINTS = {
+    "sec-ch-ua": (
+        f'"Chromium";v="{CHROME_MAJOR_VERSION}", '
+        f'"Google Chrome";v="{CHROME_MAJOR_VERSION}", '
+        f'"Not?A_Brand";v="24"'
+    ),
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+}
+
+# Kody odpowiedzi, przy których ma sens sięgnięcie po bezgłowną przeglądarkę:
+# 403 to typowa odmowa WAF-a, 429 - limit żądań nakładany na ruch uznany za automat.
+# Powtórzenie tego samego żądania statycznego nic by nie zmieniło (patrz `fetch`).
+RENDER_FALLBACK_STATUS_CODES = (403, 429)
 
 # Boty modeli językowych (LLM), których zablokowanie wyklucza witrynę z odpowiedzi
 # generowanych przez AI - kluczowe dla GEO (Generative Engine Optimization).
@@ -164,6 +198,28 @@ _FAQ_CONTAINER_ID_RE = re.compile(r"\bfaq\b", re.I)
 _SCHEMA_QUESTION_TYPE_RE = re.compile(r"schema\.org/Question", re.I)
 
 
+def _is_browser_user_agent(user_agent: str) -> bool:
+    """Czy dany User-Agent podaje się za przeglądarkę (a nie za robota)."""
+    return "Mozilla/" in (user_agent or "")
+
+
+def _supported_accept_encoding() -> str:
+    """Lista kodowań, które klient POTRAFI rozpakować.
+
+    Deklarowanie `br` bez zainstalowanego pakietu `brotli` było realnym błędem:
+    Cloudflare chętnie odsyła brotli, a httpx bez dekodera podnosi wtedy
+    `DecodingError` - pobranie kończyło się niepowodzeniem mimo poprawnej odpowiedzi
+    serwera. Listę bierzemy wprost od httpx, żeby nie rozjechała się z jego
+    możliwościami po zmianie zależności.
+    """
+    try:
+        from httpx._decoders import SUPPORTED_DECODERS
+    except ImportError:
+        return "gzip, deflate"
+    kodowania = [nazwa for nazwa in SUPPORTED_DECODERS if nazwa != "identity"]
+    return ", ".join(kodowania) or "identity"
+
+
 class ScraperError(Exception):
     """Podnoszony gdy nie udało się pobrać lub sparsować strony."""
 
@@ -203,6 +259,14 @@ class SEOScraper:
         self._state.redirect_count = value
 
     @property
+    def _last_render_used(self) -> bool:
+        return getattr(self._state, "render_used", False)
+
+    @_last_render_used.setter
+    def _last_render_used(self, value: bool) -> None:
+        self._state.render_used = value
+
+    @property
     def _last_response_headers(self) -> dict:
         return getattr(self._state, "response_headers", {})
 
@@ -217,14 +281,23 @@ class SEOScraper:
         całego zestawu, a żądanie bez `Accept` czy `Accept-Language` wygląda na
         automat nawet wtedy, gdy przedstawia się jako przeglądarka.
         """
-        return {
+        headers = {
             "User-Agent": user_agent,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "image/avif,image/webp,image/apng,*/*;q=0.8"
+            ),
             "Accept-Language": "pl-PL,pl;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Encoding": _supported_accept_encoding(),
             "Connection": "keep-alive",
             "Upgrade-Insecure-Requests": "1",
         }
+        # Client Hints mają sens WYŁĄCZNIE przy UA przeglądarki. Nagłówek
+        # `sec-ch-ua: "Google Chrome"` obok `User-Agent: SEOAuditorBot` to sprzeczność,
+        # którą systemy antybotowe wykrywają łatwiej niż sam nietypowy User-Agent.
+        if _is_browser_user_agent(user_agent):
+            headers.update(BROWSER_CLIENT_HINTS)
+        return headers
 
     def _headers_for_attempt(self, attempt: int) -> dict:
         """Nagłówki dla danej próby - kolejne podejścia rotują User-Agenta.
@@ -250,9 +323,66 @@ class SEOScraper:
         return httpx.Timeout(READ_TIMEOUT_SECONDS * mnoznik, connect=CONNECT_TIMEOUT_SECONDS)
 
     def scrape(self, url: str) -> dict:
+        """Pobiera i analizuje stronę, w razie potrzeby dorenderowując ją przeglądarką.
+
+        Statyczny HTML aplikacji CSR (React/Vue/Angular) nie zawiera ani `<title>`,
+        ani treści - powstają dopiero po wykonaniu JavaScriptu. Gdy parser nie znajdzie
+        podstawowych tagów SEO, druga próba idzie przez bezgłowną przeglądarkę, żeby
+        audyt oceniał to, co widzi użytkownik i robot Google (który JS wykonuje).
+        """
         normalized_url = self._normalize_url(url)
         html = self.fetch(normalized_url)
-        return self.parse(html, normalized_url)
+        data = self.parse(html, normalized_url)
+
+        if self._last_render_used or not self._needs_browser_rendering(data):
+            return data
+
+        rendered_html = self._render(normalized_url)
+        if rendered_html is None:
+            # Renderowanie niedostępne albo nieudane - zostawiamy wynik statyczny.
+            # Audyt na niepełnych danych jest gorszy niż audyt pełny, ale wciąż
+            # znacznie lepszy niż brak audytu.
+            return data
+
+        self._last_render_used = True
+        rendered = self.parse(rendered_html, normalized_url)
+        logger.info(
+            "Strona %s wymagała renderowania JS (statycznie: title=%s, description=%s).",
+            normalized_url, bool(data.get("title")), bool(data.get("meta_description")),
+        )
+        return rendered
+
+    def _needs_browser_rendering(self, data: dict) -> bool:
+        """Czy statyczny HTML wygląda na niekompletny na tyle, by sięgnąć po przeglądarkę.
+
+        Renderowanie jest drogie (sekundy i setki MB pamięci na stronę), więc nie
+        uruchamiamy go "na wszelki wypadek". Sięgamy po nie tylko wtedy, gdy brakuje
+        tagu, który ma KAŻDA poprawnie zbudowana strona - albo gdy heurystyka CSR
+        wskazuje pusty dokument czekający na JavaScript.
+        """
+        if not renderer.is_available():
+            return False
+        if not data.get("title") or not data.get("meta_description"):
+            return True
+        return bool(data.get("js_rendering", {}).get("likely_csr"))
+
+    def _render(self, url: str) -> str | None:
+        """Renderuje stronę przeglądarką. Zwraca None, gdy się nie udało.
+
+        Błąd renderowania nigdy nie przerywa audytu: fallback ma poprawiać wynik,
+        a nie stwarzać nowy powód niepowodzenia.
+        """
+        try:
+            return renderer.render_html(
+                url,
+                user_agent=self.user_agent_override or DEFAULT_USER_AGENT,
+                extra_headers=self.headers,
+            )
+        except renderer.RendererUnavailableError as exc:
+            logger.info("Fallback przeglądarkowy niedostępny dla %s: %s", url, exc)
+        except renderer.RendererError as exc:
+            logger.warning("Renderowanie %s nie powiodło się: %s", url, exc)
+        return None
 
     def fetch(self, url: str) -> str:
         """Pobiera stronę, ponawiając próbę przy błędach przejściowych.
@@ -263,6 +393,7 @@ class SEOScraper:
         spowalniające ruch botów ORAZ takie, które blokują automaty udające przeglądarkę.
         """
         ostatni_blad: Exception | None = None
+        self._last_render_used = False
 
         for attempt in range(self.max_attempts):
             if attempt:
@@ -276,6 +407,19 @@ class SEOScraper:
                 # Adres odrzucony przez walidację (SSRF) - ponawianie nic nie da.
                 raise
             except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in RENDER_FALLBACK_STATUS_CODES:
+                    # Odmowa WAF-a albo limit żądań: powtórzenie tego samego zapytania
+                    # statycznego nic nie zmieni, ale prawdziwa przeglądarka potrafi
+                    # przejść challenge, którego httpx nie wykona.
+                    rendered = self._render(url)
+                    if rendered is not None:
+                        self._last_render_used = True
+                        logger.info(
+                            "Strona %s odmówiła statycznie (HTTP %s) - treść pobrana przeglądarką.",
+                            url, exc.response.status_code,
+                        )
+                        return rendered
+                    raise ScraperError(f"Nie udało się pobrać {url}: {exc}") from exc
                 if exc.response.status_code < 500:
                     raise ScraperError(f"Nie udało się pobrać {url}: {exc}") from exc
                 ostatni_blad = exc
@@ -345,10 +489,8 @@ class SEOScraper:
     def parse(self, html: str, url: str) -> dict:
         soup = BeautifulSoup(html, "html.parser")
 
-        title_tag = soup.find("title")
-        title = title_tag.get_text(strip=True) if title_tag else None
-
-        meta_description = self._get_meta_content(soup, "description")
+        title, title_source = self._extract_title(soup)
+        meta_description, description_source = self._extract_description(soup)
 
         headings = {
             f"h{level}": [h.get_text(strip=True) for h in soup.find_all(f"h{level}")]
@@ -399,8 +541,15 @@ class SEOScraper:
             "url": url,
             "title": title,
             "title_length": len(title) if title else 0,
+            # Skąd pochodzi wartość: "title" / "og:title" / "twitter:title" (i analogicznie
+            # dla opisu) albo None. Bez tej informacji audyt zgłaszałby OK dla strony,
+            # która nie ma tagu <title> - patrz AuditService._evaluate_title.
+            "title_source": title_source,
             "meta_description": meta_description,
             "meta_description_length": len(meta_description) if meta_description else 0,
+            "meta_description_source": description_source,
+            # Czy treść pochodzi z bezgłownej przeglądarki (fallback dla CSR/WAF).
+            "rendered_with_browser": self._last_render_used,
             "meta_keywords_present": meta_keywords_present,
             "headings": headings,
             "h1_count": len(headings["h1"]),
@@ -871,9 +1020,64 @@ class SEOScraper:
         }
 
     def _get_meta_content(self, soup: BeautifulSoup, name: str) -> str | None:
-        tag = soup.find("meta", attrs={"name": name})
-        content = tag.get("content", "").strip() if tag else ""
-        return content or None
+        """Treść `<meta>` o danej nazwie - niewrażliwie na wielkość liter i atrybut.
+
+        HTML nie rozróżnia wielkości liter w nazwach atrybutów ani w wartości `name`,
+        a CMS-y wystawiają `Description`, `DESCRIPTION` czy `og:description` przez
+        `property` zamiast `name`. Dosłowne `soup.find("meta", attrs={"name": name})`
+        pomijało te warianty i audyt zgłaszał brak opisu, który na stronie był.
+
+        Celowo NIE czytamy `itemprop`: `<meta itemprop="description">` wewnątrz bloku
+        mikrodanych opisuje produkt albo artykuł, a nie całą stronę.
+        """
+        szukana = name.lower()
+        for tag in soup.find_all("meta"):
+            klucz = tag.get("name") or tag.get("property") or ""
+            if klucz.strip().lower() != szukana:
+                continue
+            content = (tag.get("content") or "").strip()
+            if content:
+                return content
+        return None
+
+    # Zamienniki tytułu i opisu w kolejności wiarygodności. Pierwszy element to źródło
+    # właściwe, kolejne - awaryjne: strony budowane po stronie klienta oraz część CMS-ów
+    # wypełniają wyłącznie Open Graph, a wyszukiwarki i modele LLM czytają wtedy właśnie
+    # te tagi. Kolejność jest istotna: og:* ma pierwszeństwo przed twitter:*, bo jest
+    # szerzej wspierane.
+    TITLE_FALLBACK_KEYS = ("og:title", "twitter:title")
+    DESCRIPTION_FALLBACK_KEYS = ("og:description", "twitter:description")
+
+    def _extract_title(self, soup: BeautifulSoup) -> tuple[str | None, str | None]:
+        """Zwraca (tytuł, źródło) - źródło to "title", "og:title" albo "twitter:title".
+
+        Źródło wędruje dalej do audytu, bo tytuł wzięty z Open Graph NIE jest tym samym
+        co `<title>`: Google wyświetla w wynikach ten drugi. Zamiennik pozwala pokazać
+        użytkownikowi realną treść strony, ale nie może zamieniać błędu w wynik "OK".
+        """
+        title_tag = soup.find("title")
+        title = title_tag.get_text(strip=True) if title_tag else ""
+        if title:
+            return title, "title"
+
+        for klucz in self.TITLE_FALLBACK_KEYS:
+            wartość = self._get_meta_content(soup, klucz)
+            if wartość:
+                return wartość, klucz
+        return None, None
+
+    def _extract_description(self, soup: BeautifulSoup) -> tuple[str | None, str | None]:
+        """Zwraca (opis, źródło) - źródło to "description", "og:description" albo
+        "twitter:description". Logika źródła jak w `_extract_title`."""
+        opis = self._get_meta_content(soup, "description")
+        if opis:
+            return opis, "description"
+
+        for klucz in self.DESCRIPTION_FALLBACK_KEYS:
+            wartość = self._get_meta_content(soup, klucz)
+            if wartość:
+                return wartość, klucz
+        return None, None
 
     # ------------------------------------------------------------------
     # Analiza obrazków: ALT, title, ASCII w src
