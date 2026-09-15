@@ -1,0 +1,546 @@
+[
+  {
+    "key": "lcp_hero_image_optimization",
+    "category": "performance",
+    "cms_framework": "uniwersalny",
+    "title": "Obraz LCP z atrybutem loading=\"lazy\" i bez priorytetu pobierania",
+    "definition": "LCP (Largest Contentful Paint) mierzy czas wyrysowania największego elementu widocznego w pierwszym oknie - najczęściej banera lub grafiki nagłówkowej. Element ten musi być wykrywalny w surowym HTML natychmiast, bo od niego zależy moment, w którym użytkownik i bot renderujący uznają stronę za wczytaną.",
+    "technical_cause": "Globalny mechanizm szablonu dokleja loading=\"lazy\" do wszystkich znaczników <img>, łącznie z obrazem w pierwszym oknie. Przeglądarka odkłada wtedy pobranie obrazu LCP na koniec kolejki, po skryptach i arkuszach stylów. Dodatkowo obraz bywa wstrzykiwany dopiero przez JavaScript (tło CSS lub komponent karuzeli), przez co skaner wstępny przeglądarki w ogóle go nie widzi w initial HTML.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Usuń loading=\"lazy\" z obrazu stanowiącego element LCP i dodaj do niego fetchpriority=\"high\" - to jedna zmiana w szablonie nagłówka, która zwykle daje największy pojedynczy zysk w LCP.",
+      "Krok 2: Dodaj <link rel=\"preload\" as=\"image\"> z imagesrcset dla obrazu LCP w sekcji <head>, aby skaner wstępny pobrał go równolegle z CSS.",
+      "Krok 3: Zachowaj loading=\"lazy\" dla wszystkich obrazów poniżej pierwszego okna i wymuś to regułą w szablonie (leniwe ładowanie włączane od N-tego obrazu na liście).",
+      "Krok 4: Jeśli obraz LCP jest tłem CSS, przenieś go do znacznika <img> - tła CSS nie są wykrywane przez skaner wstępny i zawsze startują później."
+    ],
+    "code_recipe": "<!-- HEAD: skaner wstępny pobiera obraz LCP równolegle z CSS -->\n<link rel=\"preload\" as=\"image\"\n      href=\"/media/hero-1280.avif\"\n      imagesrcset=\"/media/hero-640.avif 640w,\n                   /media/hero-1280.avif 1280w,\n                   /media/hero-1920.avif 1920w\"\n      imagesizes=\"100vw\"\n      fetchpriority=\"high\">\n\n<!-- BODY: element LCP - BEZ loading=\"lazy\", z jawnymi wymiarami -->\n<img src=\"/media/hero-1280.avif\"\n     srcset=\"/media/hero-640.avif 640w,\n             /media/hero-1280.avif 1280w,\n             /media/hero-1920.avif 1920w\"\n     sizes=\"100vw\"\n     width=\"1920\" height=\"900\"\n     fetchpriority=\"high\"\n     decoding=\"async\"\n     alt=\"Opis zawartości grafiki z frazą kluczową podstrony\">\n\n<!-- Obrazy PONIŻEJ pierwszego okna - dopiero tutaj leniwe ładowanie -->\n<img src=\"/media/sekcja-2.avif\" width=\"800\" height=\"450\"\n     loading=\"lazy\" decoding=\"async\" alt=\"...\">",
+    "geo_impact": "Roboty zasilające modele językowe pracują z twardym budżetem czasu na dokument. Wolny LCP oznacza, że crawler AI częściej przerywa pobieranie przed zbudowaniem pełnego drzewa DOM albo obniża ocenę jakości źródła. Obraz LCP obecny w initial HTML daje też modelowi natychmiastowy dostęp do atrybutu alt, czyli do opisu głównego tematu strony."
+  },
+  {
+    "key": "render_blocking_css_and_fonts",
+    "category": "performance",
+    "cms_framework": "nuxt_js",
+    "title": "Kilkadziesiąt plików CSS i zewnętrzne fonty blokują pierwsze wyrysowanie",
+    "definition": "Zasoby blokujące renderowanie to arkusze stylów i skrypty, które przeglądarka musi pobrać i przetworzyć, zanim wyświetli cokolwiek użytkownikowi. Każdy taki plik wydłuża FCP i LCP o pełny czas rundy sieciowej.",
+    "technical_cause": "Bundler frameworka (Nuxt/Next/Vite) dzieli style na wiele drobnych plików per komponent i wpina je wszystkie jako <link rel=\"stylesheet\"> w <head>. Do tego dochodzi zewnętrzny arkusz Google Fonts, który sam w sobie jest łańcuchem żądań: dokument -> arkusz fontów -> pliki .woff2. W efekcie łańcuch krytyczny ma kilka poziomów, a opóźnienie pierwszego wyrysowania przekracza sekundę.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Wyodrębnij Critical CSS dla pierwszego okna i osadź go inline w <style> w <head>, a pozostałe arkusze wczytaj asynchronicznie wzorcem media=\"print\" + onload.",
+      "Krok 2: Przenieś pliki fontów na własną domenę i wczytaj je przez @font-face z font-display: swap - eliminuje to łańcuch żądań do zewnętrznego dostawcy i niewidoczny tekst (FOIT).",
+      "Krok 3: Dodaj preload dla 1-2 najważniejszych krojów w formacie woff2; nie preloaduj wszystkich odmian, bo konkurują o pasmo z obrazem LCP.",
+      "Krok 4: Zadeklaruj metryki fontu zapasowego (size-adjust, ascent-override), żeby podmiana kroju nie generowała przesunięcia układu liczonego do CLS."
+    ],
+    "code_recipe": "<!-- 1. Critical CSS pierwszego okna - inline, bez żądania sieciowego -->\n<style>\n  :root{--kolor-tla:#fff;--kolor-tekstu:#111}\n  body{margin:0;font-family:\"Inter\",system-ui,sans-serif;background:var(--kolor-tla)}\n  .naglowek{min-height:64px}\n  .hero{min-height:480px}\n</style>\n\n<!-- 2. Reszta stylów asynchronicznie (nie blokuje wyrysowania) -->\n<link rel=\"preload\" href=\"/static/css/main.css\" as=\"style\"\n      onload=\"this.onload=null;this.rel='stylesheet'\">\n<noscript><link rel=\"stylesheet\" href=\"/static/css/main.css\"></noscript>\n\n<!-- 3. Font z własnej domeny + preload TYLKO kroju podstawowego -->\n<link rel=\"preload\" href=\"/static/fonts/inter-regular.woff2\"\n      as=\"font\" type=\"font/woff2\" crossorigin>\n<style>\n  @font-face{\n    font-family:\"Inter\";\n    src:url(\"/static/fonts/inter-regular.woff2\") format(\"woff2\");\n    font-weight:400;\n    font-display:swap;          /* tekst widoczny od razu krojem zapasowym */\n  }\n  /* Metryki zapasowego kroju = brak skoku układu przy podmianie */\n  @font-face{\n    font-family:\"Inter-fallback\";\n    src:local(\"Arial\");\n    size-adjust:107%;\n    ascent-override:90%;\n    descent-override:22%;\n  }\n</style>",
+    "geo_impact": "Crawler AI zwykle nie wykonuje CSS, ale przeładowana sekcja <head> spycha znaczniki meta, canonical i JSON-LD głęboko w dół dokumentu. Parsery działające na limicie pierwszych N kilobajtów mogą do nich nie dotrzeć i potraktować stronę jako pozbawioną metadanych i danych strukturalnych."
+  },
+  {
+    "key": "cls_missing_image_dimensions",
+    "category": "performance",
+    "cms_framework": "uniwersalny",
+    "title": "Przesunięcia układu (CLS) z powodu braku zarezerwowanej przestrzeni",
+    "definition": "CLS (Cumulative Layout Shift) sumuje nieoczekiwane przesunięcia treści w trakcie wczytywania strony. Próg akceptowalny to 0,1 - powyżej tej wartości strona jest klasyfikowana jako niestabilna wizualnie, a użytkownik klika w element, który zdążył już zmienić położenie.",
+    "technical_cause": "Znaczniki <img> i <iframe> nie mają atrybutów width i height, więc przeglądarka rezerwuje im zerową wysokość i rozpycha układ dopiero po pobraniu zasobu. Drugim źródłem są moduły doładowywane asynchronicznie (listy ofert, banery, widżety zewnętrzne) wstrzykiwane w gotowy już układ oraz manipulacje DOM wykonywane przez JavaScript w trakcie wczytywania.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Dopisz atrybuty width i height do KAŻDEGO znacznika <img> i <iframe> w szablonach - przeglądarka wyliczy z nich proporcje i zarezerwuje miejsce przed pobraniem pliku.",
+      "Krok 2: Nadaj kontenerom treści doładowywanej asynchronicznie stałą wysokość minimalną (min-height lub aspect-ratio), żeby moduł wypełniał gotowe miejsce zamiast je tworzyć.",
+      "Krok 3: Wstawiaj banery, powiadomienia o cookies i paski promocyjne jako nakładki (position: fixed/absolute) zamiast elementów w przepływie dokumentu.",
+      "Krok 4: Zarezerwuj miejsce na treść rozwijaną przez interakcję (akordeony, filtry) tak, aby kliknięcie nie przesuwało sekcji położonych poniżej."
+    ],
+    "code_recipe": "<!-- Atrybuty width/height = przeglądarka zna proporcje przed pobraniem pliku -->\n<img src=\"/media/karta-produktu.avif\" width=\"800\" height=\"450\"\n     loading=\"lazy\" decoding=\"async\" alt=\"...\">\n\n<style>\n/* Skalowanie zachowujące zarezerwowane proporcje */\nimg, iframe { max-width: 100%; height: auto; }\n\n/* Kontener listy doładowywanej asynchronicznie - miejsce gotowe od startu */\n.lista-ofert {\n  min-height: 640px;           /* wysokość pierwszej porcji wyników */\n  content-visibility: auto;\n  contain-intrinsic-size: 640px;\n}\n\n/* Kafelek o znanych proporcjach - zero skoku po dociągnięciu grafiki */\n.kafelek-media { aspect-ratio: 16 / 9; background: #f2f4f7; }\n\n/* Pasek informacyjny jako nakładka, NIE element w przepływie dokumentu */\n.pasek-cookies { position: fixed; inset-block-end: 0; inset-inline: 0; z-index: 50; }\n</style>",
+    "geo_impact": "CLS nie jest odczytywany bezpośrednio przez modele językowe, ale jego przyczyna - budowanie treści przez JavaScript po pierwszym wyrysowaniu - jest identyczna z przyczyną niedostępności treści dla crawlerów AI. Kontener, który rozpycha układ, bo dopiero wtedy dostaje dane, jest dla parsera AI pustym elementem."
+  },
+  {
+    "key": "inp_main_thread_blocking",
+    "category": "performance",
+    "cms_framework": "uniwersalny",
+    "title": "Wysoki INP - wątek główny zablokowany przez nadmiar JavaScriptu",
+    "definition": "INP (Interaction to Next Paint) mierzy opóźnienie między akcją użytkownika a kolejnym wyrysowaniem klatki. Próg dobrego wyniku to 200 ms; wartości powyżej 300 ms użytkownik odbiera jako zacinanie się interfejsu.",
+    "technical_cause": "Wątek główny przetwarza kilka megabajtów JavaScriptu, z czego znaczną część stanowi kod nieużywany na danym szablonie oraz skrypty zewnętrzne (analityka, czaty, testy A/B) ładowane synchronicznie. Sama kompilacja i wykonanie zajmują kilka sekund, a długie zadania (powyżej 50 ms) blokują obsługę zdarzeń wejściowych.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Usuń kod nieużywany na danym szablonie - podziel bundle na fragmenty ładowane per trasa (code splitting) zamiast jednego pakietu dla całego serwisu.",
+      "Krok 2: Przenieś skrypty zewnętrzne poza ścieżkę krytyczną: atrybut defer, ładowanie po zdarzeniu interakcji użytkownika albo w web workerze.",
+      "Krok 3: Rozbij długie zadania na porcje z oddaniem sterowania przeglądarce (scheduler.yield lub setTimeout 0), żeby między nimi mogła obsłużyć kliknięcie.",
+      "Krok 4: Odłóż inicjalizację komponentów spoza pierwszego okna do momentu, aż użytkownik do nich doscrolluje (IntersectionObserver)."
+    ],
+    "code_recipe": "<!-- Skrypty zewnętrzne: defer zamiast blokowania parsowania -->\n<script src=\"/static/js/app.js\" defer></script>\n\n<script>\n// Ciężkie skrypty (czat, testy A/B) dopiero po pierwszej interakcji\nconst zaladujPoInterakcji = (src) => {\n  let zaladowany = false;\n  const uruchom = () => {\n    if (zaladowany) return;\n    zaladowany = true;\n    const s = document.createElement(\"script\");\n    s.src = src; s.async = true;\n    document.head.appendChild(s);\n  };\n  [\"pointerdown\", \"keydown\", \"scroll\"].forEach(\n    (zdarzenie) => addEventListener(zdarzenie, uruchom, { once: true, passive: true })\n  );\n  setTimeout(uruchom, 8000);  // zabezpieczenie dla użytkowników bez interakcji\n};\nzaladujPoInterakcji(\"https://cdn.przyklad.pl/widget.js\");\n\n// Rozbijanie długiego zadania - oddaj sterowanie, żeby obsłużyć kliknięcie\nasync function przetworzWsad(elementy) {\n  for (let i = 0; i < elementy.length; i++) {\n    przetworzJeden(elementy[i]);\n    if (i % 50 === 0) {\n      await (scheduler?.yield?.() ?? new Promise((r) => setTimeout(r, 0)));\n    }\n  }\n}\n\n// Inicjalizacja komponentu dopiero, gdy wjedzie w widok\nnew IntersectionObserver(([wpis], obserwator) => {\n  if (!wpis.isIntersecting) return;\n  obserwator.disconnect();\n  import(\"/static/js/karuzela.js\").then((m) => m.init(wpis.target));\n}).observe(document.querySelector(\".karuzela\"));\n</script>",
+    "geo_impact": "Crawler AI renderujący stronę w bezgłownej przeglądarce ma limit czasu na dokument. Wątek główny zajęty przez kilka sekund kompilacją JavaScriptu oznacza, że snapshot DOM zostanie pobrany przed dorysowaniem treści - model dostaje szkielet aplikacji zamiast faktów."
+  },
+  {
+    "key": "image_next_gen_formats_and_sizing",
+    "category": "performance",
+    "cms_framework": "uniwersalny",
+    "title": "Grafiki w starych formatach i rozdzielczości wielokrotnie większej niż kontener",
+    "definition": "Obrazy stanowią zwykle największą część transferu strony i bezpośrednio decydują o LCP. Format nowej generacji (WebP/AVIF) daje 25-50% oszczędności przy tej samej jakości wizualnej w porównaniu z JPEG/PNG.",
+    "technical_cause": "CMS serwuje plik oryginalny wgrany przez redakcję, bez wariantów rozdzielczości. Grafika o szerokości 700 px jest skalowana przez CSS do kontenera 264 px, więc ponad 85% pobranych pikseli nigdy nie trafia na ekran. Brak elementu <picture> lub atrybutu srcset uniemożliwia przeglądarce wybór wariantu dopasowanego do urządzenia.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Włącz w CMS automatyczną konwersję do AVIF i WebP przy uploadzie, z zachowaniem oryginału jako wariantu zapasowego.",
+      "Krok 2: Generuj zestaw szerokości (np. 480/768/1200/1920 px) i serwuj je przez srcset + sizes, żeby telefon nie pobierał wariantu desktopowego.",
+      "Krok 3: Poddaj kompresji bezstratnej wszystkie pliki przekraczające 100 kB - to najczęściej spotykany próg, powyżej którego grafika wymiernie opóźnia wczytywanie.",
+      "Krok 4: Ustaw długi czas życia w pamięci podręcznej dla zasobów statycznych i wersjonuj je w nazwie pliku (hash), żeby cache nie wymagał unieważniania."
+    ],
+    "code_recipe": "<!-- Element <picture>: AVIF -> WebP -> format zapasowy -->\n<picture>\n  <source type=\"image/avif\"\n          srcset=\"/media/karta-480.avif 480w,\n                  /media/karta-768.avif 768w,\n                  /media/karta-1200.avif 1200w\"\n          sizes=\"(max-width: 768px) 100vw, 400px\">\n  <source type=\"image/webp\"\n          srcset=\"/media/karta-480.webp 480w,\n                  /media/karta-768.webp 768w,\n                  /media/karta-1200.webp 1200w\"\n          sizes=\"(max-width: 768px) 100vw, 400px\">\n  <img src=\"/media/karta-768.jpg\"\n       width=\"768\" height=\"432\"\n       loading=\"lazy\" decoding=\"async\"\n       alt=\"Opis zawartości grafiki\">\n</picture>\n\n# Nginx: długi cache dla zasobów wersjonowanych hashem w nazwie\nlocation ~* \\.(avif|webp|jpg|png|svg|woff2|css|js)$ {\n    add_header Cache-Control \"public, max-age=31536000, immutable\";\n    access_log off;\n}",
+    "geo_impact": "Lekka, szybko dostarczona strona pozwala crawlerowi AI pobrać więcej dokumentów z tej samej domeny w ramach budżetu. Wariant <picture> nie zmienia natomiast treści dla modelu - nośnikiem znaczenia pozostaje atrybut alt, który musi opisywać zawartość grafiki zdaniem, a nie nazwą pliku."
+  },
+  {
+    "key": "forced_reflow_layout_thrashing",
+    "category": "performance",
+    "cms_framework": "uniwersalny",
+    "title": "Wymuszone przeformatowanie układu (layout thrashing) przez skrypty",
+    "definition": "Wymuszony reflow powstaje, gdy skrypt odczytuje właściwość geometryczną elementu (offsetHeight, getBoundingClientRect) bezpośrednio po zapisie do DOM. Przeglądarka musi wtedy natychmiast przeliczyć układ całego dokumentu, zamiast zrobić to raz na końcu klatki.",
+    "technical_cause": "Pętla naprzemiennie czyta i zapisuje właściwości układu - typowo przy wyrównywaniu wysokości kafelków, pozycjonowaniu podpowiedzi lub inicjalizacji karuzeli. Każda iteracja unieważnia wyliczony układ, więc koszt rośnie kwadratowo z liczbą elementów i objawia się jako 'klatkowanie' przy wczytywaniu oraz podbite INP i CLS.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Rozdziel fazy - najpierw odczytaj wszystkie potrzebne wymiary do tablicy, dopiero potem wykonaj wszystkie zapisy do DOM.",
+      "Krok 2: Przenieś zapisy do requestAnimationFrame, żeby trafiły w jedną klatkę renderowania.",
+      "Krok 3: Zastąp ręczne wyrównywanie wysokości mechanizmami CSS (grid, flexbox, aspect-ratio) - układ liczony przez silnik nie generuje reflow z poziomu skryptu.",
+      "Krok 4: Odizoluj kosztowne sekcje właściwościami contain i content-visibility, aby przeliczenie układu nie propagowało się na cały dokument."
+    ],
+    "code_recipe": "// ŹLE - odczyt i zapis na przemian wymusza reflow w każdej iteracji\nelementy.forEach((el) => {\n  el.style.height = el.offsetHeight + 20 + \"px\";   // read -> write -> read...\n});\n\n// DOBRZE - faza odczytu, potem faza zapisu w jednej klatce\nconst wysokosci = elementy.map((el) => el.offsetHeight);   // wszystkie odczyty\nrequestAnimationFrame(() => {\n  elementy.forEach((el, i) => {                            // wszystkie zapisy\n    el.style.height = wysokosci[i] + 20 + \"px\";\n  });\n});\n\n/* Najlepiej: wyrównanie bez udziału JavaScriptu */\n.siatka-kafelkow {\n  display: grid;\n  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));\n  align-items: stretch;      /* równe wysokości bez pomiarów w JS */\n}\n\n/* Izolacja kosztownych sekcji poza pierwszym oknem */\n.sekcja-ciezka {\n  content-visibility: auto;\n  contain-intrinsic-size: 800px;\n}",
+    "geo_impact": "Layout thrashing wydłuża czas do stanu, w którym DOM jest kompletny. Crawler AI pobierający snapshot po stałym czasie oczekiwania otrzymuje wtedy dokument w trakcie przebudowy - z pustymi kontenerami w miejscu danych, które miały być zacytowane."
+  },
+  {
+    "key": "js_pagination_button_blocks_crawl",
+    "category": "indexation",
+    "cms_framework": "uniwersalny",
+    "title": "Przycisk \"Pokaż więcej\" zamiast odnośnika odcina głębsze warstwy katalogu",
+    "definition": "Doczytywanie treści przyciskiem (infinite scroll, \"load more\") wczytuje kolejne elementy bez zmiany adresu URL. Roboty wyszukiwarek i agenty AI nie klikają w przyciski ani nie wypełniają formularzy, więc widzą wyłącznie pierwszą porcję wyników.",
+    "technical_cause": "Mechanizm paginacji jest zbudowany na elemencie <button type=\"button\"> obsługiwanym przez zdarzenie click, które pobiera dane fetchem i dokleja je do listy. W kodzie źródłowym nie istnieje żaden atrybut href prowadzący do strony 2, a adres w pasku przeglądarki pozostaje niezmieniony. Efekt: z katalogu liczącego ~100 pozycji zaindeksowanych zostaje ~25, a archiwum wyników ogranicza się do pierwszych 10 rekordów.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Zamień przycisk na klasyczny odnośnik <a href=\"?page=2\"> - element ma prowadzić pod działający adres także z wyłączonym JavaScriptem.",
+      "Krok 2: Utrzymaj wygodę użytkownika: przechwyć kliknięcie skryptem, doczytaj dane asynchronicznie i zaktualizuj adres przez history.pushState, żeby stan był linkowalny i odświeżalny.",
+      "Krok 3: Zapewnij, że adres ?page=N wyrenderowany po stronie serwera zwraca pełną, samodzielną listę - to ten wariant zobaczy crawler.",
+      "Krok 4: Wystaw w <head> odnośniki rel=\"next\" i rel=\"prev\" oraz dodaj podstrony paginacji do mapy witryny."
+    ],
+    "code_recipe": "<!-- Progresywne ulepszanie: działa bez JS, wygodne z JS -->\n<nav class=\"paginacja\" aria-label=\"Paginacja katalogu\">\n  <a class=\"paginacja-wiecej\" href=\"?page=2\" rel=\"next\" data-paginacja>\n    Pokaż więcej\n  </a>\n</nav>\n\n<script>\ndocument.addEventListener(\"click\", async (zdarzenie) => {\n  const link = zdarzenie.target.closest(\"[data-paginacja]\");\n  if (!link) return;\n  zdarzenie.preventDefault();\n\n  const odpowiedz = await fetch(link.href, { headers: { \"X-Requested-With\": \"fetch\" } });\n  const html = await odpowiedz.text();\n  const dokument = new DOMParser().parseFromString(html, \"text/html\");\n\n  document.querySelector(\".lista\").append(...dokument.querySelectorAll(\".lista > *\"));\n\n  const nastepny = dokument.querySelector(\"[data-paginacja]\");\n  if (nastepny) {\n    link.href = nastepny.href;\n    history.pushState({}, \"\", nastepny.href);   // adres linkowalny i odświeżalny\n  } else {\n    link.remove();\n  }\n});\n</script>\n\n<!-- HEAD każdej podstrony paginacji -->\n<link rel=\"prev\" href=\"https://www.klient-a.pl/katalog?page=1\">\n<link rel=\"next\" href=\"https://www.klient-a.pl/katalog?page=3\">",
+    "geo_impact": "Model językowy odpowiadający na pytanie o pełną ofertę albo o wynik historyczny sięga wyłącznie po dokumenty, do których prowadzi adres URL. Asortyment i archiwum dostępne tylko po kliknięciu nie istnieją w bazie wiedzy modelu - odpowiedź zostanie zbudowana ze źródeł konkurencji, które udostępniły te dane pod adresami."
+  },
+  {
+    "key": "pagination_canonical_and_metadata",
+    "category": "indexation",
+    "cms_framework": "uniwersalny",
+    "title": "Podstrony paginacji dziedziczą canonical, title i opis kategorii",
+    "definition": "Każda podstrona stronicowania jest samodzielnym dokumentem prezentującym inny zestaw elementów. Wskazanie kanonicznym adresem na stronę pierwszą albo powielenie na niej tych samych metadanych sprawia, że wyszukiwarka odrzuca ją jako duplikat i nie indeksuje jej zawartości.",
+    "technical_cause": "Szablon kategorii generuje tag canonical, znacznik <title>, nagłówek H1 i opis SEO z obiektu kategorii, bez uwzględnienia numeru strony w adresie. W rezultacie wszystkie warianty ?page=N mają identyczne metadane i wskazują kanonicznie na wariant bez parametru.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Ustaw self-canonical - każda podstrona paginacji wskazuje w tagu kanonicznym na samą siebie wraz z parametrem strony.",
+      "Krok 2: Pozostaw dyrektywę <meta name=\"robots\" content=\"index, follow\"> na wszystkich podstronach paginacji; noindex odcina ścieżkę crawlowania do głębszych elementów.",
+      "Krok 3: Buduj title i H1 dynamicznie według schematu \"[nazwa kategorii] - strona [N]\", żeby wyeliminować duplikację przy zachowaniu czytelności.",
+      "Krok 4: Wyświetlaj opis SEO kategorii wyłącznie na stronie pierwszej - powielony na kolejnych osłabia unikalność wszystkich wariantów."
+    ],
+    "code_recipe": "{# Szablon Django - metadane podstrony paginacji #}\n{% raw %}<link rel=\"canonical\" href=\"{{ request.build_absolute_uri }}\">\n<meta name=\"robots\" content=\"index, follow\">\n\n<title>\n  {% if page_obj.number > 1 %}\n    {{ kategoria.nazwa }} - strona {{ page_obj.number }} - {{ marka }}\n  {% else %}\n    {{ kategoria.title_seo }} - {{ marka }}\n  {% endif %}\n</title>\n\n{% if page_obj.has_previous %}\n  <link rel=\"prev\" href=\"?page={{ page_obj.previous_page_number }}\">\n{% endif %}\n{% if page_obj.has_next %}\n  <link rel=\"next\" href=\"?page={{ page_obj.next_page_number }}\">\n{% endif %}\n\n<h1>\n  {{ kategoria.nazwa }}{% if page_obj.number > 1 %} - strona {{ page_obj.number }}{% endif %}\n</h1>\n\n{# Opis kategorii TYLKO na pierwszej stronie - inaczej duplikacja #}\n{% if page_obj.number == 1 %}\n  <div class=\"opis-kategorii\">{{ kategoria.opis|safe }}</div>\n{% endif %}{% endraw %}",
+    "geo_impact": "Unikalny title i H1 z numerem strony pozwalają modelowi odróżnić \"pierwsze 20 pozycji\" od \"pozycji 81-100\" i poprawnie zacytować konkretny fragment katalogu. Bez tego wszystkie podstrony wyglądają dla modelu jak ten sam dokument i tylko jedna z nich trafia do bazy wiedzy."
+  },
+  {
+    "key": "sitemap_index_segmentation",
+    "category": "indexation",
+    "cms_framework": "uniwersalny",
+    "title": "Jedna nieaktualizowana mapa witryny z adresami 404, 301 i zablokowanymi w robots.txt",
+    "definition": "Mapa witryny to deklaracja adresów, które właściciel serwisu uważa za wartościowe i gotowe do indeksacji. Zawartość niespójna ze stanem faktycznym obniża zaufanie do całego pliku i utrudnia diagnostykę w Search Console.",
+    "technical_cause": "Mapa została wygenerowana jednorazowo jako statyczny plik i nie odświeża się przy publikacji ani usuwaniu treści. Z czasem trafiły do niej adresy usunięte (404), przeniesione (301), wykluczone tagiem kanonicznym oraz zablokowane w robots.txt. Przy dużym serwisie jeden zbiorczy plik uniemożliwia też ustalenie, którego segmentu dotyczy problem raportowany przez Search Console.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Zastąp plik statyczny generatorem działającym na żywo na bazie modelu treści - do mapy trafia wyłącznie adres ze statusem 200, dyrektywą index i self-canonical.",
+      "Krok 2: Podziel mapę na indeks map tematycznych (kategorie, produkty, wyniki, blog, strony informacyjne) - każdy segment diagnozuje się wtedy osobno.",
+      "Krok 3: Wypełniaj lastmod realną datą modyfikacji rekordu, nie datą wygenerowania pliku - fałszywy lastmod jest ignorowany przez wyszukiwarki.",
+      "Krok 4: Dodaj test regresyjny weryfikujący, że żaden adres z mapy nie zwraca statusu innego niż 200 i nie jest zablokowany w robots.txt."
+    ],
+    "code_recipe": "# Django - indeks map witryn z podziałem tematycznym\n# config/urls.py\nfrom django.contrib.sitemaps.views import index, sitemap\nfrom katalog.sitemaps import KategorieSitemap, ProduktySitemap, BlogSitemap, StronySitemap\n\nSITEMAPS = {\n    \"kategorie\": KategorieSitemap,\n    \"produkty\": ProduktySitemap,\n    \"blog\": BlogSitemap,\n    \"strony\": StronySitemap,\n}\n\nurlpatterns = [\n    path(\"sitemap.xml\", index, {\"sitemaps\": SITEMAPS}, name=\"sitemap-index\"),\n    path(\"sitemap-<section>.xml\", sitemap, {\"sitemaps\": SITEMAPS},\n         name=\"django.contrib.sitemaps.views.sitemap\"),\n]\n\n# katalog/sitemaps.py\nclass ProduktySitemap(Sitemap):\n    changefreq = \"weekly\"\n    protocol = \"https\"\n\n    def items(self):\n        # Do mapy trafia WYŁĄCZNIE to, co faktycznie ma być zaindeksowane\n        return (Produkt.objects\n                .filter(opublikowany=True, noindex=False, kanoniczny_do__isnull=True)\n                .order_by(\"-zmodyfikowano\"))\n\n    def lastmod(self, obj):\n        return obj.zmodyfikowano      # realna data zmiany, nie data generowania pliku",
+    "geo_impact": "Mapa witryny bywa pierwszym punktem wejścia crawlerów AI, które nie mają tak rozbudowanego mechanizmu odkrywania linków jak Googlebot. Czysty, aktualny plik z podziałem tematycznym pozwala im szybko zmapować całą bazę wiedzy serwisu zamiast błądzić po nawigacji."
+  },
+  {
+    "key": "url_non_ascii_and_uppercase",
+    "category": "indexation",
+    "cms_framework": "uniwersalny",
+    "title": "Adresy URL ze znakami diakrytycznymi i wielkimi literami",
+    "definition": "Adres URL powinien składać się wyłącznie ze znaków ASCII, małych liter i myślników jako separatorów. Znaki spoza ASCII są konwertowane do percent-encoding (np. ł jako %C5%82), a wielkie litery tworzą ryzyko traktowania dwóch wariantów jako odrębnych dokumentów.",
+    "technical_cause": "CMS buduje slug bezpośrednio z tytułu wpisanego przez redakcję, bez transliteracji i normalizacji wielkości liter. Ten sam brak walidacji dotyczy nazw plików wgrywanych do biblioteki mediów - stąd ścieżki z polskimi znakami, spacjami i podkreśleniami. Zakodowane procentowo adresy łamią się w komunikatorach i na forach, generując błędy 404 i utratę mocy linkowania.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Wymuś w CMS transliterację do ASCII, konwersję na małe litery i zamianę spacji oraz podkreśleń na myślniki - zarówno dla slugów podstron, jak i dla nazw plików przy uploadzie.",
+      "Krok 2: Ogranicz długość adresu do ok. 115 znaków i liczbę katalogów, przenosząc doprecyzowanie do ostatniego segmentu.",
+      "Krok 3: Każdy opublikowany i zaindeksowany adres zmieniony w ramach porządkowania zabezpiecz stałym przekierowaniem 301 w relacji 1:1.",
+      "Krok 4: Dla plików graficznych stosuj nowy standard od razu przy uploadzie; masowa przebudowa starych ścieżek zwykle nie jest warta ryzyka modyfikacji istniejących treści."
+    ],
+    "code_recipe": "# Django - normalizacja slugów i nazw plików do ASCII\nfrom django.utils.text import slugify\nfrom django.db import models\nimport unicodedata, os\n\ndef slug_ascii(tekst: str) -> str:\n    \"\"\"Transliteracja PL -> ASCII, małe litery, myślniki jako separatory.\"\"\"\n    mapa = str.maketrans(\"ąćęłńóśźżĄĆĘŁŃÓŚŹŻ\", \"acelnoszzACELNOSZZ\")\n    return slugify(tekst.translate(mapa), allow_unicode=False)[:115]\n\n\ndef nazwa_pliku_ascii(instance, filename: str) -> str:\n    trzon, rozszerzenie = os.path.splitext(filename)\n    return f\"media/{slug_ascii(trzon)}{rozszerzenie.lower()}\"\n\n\nclass Produkt(models.Model):\n    nazwa = models.CharField(max_length=200)\n    slug = models.SlugField(max_length=115, unique=True, editable=False)\n    zdjecie = models.ImageField(upload_to=nazwa_pliku_ascii)\n\n    def save(self, *args, **kwargs):\n        self.slug = slug_ascii(self.nazwa)\n        super().save(*args, **kwargs)\n\n# Nginx - jednolite przekierowanie wariantów z wielkimi literami\n# (wymaga modułu perl lub mapy; alternatywnie middleware w aplikacji)\nlocation ~ [A-Z] {\n    rewrite ^/(.*)$ /$1 permanent;   # uzupełnić o lowercase po stronie aplikacji\n}",
+    "geo_impact": "Część parserów zasilających modele językowe błędnie obsługuje percent-encoding i pomija takie dokumenty w całości. Adres z polskim znakiem potrafi oznaczać zerową obecność wartościowego artykułu w odpowiedziach generatywnych, mimo poprawnej indeksacji w wyszukiwarce."
+  },
+  {
+    "key": "redirect_chain_and_domain_canonicalization",
+    "category": "indexation",
+    "cms_framework": "uniwersalny",
+    "title": "Łańcuchy przekierowań i serwis dostępny pod wieloma adresami głównymi",
+    "definition": "Serwis powinien odpowiadać pod jednym adresem kanonicznym, a każdy wariant (http, bez www, z ukośnikiem końcowym) przekierowywać na niego JEDNYM skokiem 301. Każdy dodatkowy skok to kolejna runda sieciowa i rozproszenie sygnałów rankingowych.",
+    "technical_cause": "Reguły przekierowań powstawały warstwami: osobno wymuszenie HTTPS, osobno dodanie www, osobno normalizacja ukośnika. Ich złożenie daje łańcuch http://domena -> https://domena -> https://www.domena zamiast pojedynczego skoku. Dodatkowo przekierowania tymczasowe (302) nie przekazują pełnej mocy, a osierocone subdomeny (np. wersja mobilna) potrafią kierować na zewnętrzne serwisy skracania adresów.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Zbuduj jedną regułę na poziomie serwera, która dowolny wariant wejściowy sprowadza do adresu docelowego pojedynczym 301 - bez kaskady osobnych reguł.",
+      "Krok 2: Zamień wszystkie przekierowania 302 na 301 wszędzie tam, gdzie zmiana adresu jest trwała.",
+      "Krok 3: Ujednolić obsługę ukośnika końcowego (jedna konwencja dla całego serwisu) i przekierować wariant odrzucony.",
+      "Krok 4: Zinwentaryzuj subdomeny; osierocone (m., old., test.) przekieruj na stronę główną lub wyłącz, zamiast pozostawiać je wskazujące na zewnętrzne usługi."
+    ],
+    "code_recipe": "# Nginx - JEDEN skok 301 z każdego wariantu na adres kanoniczny\nserver {\n    listen 80;\n    listen 443 ssl http2;\n    server_name klient-a.pl www.klient-a.pl m.klient-a.pl;\n\n    # Warunek łączny: brak HTTPS LUB host inny niż kanoniczny\n    if ($scheme != \"https\") { set $wymaga_przekierowania 1; }\n    if ($host != \"www.klient-a.pl\") { set $wymaga_przekierowania 1; }\n    if ($wymaga_przekierowania = 1) {\n        return 301 https://www.klient-a.pl$request_uri;   # jeden skok, nie łańcuch\n    }\n\n    # Ujednolicenie ukośnika końcowego - konwencja: BEZ ukośnika\n    rewrite ^/(.*)/$ /$1 permanent;\n\n    location / { proxy_pass http://aplikacja; }\n}",
+    "geo_impact": "Crawlery AI zwykle podążają za mniejszą liczbą przekierowań niż Googlebot i częściej porzucają dokument w połowie łańcucha. Pojedynczy skok gwarantuje, że treść w ogóle trafi do przetworzenia, a sygnały autorytetu nie rozproszą się między warianty adresu."
+  },
+  {
+    "key": "tiles_without_anchor_orphan_pages",
+    "category": "indexation",
+    "cms_framework": "react",
+    "title": "Kafelki katalogu bez znacznika <a href> - karty produktów osierocone",
+    "definition": "Ścieżka crawlowania powstaje wyłącznie z odnośników <a href> obecnych w kodzie HTML. Kafelek obsługiwany zdarzeniem onClick i programową nawigacją nie jest dla robota linkiem, więc strona docelowa pozostaje nieosiągalna z poziomu katalogu.",
+    "technical_cause": "Komponent karty implementuje przejście przez onClick z router.push() na kontenerze <div>. Wizualnie zachowuje się jak link (kursor, podświetlenie), ale w drzewie DOM nie ma atrybutu href. W efekcie jedyną ścieżką do kart pozostaje menu górne o kilkunastu pozycjach, a katalog nie przekazuje im mocy z linkowania wewnętrznego.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Opakuj każdy kafelek w prawdziwy <a href=\"adres-docelowy\"> - programową nawigację zostaw jako wzbogacenie, nie jako jedyny mechanizm.",
+      "Krok 2: Umieść na kafelku nazwę elementu jako tekst w nagłówku odpowiedniego poziomu (najczęściej <h3>), zamiast przekazywać ją wyłącznie atrybutem alt grafiki.",
+      "Krok 3: Wyrenderuj w initial HTML pełny katalog (z loading=\"lazy\" na grafikach) albo udostępnij klasyczną paginację na parametrach URL.",
+      "Krok 4: Zweryfikuj wynik przeglądając kod źródłowy z wyłączonym JavaScriptem - każda karta musi być osiągalna odnośnikiem."
+    ],
+    "code_recipe": "// ŹLE - kafelek bez href, niewidoczny dla robotów i agentów AI\n<div className=\"kafelek\" onClick={() => router.push(`/katalog/${item.slug}`)}>\n  <img src={item.grafika} alt={item.nazwa} />\n</div>\n\n// DOBRZE - prawdziwy odnośnik, nazwa jako tekst w nagłówku\n<article className=\"kafelek\">\n  <a className=\"kafelek-link\" href={`/katalog/${item.slug}`}>\n    <img src={item.grafika} width=\"450\" height=\"255\"\n         loading=\"lazy\" decoding=\"async\" alt={item.opisGrafiki} />\n    <h3 className=\"kafelek-nazwa\">{item.nazwa}</h3>\n  </a>\n  <p className=\"kafelek-meta\">Główna wygrana: {item.nagrodaGlowna}</p>\n</article>\n\n/* Cały kafelek pozostaje klikalny - bez rezygnacji z href */\n.kafelek { position: relative; }\n.kafelek-link::after { content: \"\"; position: absolute; inset: 0; }",
+    "geo_impact": "Karta produktu nieosiągalna odnośnikiem nie trafia do bazy wiedzy modelu. Na pytanie o konkretny produkt z oferty model odpowie na podstawie stron trzecich - porównywarek i forów - które opisują go z drugiej ręki i bez kontroli marki nad treścią."
+  },
+  {
+    "key": "robots_ai_bot_access_control",
+    "category": "indexation",
+    "cms_framework": "uniwersalny",
+    "title": "Weryfikacja dostępu robotów AI w robots.txt i nagłówku X-Robots-Tag",
+    "definition": "Obecność w odpowiedziach generatywnych wymaga zgody na skanowanie przez agenty modeli językowych. Blokada w robots.txt lub nagłówek X-Robots-Tag z dyrektywą noindex wyklucza domenę z odpowiedzi AI niezależnie od jakości treści.",
+    "technical_cause": "Domyślne reguły WAF i CDN oraz szablony robots.txt powstałe przed 2023 rokiem nie znają identyfikatorów GPTBot, ClaudeBot, PerplexityBot czy Google-Extended - część infrastruktury odrzuca je regułą domyślną dla nieznanych automatów. Osobnym przypadkiem jest Google-Extended: nie jest crawlerem, lecz przełącznikiem zgody na wykorzystanie treści w odpowiedziach AI, więc jego blokada nie wpływa na zwykłą indeksację, ale wyklucza serwis z AI Overviews.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Zweryfikuj rzeczywisty stan symulacją żądania z podmienionym nagłówkiem User-Agent (cURL) - liczy się kod odpowiedzi z produkcji, nie deklaracja w pliku.",
+      "Krok 2: Sprawdź osobno robots.txt i nagłówek HTTP X-Robots-Tag - dyrektywa serwerowa bywa niewidoczna w kodzie HTML i potrafi unieważniać zgodę z pliku.",
+      "Krok 3: Wypisz w robots.txt jawne reguły Allow dla agentów AI, na których ci zależy, zamiast polegać na regule domyślnej.",
+      "Krok 4: Powtórz test na każdym typie szablonu (strona główna, karta produktu, artykuł, wyniki) - ochrona przed botami bywa konfigurowana per ścieżka."
+    ],
+    "code_recipe": "# 1. Weryfikacja z terminala - liczy się kod odpowiedzi produkcji\nfor BOT in \"GPTBot\" \"ClaudeBot\" \"PerplexityBot\" \"Google-Extended\" \"Googlebot\"; do\n  echo -n \"$BOT -> \"\n  curl -s -o /dev/null -w \"%{http_code}\\n\" \\\n       -A \"$BOT\" -I \"https://www.klient-a.pl/\"\ndone\n\n# 2. Kontrola nagłówka serwerowego (niewidoczny w kodzie HTML)\ncurl -sI -A \"GPTBot\" https://www.klient-a.pl/ | grep -i \"x-robots-tag\"\n\n# 3. robots.txt - jawna zgoda zamiast reguły domyślnej\nUser-agent: Googlebot\nAllow: /\n\nUser-agent: Google-Extended     # zgoda na użycie treści w Gemini i AI Overviews\nAllow: /\n\nUser-agent: GPTBot\nAllow: /\n\nUser-agent: ClaudeBot\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /\n\nUser-agent: *\nDisallow: /koszyk/\nDisallow: /szukaj/\nAllow: /\n\nSitemap: https://www.klient-a.pl/sitemap.xml",
+    "geo_impact": "To warunek konieczny całej strategii GEO. Każda optymalizacja treści pod modele językowe jest bezwartościowa, jeśli agent nie otrzyma statusu 200. Google-Extended zasługuje na osobną uwagę, bo jego blokada jest niewidoczna w klasycznych raportach indeksacji, a odcina serwis od AI Overviews."
+  },
+  {
+    "key": "temporary_redirect_302_instead_of_301",
+    "category": "indexation",
+    "cms_framework": "uniwersalny",
+    "title": "Przekierowania tymczasowe 302 tam, gdzie zmiana jest trwała",
+    "definition": "Kod 301 oznacza przeniesienie stałe i przekazuje sygnały rankingowe na nowy adres. Kod 302 informuje o zmianie tymczasowej - wyszukiwarka utrzymuje wtedy w indeksie adres źródłowy i nie konsoliduje na nowym adresie autorytetu ani linków.",
+    "technical_cause": "Domyślną odpowiedzią wielu frameworków i wtyczek jest 302 (w Django redirect() bez permanent=True, w PHP header(\"Location:\") bez jawnego kodu). Reguła wpisana \"na chwilę\" przy migracji treści zostaje na stałe, bo nic nie sygnalizuje problemu - użytkownik trafia we właściwe miejsce.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Przeskanuj serwis crawlerem i wypisz wszystkie odpowiedzi 302 - każdą, która dotyczy trwale przeniesionej treści, zamień na 301.",
+      "Krok 2: Utrzymaj relację 1:1 - stary adres na odpowiadającą mu tematycznie nową stronę, nigdy hurtowo na stronę główną, bo taki skok bywa traktowany jako miękki 404.",
+      "Krok 3: Zostaw 302 wyłącznie tam, gdzie zmiana faktycznie jest tymczasowa (przerwa techniczna, testy A/B, przekierowanie na podstawie geolokalizacji).",
+      "Krok 4: Wprowadź regułę przeglądu: każda nowa reguła 302 wymaga uzasadnienia w komentarzu z datą wygaśnięcia."
+    ],
+    "code_recipe": "# Django - przeniesienie TRWAŁE\nfrom django.shortcuts import redirect\nfrom django.views.generic import RedirectView\n\ndef stary_adres(request):\n    return redirect(\"katalog:szczegoly\", slug=\"nowy-slug\", permanent=True)  # 301\n\n# W urls.py - bez pisania widoku\npath(\"stara-sciezka/\",\n     RedirectView.as_view(pattern_name=\"katalog:lista\", permanent=True)),\n\n# Nginx - mapa przekierowań 1:1 dla migracji treści\nmap $request_uri $nowy_adres {\n    /stara-kategoria/produkt-a   /katalog/produkt-a;\n    /stara-kategoria/produkt-b   /katalog/produkt-b;\n    default                      \"\";\n}\n\nserver {\n    if ($nowy_adres != \"\") {\n        return 301 https://www.klient-a.pl$nowy_adres;\n    }\n}",
+    "geo_impact": "Agenty AI budują bazę wiedzy z adresów kanonicznych. Przekierowanie 302 utrzymuje w ich indeksie stary adres, przez co cytowania i odniesienia rozpraszają się między dwie wersje tego samego dokumentu i żadna nie osiąga progu autorytetu."
+  },
+  {
+    "key": "schema_graph_organization_website",
+    "category": "schema_org",
+    "cms_framework": "uniwersalny",
+    "title": "Brak encji Organization i WebSite spiętych w graf @graph",
+    "definition": "Organization odpowiada na pytanie \"kto publikuje\", WebSite opisuje witrynę jako całość, a WebPage - konkretny dokument. Spięcie ich w jeden blok @graph referencjami @id tworzy spójną encję marki zamiast zbioru luźnych obiektów.",
+    "technical_cause": "Dane strukturalne wdrażane są punktowo, per szablon, przez różne wtyczki - każda generuje własny, zamknięty blok JSON-LD i powiela pełną definicję firmy na każdej podstronie. Bez referencji @id wyszukiwarka i model językowy nie mają jak ustalić, że opisy z różnych podstron dotyczą tej samej organizacji.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Zbuduj jeden blok @graph na stronie głównej zawierający Organization, WebSite i WebPage, gdzie każda encja ma stabilne @id w formie adres-domeny#nazwa-encji.",
+      "Krok 2: Na pozostałych podstronach nie powielaj pełnej definicji firmy - odwołuj się do niej referencją {\"@id\": \"https://www.klient-a.pl/#organization\"}.",
+      "Krok 3: Wypełnij sameAs kompletem profili zewnętrznych, w tym Wikipedią i Wikidata, jeśli marka je posiada - to najsilniejszy sygnał tożsamości encji.",
+      "Krok 4: Dodaj knowsAbout z listą obszarów kompetencji jako obiekty Thing z własnymi sameAs; to mapa tematów, w których marka ma prawo być cytowana."
+    ],
+    "code_recipe": "<!-- Strona GŁÓWNA - jeden graf spinający tożsamość marki -->\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@graph\": [\n    {\n      \"@type\": \"Organization\",\n      \"@id\": \"https://www.klient-a.pl/#organization\",\n      \"name\": \"Marka A\",\n      \"legalName\": \"Firma A sp. z o.o.\",\n      \"url\": \"https://www.klient-a.pl/\",\n      \"logo\": {\n        \"@type\": \"ImageObject\",\n        \"@id\": \"https://www.klient-a.pl/#logo\",\n        \"url\": \"https://www.klient-a.pl/static/logo.svg\",\n        \"width\": 512, \"height\": 512,\n        \"caption\": \"Marka A\"\n      },\n      \"image\": { \"@id\": \"https://www.klient-a.pl/#logo\" },\n      \"address\": {\n        \"@type\": \"PostalAddress\",\n        \"streetAddress\": \"ul. Przykladowa 1\",\n        \"postalCode\": \"00-001\",\n        \"addressLocality\": \"Warszawa\",\n        \"addressCountry\": \"PL\"\n      },\n      \"contactPoint\": [{\n        \"@type\": \"ContactPoint\",\n        \"contactType\": \"customer service\",\n        \"telephone\": \"+48 22 000 00 00\",\n        \"areaServed\": \"PL\",\n        \"availableLanguage\": \"pl\"\n      }],\n      \"sameAs\": [\n        \"https://www.facebook.com/markaa\",\n        \"https://www.linkedin.com/company/markaa\",\n        \"https://pl.wikipedia.org/wiki/Marka_A\",\n        \"https://www.wikidata.org/wiki/Q000000\"\n      ],\n      \"foundingDate\": \"1998-04-12\",\n      \"vatID\": \"PL0000000000\",\n      \"knowsAbout\": [\n        { \"@type\": \"Thing\", \"name\": \"Obszar kompetencji A\",\n          \"url\": \"https://www.klient-a.pl/obszar-a\",\n          \"sameAs\": \"https://pl.wikipedia.org/wiki/Obszar_A\" },\n        { \"@type\": \"Thing\", \"name\": \"Obszar kompetencji B\",\n          \"url\": \"https://www.klient-a.pl/obszar-b\" }\n      ]\n    },\n    {\n      \"@type\": \"WebSite\",\n      \"@id\": \"https://www.klient-a.pl/#website\",\n      \"url\": \"https://www.klient-a.pl/\",\n      \"name\": \"klient-a.pl\",\n      \"description\": \"Oficjalny serwis Marki A.\",\n      \"publisher\": { \"@id\": \"https://www.klient-a.pl/#organization\" },\n      \"inLanguage\": \"pl-PL\"\n    },\n    {\n      \"@type\": \"WebPage\",\n      \"@id\": \"https://www.klient-a.pl/#webpage\",\n      \"url\": \"https://www.klient-a.pl/\",\n      \"name\": \"Marka A - oficjalny serwis\",\n      \"isPartOf\": { \"@id\": \"https://www.klient-a.pl/#website\" },\n      \"about\": { \"@id\": \"https://www.klient-a.pl/#organization\" },\n      \"inLanguage\": \"pl-PL\"\n    }\n  ]\n}\n</script>\n\n<!-- POZOSTAŁE podstrony - referencja zamiast powielania definicji -->\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"WebPage\",\n  \"@id\": \"https://www.klient-a.pl/oferta#webpage\",\n  \"url\": \"https://www.klient-a.pl/oferta\",\n  \"name\": \"Oferta - Marka A\",\n  \"isPartOf\": { \"@id\": \"https://www.klient-a.pl/#website\" },\n  \"publisher\": { \"@id\": \"https://www.klient-a.pl/#organization\" },\n  \"inLanguage\": \"pl-PL\"\n}\n</script>",
+    "geo_impact": "Modele językowe budują odpowiedzi z relacji między encjami, nie z pojedynczych faktów. Graf z referencjami @id pozwala modelowi ustalić, że Marka A to jeden podmiot o określonych kompetencjach (knowsAbout) i potwierdzonej tożsamości (sameAs) - dopiero wtedy marka staje się kandydatem do cytowania jako źródło, a nie anonimową stroną."
+  },
+  {
+    "key": "schema_breadcrumblist",
+    "category": "schema_org",
+    "cms_framework": "uniwersalny",
+    "title": "Brak danych strukturalnych BreadcrumbList",
+    "definition": "BreadcrumbList opisuje położenie dokumentu w hierarchii serwisu. W wynikach wyszukiwania zastępuje surowy adres URL czytelną ścieżką, a robotom i modelom językowym przekazuje wprost architekturę informacji.",
+    "technical_cause": "Moduł okruszków istnieje w warstwie wizualnej (lista <ol> w szablonie), ale nie ma odpowiednika w JSON-LD. Wyszukiwarka musi wtedy wnioskować hierarchię ze struktury adresów, co zawodzi przy płaskich adresach i przy katalogach z identyfikatorem numerycznym w slugu.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Wygeneruj BreadcrumbList w JSON-LD dla każdego typu szablonu, z pozycjami numerowanymi od 1 (strona główna) do elementu bieżącego.",
+      "Krok 2: Zapewnij zgodność 1:1 między ścieżką w JSON-LD a okruszkami widocznymi na stronie - rozbieżność jest traktowana jako dane niezgodne z zawartością.",
+      "Krok 3: Uzupełnij ścieżki o element końcowy: karta produktu ma kończyć się nazwą produktu, artykuł - tytułem, a nie nazwą kategorii nadrzędnej.",
+      "Krok 4: Spinaj BreadcrumbList z WebPage właściwością breadcrumb przez @id, zamiast publikować go jako niezależny blok."
+    ],
+    "code_recipe": "<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"BreadcrumbList\",\n  \"@id\": \"https://www.klient-a.pl/katalog/produkt-a#breadcrumb\",\n  \"itemListElement\": [\n    { \"@type\": \"ListItem\", \"position\": 1, \"name\": \"Strona główna\",\n      \"item\": \"https://www.klient-a.pl/\" },\n    { \"@type\": \"ListItem\", \"position\": 2, \"name\": \"Katalog\",\n      \"item\": \"https://www.klient-a.pl/katalog\" },\n    { \"@type\": \"ListItem\", \"position\": 3, \"name\": \"Produkt A\",\n      \"item\": \"https://www.klient-a.pl/katalog/produkt-a\" }\n  ]\n}\n</script>\n\n<!-- Warstwa wizualna MUSI odpowiadać danym: ostatni element nieklikalny -->\n<nav class=\"okruszki\" aria-label=\"Nawigacja okruszkowa\">\n  <ol>\n    <li><a href=\"/\">Strona główna</a></li>\n    <li><a href=\"/katalog\">Katalog</a></li>\n    <li><span aria-current=\"page\">Produkt A</span></li>\n  </ol>\n</nav>",
+    "geo_impact": "Okruszki to dla modelu jawna deklaracja kontekstu: dokument nie wisi w próżni, lecz należy do konkretnej gałęzi wiedzy serwisu. Ułatwia to modelowi ocenę, czy strona jest właściwym źródłem dla zapytania o szerokim, czy o wąskim zakresie."
+  },
+  {
+    "key": "schema_itemlist_catalog",
+    "category": "schema_org",
+    "cms_framework": "uniwersalny",
+    "title": "Strony katalogowe bez ItemList spinającej listę z kartami szczegółowymi",
+    "definition": "ItemList opisuje uporządkowany zbiór elementów wraz z ich kolejnością i adresami docelowymi. Na stronach katalogowych pozwala robotowi zrozumieć pełny asortyment i powiązać listę zbiorczą z pojedynczymi kartami.",
+    "technical_cause": "Katalog jest renderowany jako siatka komponentów bez warstwy semantycznej. Gdy do tego dochodzi doczytywanie treści przyciskiem, robot widzi tylko pierwszą porcję kafelków i nie ma informacji, ile elementów liczy pełna oferta. Częstym błędem wdrożenia jest też zahardkodowanie numberOfItems na wartości z przykładu w dokumentacji.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Wygeneruj ItemList w sekcji <head> strony katalogowej, gdzie każdy ListItem wskazuje docelowy typ (Product, Game, Article) referencją @id i polem url.",
+      "Krok 2: Powiąż numberOfItems oraz długość tablicy itemListElement ze zmienną dynamiczną - obie wartości muszą odpowiadać faktycznej liczbie dostępnych elementów, nie liczbie z przykładu.",
+      "Krok 3: Przy paginacji publikuj na każdej podstronie ItemList obejmującą elementy z TEJ podstrony, z zachowaniem ciągłej numeracji position.",
+      "Krok 4: Zadbaj, żeby @id użyte w ItemList było identyczne z @id encji na karcie szczegółowej - to ono spina katalog z kartami."
+    ],
+    "code_recipe": "{# Django - ItemList generowana dynamicznie, bez wartości zahardkodowanych #}\n{% raw %}<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"ItemList\",\n  \"@id\": \"{{ request.build_absolute_uri }}#itemlist\",\n  \"url\": \"{{ request.build_absolute_uri }}\",\n  \"name\": \"{{ kategoria.nazwa }} - {{ marka }}\",\n  \"description\": \"{{ kategoria.opis_krotki }}\",\n  \"numberOfItems\": {{ page_obj.paginator.count }},\n  \"itemListElement\": [\n    {% for produkt in page_obj %}{\n      \"@type\": \"ListItem\",\n      \"position\": {{ page_obj.start_index|add:forloop.counter0 }},\n      \"item\": {\n        \"@type\": \"Product\",\n        \"@id\": \"{{ produkt.get_absolute_url }}#product\",\n        \"url\": \"{{ request.scheme }}://{{ request.get_host }}{{ produkt.get_absolute_url }}\",\n        \"name\": \"{{ produkt.nazwa|escapejs }}\",\n        \"description\": \"{{ produkt.opis_krotki|escapejs }}\",\n        \"image\": \"{{ produkt.zdjecie.url }}\"\n      }\n    }{% if not forloop.last %},{% endif %}{% endfor %}\n  ]\n}\n</script>{% endraw %}",
+    "geo_impact": "Model odpowiadający na pytanie \"jakie produkty ma marka X\" potrzebuje listy o znanej długości i z adresami. ItemList z poprawnym numberOfItems mówi modelowi wprost, że oferta liczy N pozycji - bez niej model zrelacjonuje tylko te kilka, które zdążył zobaczyć, i odpowiedź będzie niepełna."
+  },
+  {
+    "key": "schema_faqpage_for_answer_boxes",
+    "category": "schema_org",
+    "cms_framework": "uniwersalny",
+    "title": "Sekcje pytań i odpowiedzi nieoznaczone schematem FAQPage",
+    "definition": "FAQPage zamienia widoczną na stronie sekcję pytań w maszynowo czytelny zestaw par pytanie-odpowiedź. Google ograniczyło wyświetlanie rozwijanych wyników dla tego typu, ale uporządkowane pary pozostają jednym z najsilniejszych formatów dla wyszukiwarek opartych na AI.",
+    "technical_cause": "Sekcja FAQ istnieje jako akordeon zbudowany z <div> i <button>, bez warstwy JSON-LD. Wyszukiwarka widzi tekst, ale nie rozpoznaje w nim gotowej pary pytanie-odpowiedź, więc musi ją wywnioskować z układu wizualnego - a przy akordeonie renderowanym po stronie klienta często nie widzi jej wcale.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Wygeneruj FAQPage w JSON-LD dla każdej podstrony z modułem pytań, zachowując dosłowną zgodność treści pytania i odpowiedzi z tym, co widzi użytkownik.",
+      "Krok 2: Umieść pełną treść odpowiedzi w polu text - nie skracaj jej i nie zastępuj zajawką, bo to główny fragment kandydujący do zacytowania.",
+      "Krok 3: Zapewnij, że sekcja FAQ jest obecna w surowym HTML nawet gdy wizualnie jest zwinięta (patrz wzorzec <details> dla treści ukrytej).",
+      "Krok 4: Buduj pytania z realnych zapytań użytkowników (Search Console, wyszukiwania wewnętrzne), a nie z domysłów redakcji."
+    ],
+    "code_recipe": "<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"FAQPage\",\n  \"@id\": \"https://www.klient-a.pl/pomoc#faq\",\n  \"mainEntity\": [\n    {\n      \"@type\": \"Question\",\n      \"name\": \"Jaki jest czas realizacji zamówienia?\",\n      \"acceptedAnswer\": {\n        \"@type\": \"Answer\",\n        \"text\": \"Zamówienia złożone do godziny 14:00 realizujemy tego samego dnia roboczego. Przesyłka kurierska dociera zwykle następnego dnia, a paczkomat w ciągu 48 godzin.\"\n      }\n    },\n    {\n      \"@type\": \"Question\",\n      \"name\": \"Czy mogę zwrócić produkt po otwarciu opakowania?\",\n      \"acceptedAnswer\": {\n        \"@type\": \"Answer\",\n        \"text\": \"Tak. Prawo odstąpienia od umowy obejmuje 14 dni od otrzymania przesyłki, a otwarcie opakowania w celu sprawdzenia produktu go nie wyłącza. Szczegóły opisuje <a href=\\\"/zwroty\\\">regulamin zwrotów</a>.\"\n      }\n    }\n  ]\n}\n</script>\n\n<!-- Warstwa widoczna: <details> = treść w HTML nawet gdy zwinięta -->\n<section class=\"faq\">\n  <h2>Najczęstsze pytania</h2>\n  <details>\n    <summary><h3>Jaki jest czas realizacji zamówienia?</h3></summary>\n    <p>Zamówienia złożone do godziny 14:00 realizujemy tego samego dnia roboczego...</p>\n  </details>\n</section>",
+    "geo_impact": "To najkrótsza droga do zacytowania przez model. Para pytanie-odpowiedź nie wymaga od modelu żadnej syntezy - dostaje gotową jednostkę wiedzy dopasowaną do formy, w jakiej użytkownik zadaje pytanie chatbotowi. Odpowiedź musi być przy tym kompletna sama w sobie, bo model cytuje pole text w oderwaniu od reszty strony."
+  },
+  {
+    "key": "schema_article_completeness",
+    "category": "schema_org",
+    "cms_framework": "wordpress",
+    "title": "Article/BlogPosting z minimalnym zestawem pól - bez autora, wymiarów obrazu i dateModified",
+    "definition": "Article opisuje dokument redakcyjny: kto go napisał, kto wydał, kiedy powstał i kiedy był ostatnio weryfikowany. To podstawowy nośnik sygnałów E-E-A-T w warstwie maszynowej.",
+    "technical_cause": "Wtyczka SEO generuje szablon minimalny: headline, datePublished i obrazek jako sam adres URL. Pole author wskazuje na organizację zamiast na osobę, publisher bywa pominięty, a dateModified nie jest przekazywany wcale - przez co każda aktualizacja treści pozostaje dla wyszukiwarki niewidoczna.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Rozbuduj generator JSON-LD tak, aby image był pełnym obiektem ImageObject z polami width i height w pikselach.",
+      "Krok 2: Ustaw author jako obiekt Person z polami name, jobTitle, url do strony autora oraz sameAs do profilu zewnętrznego; organizację zostaw wyłącznie dla treści korporacyjnych.",
+      "Krok 3: Przekazuj dateModified obok datePublished - przy braku zmian skopiuj datę publikacji, przy aktualizacji zaktualizuj ją automatycznie na podstawie pola w bazie.",
+      "Krok 4: Wskaż publisher referencją @id na encję Organization z grafu strony głównej, zamiast powielać dane firmy."
+    ],
+    "code_recipe": "<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"BlogPosting\",\n  \"@id\": \"https://www.klient-a.pl/blog/wpis-a#article\",\n  \"headline\": \"Pełny tytuł artykułu zgodny z nagłówkiem H1\",\n  \"description\": \"Streszczenie artykułu tożsame z meta description.\",\n  \"url\": \"https://www.klient-a.pl/blog/wpis-a\",\n  \"mainEntityOfPage\": { \"@id\": \"https://www.klient-a.pl/blog/wpis-a#webpage\" },\n  \"image\": {\n    \"@type\": \"ImageObject\",\n    \"url\": \"https://www.klient-a.pl/media/wpis-a-1200x675.avif\",\n    \"width\": 1200,\n    \"height\": 675\n  },\n  \"author\": {\n    \"@type\": \"Person\",\n    \"@id\": \"https://www.klient-a.pl/eksperci/ekspert-seo-1#person\",\n    \"name\": \"Ekspert SEO 1\",\n    \"jobTitle\": \"Specjalista ds. technical SEO\",\n    \"url\": \"https://www.klient-a.pl/eksperci/ekspert-seo-1\",\n    \"sameAs\": [\"https://www.linkedin.com/in/ekspert-seo-1\"],\n    \"knowsAbout\": [\"Technical SEO\", \"Core Web Vitals\", \"Dane strukturalne\"]\n  },\n  \"publisher\": { \"@id\": \"https://www.klient-a.pl/#organization\" },\n  \"datePublished\": \"2026-03-14T09:00:00+01:00\",\n  \"dateModified\": \"2026-09-02T11:30:00+02:00\",\n  \"inLanguage\": \"pl-PL\"\n}\n</script>",
+    "geo_impact": "Model językowy waży wiarygodność źródła po możliwości ustalenia autora i aktualności treści. Artykuł podpisany encją Person z powiązaniem sameAs jest traktowany jako opinia eksperta, a nie anonimowy tekst marketingowy - to różnica między byciem cytowanym a byciem pominiętym w tematach z rygorem YMYL."
+  },
+  {
+    "key": "schema_product_game_attributes",
+    "category": "schema_org",
+    "cms_framework": "uniwersalny",
+    "title": "Karty produktów i usług bez encji opisującej ich parametry",
+    "definition": "Typ dopasowany do przedmiotu strony (Product, Game, Service, Course) przenosi twarde parametry oferty do warstwy maszynowej. Właściwość additionalProperty pozwala opisać dowolny parametr, dla którego schema.org nie ma dedykowanego pola.",
+    "technical_cause": "Karta szczegółowa publikuje wyłącznie WebPage albo nie ma danych strukturalnych wcale. Kluczowe parametry - cena, harmonogram, ograniczenia wiekowe, wartości maksymalne - istnieją tylko w treści wizualnej, często w grafice lub w module doczytywanym po stronie klienta.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Dobierz najbardziej precyzyjny typ encji z hierarchii schema.org zamiast ogólnego WebPage i osadź go jako mainEntity strony.",
+      "Krok 2: Przenieś parametry oferty do additionalProperty jako pary PropertyValue - to jedyny sposób na maszynowe opisanie atrybutów spoza standardu.",
+      "Krok 3: Spinaj encję z dostawcą (provider/brand) referencją @id do Organization i z okruszkami przez breadcrumb.",
+      "Krok 4: Zapewnij zgodność wartości w JSON-LD z treścią widoczną na stronie - rozbieżność ceny lub parametru bywa podstawą ręcznej kary."
+    ],
+    "code_recipe": "<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@graph\": [\n    {\n      \"@type\": \"Product\",\n      \"@id\": \"https://www.klient-a.pl/katalog/produkt-a#product\",\n      \"name\": \"Produkt A\",\n      \"url\": \"https://www.klient-a.pl/katalog/produkt-a\",\n      \"description\": \"Pełny opis produktu zgodny z treścią widoczną na stronie.\",\n      \"image\": [\"https://www.klient-a.pl/media/produkt-a-1200.avif\"],\n      \"brand\": { \"@id\": \"https://www.klient-a.pl/#organization\" },\n      \"inLanguage\": \"pl-PL\",\n      \"offers\": {\n        \"@type\": \"Offer\",\n        \"price\": \"249.00\",\n        \"priceCurrency\": \"PLN\",\n        \"availability\": \"https://schema.org/InStock\",\n        \"url\": \"https://www.klient-a.pl/katalog/produkt-a\",\n        \"priceValidUntil\": \"2026-12-31\"\n      },\n      \"additionalProperty\": [\n        { \"@type\": \"PropertyValue\", \"name\": \"Gwarancja\", \"value\": \"24 miesiące\" },\n        { \"@type\": \"PropertyValue\", \"name\": \"Czas realizacji\", \"value\": \"1-2 dni robocze\" },\n        { \"@type\": \"PropertyValue\", \"name\": \"Minimalny wiek\", \"value\": \"18 lat\" }\n      ]\n    },\n    {\n      \"@type\": \"WebPage\",\n      \"@id\": \"https://www.klient-a.pl/katalog/produkt-a#webpage\",\n      \"url\": \"https://www.klient-a.pl/katalog/produkt-a\",\n      \"name\": \"Produkt A - Marka A\",\n      \"isPartOf\": { \"@id\": \"https://www.klient-a.pl/#website\" },\n      \"mainEntity\": { \"@id\": \"https://www.klient-a.pl/katalog/produkt-a#product\" },\n      \"breadcrumb\": { \"@id\": \"https://www.klient-a.pl/katalog/produkt-a#breadcrumb\" },\n      \"inLanguage\": \"pl-PL\"\n    }\n  ]\n}\n</script>",
+    "geo_impact": "Pary PropertyValue to dla modelu fakty gotowe do zacytowania bez interpretacji - dokładnie ten format, który modele preferują przy pytaniach o konkretne parametry (\"ile kosztuje\", \"jak długo trwa\", \"od jakiego wieku\"). Parametr obecny wyłącznie na grafice nie istnieje dla modelu tekstowego."
+  },
+  {
+    "key": "csr_to_ssr_content_availability",
+    "category": "geo_llm",
+    "cms_framework": "react",
+    "title": "Moduły merytoryczne renderowane po stronie klienta (CSR) - niewidoczne dla agentów AI",
+    "definition": "Przy renderowaniu po stronie klienta serwer odsyła szkielet aplikacji, a treść powstaje dopiero po wykonaniu JavaScriptu w przeglądarce. Googlebot dorenderuje ją w drugim etapie indeksacji, ale agenty modeli językowych zwykle czytają wyłącznie surowy HTML.",
+    "technical_cause": "Aplikacja jest w większości serwowana z SSR, ale wybrane moduły (listy ofert, wyniki, katalogi, tabele) są dociągane fetchem po zamontowaniu komponentu. Po wyłączeniu JavaScriptu te sekcje znikają z kodu źródłowego całkowicie. Wariant szczególnie mylący to dane obecne w dokumencie jako serializowany stan frameworka (np. obiekt window.__NUXT__), który dla parsera tekstowego pozostaje nieczytelny - wygląda jak obecny, ale nie jest treścią.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Przyjmij zasadę \"HTML-First\" - każdy fakt, który ma być cytowany (opis oferty, parametry, wyniki, tabela), musi być obecny w odpowiedzi serwera, zanim wykona się jakikolwiek skrypt.",
+      "Krok 2: Zweryfikuj stan faktyczny elementem po elemencie dla KAŻDEGO typu szablonu - sam procent treści doładowywanej przez JS nie oddaje krytyczności braków; kilka słów może być najważniejszą informacją na stronie.",
+      "Krok 3: Przenieś dane z serializowanego stanu frameworka do realnych znaczników semantycznych; stan frameworka zostaw wyłącznie do hydratacji interfejsu.",
+      "Krok 4: Dodaj do CI test, który pobiera szablony bez wykonywania JavaScriptu i sprawdza obecność kluczowych selektorów - to zabezpiecza przed regresją przy kolejnych wdrożeniach."
+    ],
+    "code_recipe": "// Next.js / React - dane pobierane NA SERWERZE, nie w useEffect\n// ŹLE: treść powstaje dopiero w przeglądarce\nexport default function Wyniki() {\n  const [dane, setDane] = useState([]);\n  useEffect(() => { fetch(\"/api/wyniki\").then(r => r.json()).then(setDane); }, []);\n  return <ul>{dane.map(w => <li key={w.id}>{w.liczby}</li>)}</ul>;\n}\n\n// DOBRZE: serwer zwraca gotowy HTML z faktami\nexport default async function Wyniki() {\n  const dane = await pobierzWyniki();          // wykonuje się na serwerze\n  return (\n    <section>\n      <h2>Ostatnie wyniki</h2>\n      <table>\n        <caption>Wyniki losowań - 10 ostatnich</caption>\n        <thead><tr><th>Data</th><th>Numer</th><th>Wylosowane liczby</th></tr></thead>\n        <tbody>\n          {dane.map((w) => (\n            <tr key={w.id}>\n              <td><time dateTime={w.dataIso}>{w.dataCzytelna}</time></td>\n              <td>{w.numer}</td>\n              <td>{w.liczby.join(\", \")}</td>\n            </tr>\n          ))}\n        </tbody>\n      </table>\n    </section>\n  );\n}",
+    "geo_impact": "To bariera zerojedynkowa. Agent AI, który nie wykonuje skryptów, widzi pusty kontener - fakt nie trafia do bazy wiedzy modelu, niezależnie od jego wartości merytorycznej. Serwis z doskonałą treścią uwięzioną w CSR przegrywa cytowalność ze słabszym konkurentem, który udostępnił dane w surowym HTML."
+  },
+  {
+    "key": "heading_noise_in_navigation",
+    "category": "geo_llm",
+    "cms_framework": "uniwersalny",
+    "title": "Szum nagłówkowy - znaczniki Hx w stopce, sidebarze i module \"Czytaj więcej\"",
+    "definition": "Hierarchia nagłówków H1-H6 jest dla robota mapą tematyczną dokumentu. Użycie nagłówka w elemencie nawigacyjnym nadaje niepowiązanemu tytułowi tę samą wagę semantyczną co sekcji merytorycznej.",
+    "technical_cause": "Moduły rekomendacji, sidebar i stopka są budowane tym samym komponentem listy co treść główna, więc tytuły powiązanych wpisów trafiają do <h2>/<h3>. Efekt: pod eksperckim artykułem robot znajduje nagłówki o zupełnie innej tematyce (materiały sezonowe, promocje), co rozmywa autorytet tematyczny dokumentu. W skrajnym wariancie <h1> zostaje użyty w module rekomendacji (\"Spróbuj także\"), przez co algorytm uznaje tę frazę za główny temat strony.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Zamień wszystkie znaczniki Hx w elementach nawigacyjnych na neutralne semantycznie <div>, <span> lub <strong>, zachowując identyczny wygląd przez klasy CSS.",
+      "Krok 2: Zarezerwuj H1-H3 wyłącznie dla unikalnej treści merytorycznej dokumentu i utrzymaj dokładnie jeden H1 na stronę.",
+      "Krok 3: Usuń puste znaczniki nagłówkowe (<h2></h2>) i zamień nagłówki pełniące funkcję opisową (całe akapity w <h3>) na <p>.",
+      "Krok 4: Zastąp nagłówki bez potencjału frazowego (\"Dowiedz się więcej\", \"You matter\") sformułowaniami opisującymi zawartość sekcji."
+    ],
+    "code_recipe": "<!-- ŹLE - moduł rekomendacji rozmywa mapę tematyczną dokumentu -->\n<aside class=\"czytaj-wiecej\">\n  <h2>Czytaj więcej</h2>\n  <a href=\"/blog/wpis-sezonowy\"><h3>Wpis sezonowy o zupełnie innym temacie</h3></a>\n</aside>\n\n<!-- DOBRZE - identyczny wygląd, zero szumu semantycznego -->\n<aside class=\"czytaj-wiecej\" aria-label=\"Powiązane artykuły\">\n  <div class=\"czytaj-wiecej-tytul\">Czytaj więcej</div>\n  <a href=\"/blog/wpis-powiazany\">\n    <span class=\"czytaj-wiecej-pozycja\">Tytuł powiązanego artykułu</span>\n  </a>\n</aside>\n\n<style>\n/* Wygląd nagłówka bez znaczenia nagłówka */\n.czytaj-wiecej-tytul{font-size:1.25rem;font-weight:700;line-height:1.3;margin-block-end:.75rem}\n.czytaj-wiecej-pozycja{font-size:1rem;font-weight:600}\n</style>\n\n<!-- Poprawna hierarchia dokumentu: dokładnie jeden H1, H3 pod swoim H2 -->\n<h1>Główny temat podstrony z frazą kluczową</h1>\n  <h2>Pierwsza sekcja merytoryczna</h2>\n    <h3>Zagadnienie w sekcji pierwszej</h3>\n  <h2>Druga sekcja merytoryczna</h2>\n    <h3>Zagadnienie w sekcji drugiej</h3>",
+    "geo_impact": "Modele dzielą dokument na fragmenty (chunki) po granicach nagłówków. Nagłówek z nawigacji tworzy fragment mieszający treść ekspercką z przypadkowym tytułem, obniżając trafność całego fragmentu w wyszukiwaniu wektorowym. Oczyszczenie hierarchii bywa pojedynczą zmianą, która odblokowuje cytowalność dokumentu."
+  },
+  {
+    "key": "answer_first_modular_content",
+    "category": "geo_llm",
+    "cms_framework": "uniwersalny",
+    "title": "Brak architektury Answer-First - odpowiedź rozproszona po narracyjnym wstępie",
+    "definition": "Architektura Answer-First zakłada, że pierwsze 2-3 zdania pod każdym nagłówkiem H2 stanowią kompletną, autonomiczną odpowiedź na pytanie zawarte w tym nagłówku. Fragment musi dać się zacytować w oderwaniu od reszty tekstu.",
+    "technical_cause": "Teksty powstają według konwencji redakcyjnej z rozbudowanym wstępem angażującym czytelnika (\"Zastanawiasz się nad...\"). Konkretna odpowiedź pojawia się dopiero po kilku akapitach i bywa rozbita na kilka miejsc. Model, który pobiera fragment spod nagłówka, otrzymuje wtedy wstęp zamiast definicji i musi syntetyzować wniosek samodzielnie - często błędnie.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Pod każdym nagłówkiem H2 umieść autonomiczną definicję o długości 200-300 znaków, która odpowiada na pytanie z nagłówka bez odwołań do wcześniejszego kontekstu.",
+      "Krok 2: Formułuj nagłówki H2 jako pytania lub konkretne zagadnienia, w formie zbliżonej do tego, jak użytkownik zadaje pytanie chatbotowi.",
+      "Krok 3: Przenieś narracyjny wstęp pod definicję albo zrezygnuj z niego - materiał rozwijający temat umieść w kolejnych akapitach.",
+      "Krok 4: Dodaj na początku lub końcu artykułu blok \"Wnioski w pigułce\": 3-5 punktów syntetyzujących całość - to preferowany format przy budowaniu krótkich podsumowań."
+    ],
+    "code_recipe": "<!-- Wzorzec Answer-First dla sekcji merytorycznej -->\n<section>\n  <h2>Czym jest metoda stacji zadaniowych?</h2>\n\n  <!-- Pierwsze 2-3 zdania: kompletna definicja, 200-300 znaków, bez odwołań -->\n  <p class=\"definicja-wiodaca\">\n    Metoda stacji zadaniowych polega na podziale sali na kilka stanowisk, między którymi\n    uczniowie przemieszczają się w małych grupach, wykonując na każdym inne zadanie.\n    Jedna lekcja obejmuje zwykle 4-6 stacji po 5-8 minut.\n  </p>\n\n  <!-- Dopiero teraz rozwinięcie i kontekst -->\n  <p>Rozwiązanie sprawdza się szczególnie w grupach zróżnicowanych poziomem...</p>\n</section>\n\n<!-- Blok syntetyzujący - preferowany format podsumowania -->\n<section class=\"wnioski-w-pigulce\">\n  <h2>Wnioski w pigułce</h2>\n  <ul>\n    <li>Stacje zadaniowe dzielą lekcję na 4-6 stanowisk po 5-8 minut.</li>\n    <li>Metoda wymaga przygotowania materiałów przed zajęciami.</li>\n    <li>Najlepsze efekty daje w grupach o zróżnicowanym poziomie.</li>\n  </ul>\n</section>\n\n<style>\n.definicja-wiodaca{font-size:1.05rem;line-height:1.7}\n.wnioski-w-pigulce{border-inline-start:3px solid currentColor;padding-inline-start:1rem}\n</style>",
+    "geo_impact": "Model cytuje fragmenty, nie całe dokumenty. Autonomiczna definicja spod nagłówka jest gotowym kandydatem do boksu AI Overviews i do odpowiedzi chatbota - bez ryzyka utraty kontekstu i bez konieczności syntezy, która jest głównym źródłem przekłamań w cytowaniach."
+  },
+  {
+    "key": "data_tables_instead_of_bullet_lists",
+    "category": "geo_llm",
+    "cms_framework": "uniwersalny",
+    "title": "Dane liczbowe w listach z emoji zamiast natywnych tabel HTML",
+    "definition": "Tabela HTML z nagłówkami kolumn przekazuje relację między wartościami: który wiersz opisuje który przypadek i w jakiej jednostce. Lista punktowa tę relację gubi - dla parsera jest ciągiem niezależnych fragmentów tekstu.",
+    "technical_cause": "Redakcja formatuje zestawienia (widełki cenowe, porównania wariantów, harmonogramy) jako estetyczne wyliczanki z emoji, bo tak wygodniej edytuje się w CMS i lepiej wygląda na telefonie. Efekt uboczny: dane, które miały być najmocniejszym atutem treści, stają się dla modelu \"tekstem rozproszonym\", trudniejszym do przekształcenia w precyzyjny fragment odpowiedzi.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Przekonwertuj wszystkie zestawienia liczbowe i porównawcze na natywne znaczniki <table> z <caption>, <thead> i zakresami nagłówków (scope).",
+      "Krok 2: Zachowaj listy punktowe tam, gdzie faktycznie są właściwym formatem - dla zbiorów pomysłów, kroków i technik bez relacji między kolumnami.",
+      "Krok 3: Wyprowadź dane z grafik do warstwy tekstowej; infografika z cenami jest dla modelu tekstowego pusta, niezależnie od atrybutu alt.",
+      "Krok 4: Zapewnij responsywność tabeli przez kontener z przewijaniem poziomym, zamiast rezygnować z tabeli na rzecz listy na telefonach."
+    ],
+    "code_recipe": "<!-- ŹLE - dla modelu to ciąg niepowiązanych fragmentów -->\n<ul>\n  <li>💰 Wariant podstawowy: 2 800 - 3 400 zł</li>\n  <li>⭐ Wariant rozszerzony: 3 400 - 4 200 zł</li>\n</ul>\n\n<!-- DOBRZE - relacja kolumna-wiersz czytelna maszynowo -->\n<div class=\"tabela-przewijana\">\n  <table>\n    <caption>Widełki wynagrodzenia według wariantu współpracy (dane na 2026 r.)</caption>\n    <thead>\n      <tr>\n        <th scope=\"col\">Wariant</th>\n        <th scope=\"col\">Wynagrodzenie miesięczne</th>\n        <th scope=\"col\">Wymiar godzin</th>\n      </tr>\n    </thead>\n    <tbody>\n      <tr>\n        <th scope=\"row\">Podstawowy</th>\n        <td>2 800 - 3 400 zł</td>\n        <td>20 h/tydz.</td>\n      </tr>\n      <tr>\n        <th scope=\"row\">Rozszerzony</th>\n        <td>3 400 - 4 200 zł</td>\n        <td>30 h/tydz.</td>\n      </tr>\n    </tbody>\n  </table>\n</div>\n\n<style>\n/* Responsywność BEZ rezygnacji ze znacznika table */\n.tabela-przewijana{overflow-x:auto;-webkit-overflow-scrolling:touch}\n.tabela-przewijana table{width:100%;border-collapse:collapse;min-width:480px}\n.tabela-przewijana th,.tabela-przewijana td{padding:.6rem .75rem;text-align:start}\n</style>",
+    "geo_impact": "Tabele są przez modele traktowane jako fakty obiektywne i osiągają najwyższą częstotliwość cytowań spośród formatów treści. Ta sama informacja podana w tabeli zamiast w liście z emoji zmienia status z \"tekstu do interpretacji\" na \"dane gotowe do zacytowania\"."
+  },
+  {
+    "key": "hidden_content_ssr_details_pattern",
+    "category": "geo_llm",
+    "cms_framework": "uniwersalny",
+    "title": "Treść za przyciskiem (zakładki, akordeony) doczytywana dopiero po kliknięciu",
+    "definition": "Treść zwinięta wizualnie może być w pełni dostępna dla robotów, o ile fizycznie istnieje w kodzie od pierwszej sekundy. Problem zaczyna się tam, gdzie kliknięcie nie rozwija istniejącego bloku, lecz dopiero pobiera dane.",
+    "technical_cause": "Moduły typu \"Zasady\", \"Wygrane\", \"Specyfikacja\", \"Opinie\" są implementowane jako leniwie ładowane zakładki - serwer renderuje sam przycisk, a zawartość przychodzi fetchem po interakcji. Wariantem tego samego problemu są dane przesłane w serializowanym stanie frameworka i wstrzykiwane do DOM dopiero po kliknięciu. W obu przypadkach crawler nie ma fizycznego dostępu do treści.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Wyrenderuj pełną treść zakładek w surowym HTML i ukryj ją wyłącznie wizualnie - JavaScript ma jedynie przełączać widoczność, nie pobierać dane.",
+      "Krok 2: Użyj natywnego elementu <details>/<summary> tam, gdzie to możliwe - działa bez JavaScriptu, jest dostępny i zachowuje treść w DOM.",
+      "Krok 3: Zweryfikuj wynik przeglądając kod źródłowy z wyłączonym JavaScriptem; treść, której tam nie ma, nie istnieje dla modelu.",
+      "Krok 4: Uważaj na odwrotną skrajność - treść ukryta stylem CSS bywa traktowana jako mniej istotna, więc kluczowe fakty powinny być widoczne domyślnie, a zwijanie zostawić dla materiału uzupełniającego."
+    ],
+    "code_recipe": "<!-- ŹLE - zawartość pobierana dopiero po kliknięciu -->\n<button type=\"button\" onclick=\"pobierzWygrane()\">Wygrane</button>\n<div id=\"wygrane\"><!-- pusty do momentu interakcji --></div>\n\n<!-- DOBRZE - pełna treść w SSR, JS tylko przełącza widoczność -->\n<details class=\"sekcja-zwijana\">\n  <summary><h2>Tabela wygranych</h2></summary>\n  <table>\n    <caption>Podział wygranych w ostatnim losowaniu</caption>\n    <thead><tr><th scope=\"col\">Stopień</th><th scope=\"col\">Liczba</th><th scope=\"col\">Kwota</th></tr></thead>\n    <tbody>\n      <tr><th scope=\"row\">Pierwszy</th><td>1</td><td>1 200 000 zł</td></tr>\n      <tr><th scope=\"row\">Drugi</th><td>48</td><td>3 500 zł</td></tr>\n    </tbody>\n  </table>\n</details>\n\n<!-- Wariant z zakładkami: treść w DOM, przełączana atrybutem hidden -->\n<div class=\"zakladki\">\n  <button type=\"button\" aria-controls=\"panel-zasady\" aria-expanded=\"true\">Zasady</button>\n  <button type=\"button\" aria-controls=\"panel-wygrane\" aria-expanded=\"false\">Wygrane</button>\n</div>\n<section id=\"panel-zasady\">...pełna treść wyrenderowana przez serwer...</section>\n<section id=\"panel-wygrane\" hidden>...pełna treść wyrenderowana przez serwer...</section>",
+    "geo_impact": "Opinie, FAQ i szczegółowe specyfikacje zwinięte pod przyciskiem to zwykle najcenniejszy materiał dla modeli - konkretny, ustrukturyzowany i odpowiadający wprost na pytania użytkowników. To również dokładnie ten materiał, który najczęściej znika z surowego HTML."
+  },
+  {
+    "key": "metadata_mismatch_title_h1_jsonld",
+    "category": "geo_llm",
+    "cms_framework": "uniwersalny",
+    "title": "Rozjazd między <title>, H1, og:title i polem name w JSON-LD",
+    "definition": "Znacznik <title>, nagłówek H1, tag og:title i pole name w danych strukturalnych to cztery niezależne deklaracje tego samego: czym jest ten dokument. Ich rozbieżność zmusza algorytm do zgadywania, a w skrajnym przypadku sprawia, że strona jest dla modelu informacyjnie pusta.",
+    "technical_cause": "Każdą z tych wartości generuje inny mechanizm: title pochodzi z globalnego szablonu, H1 z pola nagłówka w CMS, og:title z wtyczki społecznościowej, a name w JSON-LD z ustawień wtyczki SEO. Przy braku jednego źródła prawdy title potrafi zawierać wyłącznie nazwę marki, podczas gdy H1 opisuje merytoryczny temat artykułu.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Ustal jedno źródło prawdy dla tytułu dokumentu w modelu danych i wyprowadź z niego wszystkie cztery deklaracje, dopuszczając wyłącznie kontrolowane różnice (np. dopisek marki w title).",
+      "Krok 2: Wyeliminuj tytuły sprowadzające się do samej nazwy marki - każda podstrona potrzebuje unikalnego title do ok. 65 znaków, opisującego jej faktyczną zawartość.",
+      "Krok 3: Zapewnij zgodność pola name w JSON-LD z nagłówkiem H1, a pola description z meta description.",
+      "Krok 4: Dodaj do testów automatycznych asercję porównującą te wartości dla każdego typu szablonu - rozjazd wraca przy każdej większej zmianie w CMS."
+    ],
+    "code_recipe": "{# Django - jedno źródło prawdy dla wszystkich deklaracji tytułu #}\n{% raw %}{% block head %}\n  {# title = tytuł merytoryczny + marka, do ~65 znaków #}\n  <title>{{ obiekt.tytul_seo|default:obiekt.tytul|truncatechars:52 }} - {{ marka }}</title>\n  <meta name=\"description\" content=\"{{ obiekt.opis_seo|truncatechars:155 }}\">\n\n  {# og:title BEZ dopisku marki - podgląd społecznościowy ma własną ramkę #}\n  <meta property=\"og:title\" content=\"{{ obiekt.tytul_seo|default:obiekt.tytul }}\">\n  <meta property=\"og:description\" content=\"{{ obiekt.opis_seo|truncatechars:155 }}\">\n\n  <script type=\"application/ld+json\">\n  {\n    \"@context\": \"https://schema.org\",\n    \"@type\": \"Article\",\n    \"headline\": \"{{ obiekt.tytul|escapejs }}\",\n    \"name\": \"{{ obiekt.tytul|escapejs }}\",\n    \"description\": \"{{ obiekt.opis_seo|escapejs }}\"\n  }\n  </script>\n{% endblock %}\n\n{% block content %}\n  {# H1 = to samo źródło co pole name w JSON-LD #}\n  <h1>{{ obiekt.tytul }}</h1>\n{% endblock %}{% endraw %}\n\n# Test regresyjny - rozjazd wraca przy każdej większej zmianie w CMS\ndef test_tytul_spojny_we_wszystkich_deklaracjach(self):\n    html = self.client.get(self.artykul.get_absolute_url()).content.decode()\n    h1 = re.search(r\"<h1[^>]*>(.*?)</h1>\", html, re.S).group(1).strip()\n    dane = json.loads(re.search(r'application/ld\\+json\">(.*?)</script>', html, re.S).group(1))\n    self.assertEqual(dane[\"name\"], h1)\n    self.assertIn(h1[:40], html.split(\"<title>\")[1].split(\"</title>\")[0])",
+    "geo_impact": "Model używa tytułu jako głównego sygnału tematu dokumentu przy dopasowaniu do zapytania. Strona, której title to sama nazwa marki, jest dla modelu pozbawiona tematu i nie zostanie dopasowana do żadnego pytania merytorycznego - niezależnie od jakości treści poniżej."
+  },
+  {
+    "key": "author_entity_person_hub",
+    "category": "content_eeat",
+    "cms_framework": "uniwersalny",
+    "title": "Autorstwo przypisane organizacji zamiast konkretnej osobie",
+    "definition": "Sygnały Expertise i Authoritativeness wymagają możliwości ustalenia, kto stoi za treścią i jakie ma kompetencje. Samo imię i nazwisko pod artykułem nie wystarcza - potrzebne jest powiązanie z opisem kompetencji i z profilem zewnętrznym.",
+    "technical_cause": "Szablon JSON-LD ustawia jako author obiekt Organization, bo tak generuje go domyślna konfiguracja wtyczki SEO. Notki biograficzne pod artykułami istnieją w warstwie wizualnej, ale nazwiska nie są podlinkowane do dedykowanych podstron ani powiązane z profilami zewnętrznymi. Dla modelu nie istnieje więc techniczny dowód na doświadczenie autora.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Utwórz Hub Ekspertów - dedykowane podstrony biograficzne dla głównych autorów, z opisem kompetencji, certyfikatów i listą publikacji.",
+      "Krok 2: Ustaw w JSON-LD author jako obiekt Person z polami name, jobTitle, url do strony autora oraz sameAs do profilu zewnętrznego (LinkedIn, ORCID, profil branżowy).",
+      "Krok 3: Podlinkuj nazwisko w notce biograficznej do strony autora i dodaj knowsAbout z obszarami specjalizacji.",
+      "Krok 4: Zostaw autorstwo organizacyjne wyłącznie dla treści korporacyjnych (komunikaty, informacje prawne); teksty eksperckie podpisuj osobą."
+    ],
+    "code_recipe": "<!-- Strona autora: /eksperci/metodyk-a -->\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@graph\": [\n    {\n      \"@type\": \"ProfilePage\",\n      \"@id\": \"https://www.klient-b.pl/eksperci/metodyk-a#webpage\",\n      \"url\": \"https://www.klient-b.pl/eksperci/metodyk-a\",\n      \"mainEntity\": { \"@id\": \"https://www.klient-b.pl/eksperci/metodyk-a#person\" },\n      \"isPartOf\": { \"@id\": \"https://www.klient-b.pl/#website\" }\n    },\n    {\n      \"@type\": \"Person\",\n      \"@id\": \"https://www.klient-b.pl/eksperci/metodyk-a#person\",\n      \"name\": \"Metodyk A\",\n      \"jobTitle\": \"Metodyk nauczania, trener nauczycieli\",\n      \"description\": \"Od 12 lat prowadzi szkolenia metodyczne; autorka programu dla grup mieszanych wiekowo.\",\n      \"url\": \"https://www.klient-b.pl/eksperci/metodyk-a\",\n      \"image\": \"https://www.klient-b.pl/media/eksperci/metodyk-a.avif\",\n      \"worksFor\": { \"@id\": \"https://www.klient-b.pl/#organization\" },\n      \"sameAs\": [\"https://www.linkedin.com/in/metodyk-a\"],\n      \"knowsAbout\": [\"Metodyka nauczania\", \"Praca z grupą mieszaną\", \"Ocenianie kształtujące\"],\n      \"hasCredential\": {\n        \"@type\": \"EducationalOccupationalCredential\",\n        \"credentialCategory\": \"certyfikat\",\n        \"name\": \"Certyfikat trenerski poziomu zaawansowanego\"\n      }\n    }\n  ]\n}\n</script>\n\n<!-- Notka pod artykułem - nazwisko JAKO ODNOŚNIK do strony autora -->\n<footer class=\"nota-autora\">\n  <img src=\"/media/eksperci/metodyk-a.avif\" width=\"96\" height=\"96\" alt=\"\" loading=\"lazy\">\n  <p>\n    <a href=\"/eksperci/metodyk-a\" rel=\"author\"><strong>Metodyk A</strong></a> -\n    metodyk nauczania, od 12 lat prowadzi szkolenia dla nauczycieli.\n  </p>\n</footer>",
+    "geo_impact": "Modele budują mapę powiązań między ekspertem, marką i tematem. Encja Person z sameAs pozwala połączyć autora z jego dorobkiem poza witryną, co podnosi ocenę wiarygodności całego serwisu. W tematach objętych rygorem YMYL anonimowość techniczna praktycznie wyklucza cytowanie."
+  },
+  {
+    "key": "freshness_signal_and_verification_date",
+    "category": "content_eeat",
+    "cms_framework": "uniwersalny",
+    "title": "Brak sygnału aktualności - identyczna data publikacji i modyfikacji po latach",
+    "definition": "Sygnał świeżości (Freshness) informuje, kiedy treść była ostatnio zweryfikowana merytorycznie. Identyczne datePublished i dateModified po kilkunastu miesiącach oznaczają, że nikt nie potwierdził aktualności materiału.",
+    "technical_cause": "CMS ustawia dateModified równe datePublished przy tworzeniu wpisu i nie aktualizuje go przy zmianach redakcyjnych, albo aktualizuje przy każdym zapisie technicznym (zmiana tagu, poprawka literówki), co czyni sygnał bezwartościowym. Dodatkowo data weryfikacji nie jest w ogóle pokazywana użytkownikowi, więc ani człowiek, ani model nie mają jak ocenić aktualności.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Wprowadź w modelu treści osobne pole \"data weryfikacji merytorycznej\", ustawiane świadomie przez redakcję, i wyprowadź z niego dateModified.",
+      "Krok 2: Umieść pod nagłówkiem H1 widoczny znacznik aktualności z datą ostatniej weryfikacji, w znaczniku <time> z atrybutem datetime.",
+      "Krok 3: Ustal cykl przeglądu dla tematów szybko dezaktualizujących się (ceny, przepisy, standardy) i odświeżaj je zanim sygnał świeżości wygaśnie.",
+      "Krok 4: Nie aktualizuj daty przy zmianach kosmetycznych - sztucznie odświeżana data bez zmiany treści bywa rozpoznawana i ignorowana."
+    ],
+    "code_recipe": "<!-- Widoczny sygnał świeżości pod nagłówkiem H1 -->\n<h1>Tytuł artykułu</h1>\n<p class=\"znacznik-aktualnosci\">\n  Ostatnia weryfikacja merytoryczna:\n  <time datetime=\"2026-09-02\">2 września 2026</time>\n  · Zgodność ze standardami obowiązującymi w roku szkolnym 2026/2027\n</p>\n\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"Article\",\n  \"datePublished\": \"2024-11-08T10:00:00+01:00\",\n  \"dateModified\": \"2026-09-02T14:20:00+02:00\"\n}\n</script>\n\n# Django - data weryfikacji jako świadoma decyzja redakcji, nie skutek zapisu\nclass Artykul(models.Model):\n    opublikowano = models.DateTimeField(auto_now_add=True)\n    zweryfikowano = models.DateTimeField(\n        null=True, blank=True,\n        help_text=\"Data OSTATNIEJ WERYFIKACJI MERYTORYCZNEJ. \"\n                  \"Nie aktualizuj przy poprawkach redakcyjnych - tylko po sprawdzeniu treści.\",\n    )\n\n    @property\n    def data_modyfikacji(self):\n        \"\"\"Do JSON-LD: data weryfikacji, a w razie jej braku data publikacji.\"\"\"\n        return self.zweryfikowano or self.opublikowano\n\n<style>\n.znacznik-aktualnosci{font-size:.875rem;opacity:.75;margin-block:-.25rem 1.5rem}\n</style>",
+    "geo_impact": "Modele faworyzują źródła z wyraźnym sygnałem aktualności, szczególnie w tematach, w których wiedza szybko się dezaktualizuje. Widoczna data weryfikacji podnosi wskaźnik Trustworthiness i bywa czynnikiem rozstrzygającym przy wyborze między dwoma źródłami o zbliżonej zawartości."
+  },
+  {
+    "key": "sitewide_duplicate_title_and_description",
+    "category": "content_eeat",
+    "cms_framework": "uniwersalny",
+    "title": "Globalna duplikacja znaczników title i meta description w całym serwisie",
+    "definition": "Znacznik title jest głównym sygnałem tematu dokumentu, a meta description buduje fragment wyniku i wpływa na CTR. Ten sam tytuł na każdej podstronie odbiera wyszukiwarce możliwość rozróżnienia, który adres odpowiada intencji zapytania.",
+    "technical_cause": "Szablon bazowy definiuje title i description jako wartości statyczne, a poszczególne szablony nie nadpisują odpowiednich bloków. W aplikacjach jednostronicowych dochodzi drugi wariant: metadane są ustawiane po stronie klienta przez skrypt, więc surowy HTML każdego dokumentu zawiera tę samą wartość domyślną z szablonu.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Zbuduj schematy metadanych per typ szablonu (kategoria, karta produktu, wyniki, artykuł) i wyprowadź je z danych obiektu, nie ze stałej w szablonie bazowym.",
+      "Krok 2: Utrzymaj title do ok. 65 znaków i meta description w przedziale 140-155 znaków, z wezwaniem do działania dopasowanym do intencji podstrony.",
+      "Krok 3: Zróżnicuj title względem nagłówka H1 - najprościej dopiskiem marki na końcu - żeby oba znaczniki nie były identyczne.",
+      "Krok 4: Wprowadź test regresyjny wykrywający duplikaty title i description w obrębie mapy witryny; usuń przy okazji znacznik meta keywords, który nie jest używany przez wyszukiwarki i przeładowany bywa sygnałem negatywnym."
+    ],
+    "code_recipe": "{# Szablon bazowy - blok do NADPISANIA, nie wartość domyślna dla całego serwisu #}\n{% raw %}<title>{% block meta_title %}{{ marka }}{% endblock %}</title>\n<meta name=\"description\" content=\"{% block meta_description %}{% endblock %}\">\n\n{# Szablon karty produktu - schemat wyprowadzony z danych obiektu #}\n{% block meta_title %}{{ produkt.nazwa }} - cena i parametry - {{ marka }}{% endblock %}\n{% block meta_description %}\n  {{ produkt.nazwa }} w cenie {{ produkt.cena }} zł. {{ produkt.opis_krotki|truncatechars:90 }}\n  Sprawdź dostępność i zamów online.\n{% endblock %}\n\n{# Szablon wyników - schemat z datą, czyli z realną intencją zapytania #}\n{% block meta_title %}Wyniki {{ gra.nazwa }} z {{ losowanie.data|date:\"d.m.Y\" }} - {{ marka }}{% endblock %}{% endraw %}\n\n# Test regresyjny - duplikaty metadanych wracają przy każdej zmianie szablonów\ndef test_metadane_sa_unikalne_w_obrebie_serwisu(self):\n    tytuly, opisy = [], []\n    for adres in self.adresy_z_mapy_witryny():\n        html = self.client.get(adres).content.decode()\n        tytuly.append(re.search(r\"<title>(.*?)</title>\", html, re.S).group(1).strip())\n        opisy.append(re.search(r'name=\"description\" content=\"(.*?)\"', html, re.S).group(1))\n    self.assertEqual(len(tytuly), len(set(tytuly)), \"Zduplikowane znaczniki <title>\")\n    self.assertEqual(len(opisy), len(set(opisy)), \"Zduplikowane meta description\")",
+    "geo_impact": "Modele używają title i description jako skróconej reprezentacji dokumentu przy wstępnej selekcji źródeł. Identyczne metadane w całym serwisie sprawiają, że wszystkie podstrony wyglądają dla modelu jak ten sam dokument, więc do bazy wiedzy trafia tylko jedna z nich."
+  },
+  {
+    "key": "internal_linking_semantic_context",
+    "category": "content_eeat",
+    "cms_framework": "uniwersalny",
+    "title": "Moduł powiązanych treści wyświetla te same wpisy niezależnie od kontekstu strony",
+    "definition": "Linkowanie wewnętrzne buduje autorytet tematyczny przez pokazanie, że serwis wyczerpująco pokrywa dany obszar. Powiązania muszą być semantyczne - prowadzić do tematycznego rodzeństwa i do kategorii nadrzędnej, a nie do losowego zbioru wpisów.",
+    "technical_cause": "Moduł rekomendacji pobiera wpisy według prostej reguły globalnej (najnowsze, najpopularniejsze, wyróżnione) zamiast według podobieństwa tematycznego. W efekcie pod eksperckim tekstem o rozwoju zawodowym pojawiają się materiały sezonowe. Brakuje też linkowania kontekstowego w treści - do strony zbiorczej kategorii i do artykułów z tego samego klastra.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Zmień algorytm modułu rekomendacji na dobór według wspólnych tagów, kategorii lub podobieństwa wektorowego treści, z zapasowym doborem globalnym dopiero przy braku dopasowań.",
+      "Krok 2: Dodaj linkowanie kontekstowe w akapitach - do kategorii nadrzędnej (rodzic) i do artykułów z tego samego klastra (rodzeństwo).",
+      "Krok 3: Wprowadź globalną regułę crawl budgetu: odnośnik do strony z dyrektywą index zawsze follow, do strony z noindex zawsze nofollow.",
+      "Krok 4: Zapewnij, że wszystkie odnośniki (także w nawigacji bocznej, filtrach i modułach) są fizycznie obecne w kodzie HTML w wersji mobilnej i desktopowej."
+    ],
+    "code_recipe": "# Django - moduł powiązanych treści dobierany semantycznie\nfrom django.db.models import Count, Q\n\ndef powiazane_artykuly(artykul, limit=4):\n    \"\"\"Dobór po wspólnych tagach i kategorii, z zapasem globalnym dopiero na końcu.\"\"\"\n    dopasowane = (\n        Artykul.objects\n        .filter(opublikowany=True, tagi__in=artykul.tagi.all())\n        .exclude(pk=artykul.pk)\n        .annotate(wspolne_tagi=Count(\"tagi\", filter=Q(tagi__in=artykul.tagi.all())))\n        .order_by(\"-wspolne_tagi\", \"-zweryfikowano\")\n        .distinct()[:limit]\n    )\n    if len(dopasowane) >= limit:\n        return dopasowane\n\n    uzupelnienie = (\n        Artykul.objects\n        .filter(opublikowany=True, kategoria=artykul.kategoria)\n        .exclude(pk__in=[a.pk for a in dopasowane] + [artykul.pk])\n        .order_by(\"-zweryfikowano\")[: limit - len(dopasowane)]\n    )\n    return list(dopasowane) + list(uzupelnienie)\n\n# Reguła crawl budgetu dla linków wewnętrznych\ndef rel_dla_linku(strona_docelowa) -> str:\n    \"\"\"Cel z dyrektywą index -> follow. Cel z noindex -> nofollow.\"\"\"\n    return \"nofollow\" if strona_docelowa.noindex else \"\"\n\n{# Linkowanie kontekstowe W TREŚCI - do rodzica i do rodzeństwa #}\n{% raw %}<p>\n  Opisana metoda należy do szerszej grupy\n  <a href=\"{{ artykul.kategoria.get_absolute_url }}\">{{ artykul.kategoria.nazwa }}</a>,\n  a jej zastosowanie w grupach mieszanych omawiamy w tekście\n  <a href=\"{{ artykul_rodzenstwo.get_absolute_url }}\">{{ artykul_rodzenstwo.tytul }}</a>.\n</p>{% endraw %}",
+    "geo_impact": "Spójność tematyczna w obrębie jednej podstrony jest dla modeli kluczowym sygnałem pokrycia tematu (Topical Coverage). Serwis, w którym pod tekstem eksperckim znajdują się linki do materiałów bez związku, jest skanowany jako zbiór luźnych artykułów, a nie jako kompendium - co obniża szansę na polecenie go jako kompletnego źródła."
+  },
+  {
+    "key": "breadcrumbs_placement_and_full_path",
+    "category": "architecture",
+    "cms_framework": "uniwersalny",
+    "title": "Okruszki na dole strony, z klikalnym ostatnim elementem i uciętą ścieżką",
+    "definition": "Nawigacja okruszkowa informuje użytkownika o jego położeniu w strukturze serwisu i przekazuje robotom hierarchię treści. Jej funkcja orientacyjna wymaga umieszczenia w górnej części dokumentu, przed treścią główną.",
+    "technical_cause": "Moduł okruszków został osadzony w szablonie stopki, bo tam było najłatwiej dodać go globalnie. Ostatni element generuje się tym samym komponentem co pozostałe, więc pozostaje odnośnikiem prowadzącym do strony bieżącej. Logika budowania ścieżki zatrzymuje się na poziomie kategorii i nie dodaje elementu końcowego - karta produktu kończy ścieżkę na \"Katalog\", a artykuł na \"Aktualności\".",
+    "action_plan": [
+      "Krok 1 (Answer-First): Przenieś moduł okruszków z dołu dokumentu na górę, bezpośrednio nad nagłówek H1.",
+      "Krok 2: Renderuj ostatni element jako zwykły tekst z atrybutem aria-current=\"page\", a nie jako odnośnik.",
+      "Krok 3: Uzupełnij logikę o element końcowy, żeby pełna ścieżka kończyła się nazwą bieżącego dokumentu.",
+      "Krok 4: Zsynchronizuj warstwę wizualną z danymi BreadcrumbList w JSON-LD - obie muszą opisywać tę samą ścieżkę."
+    ],
+    "code_recipe": "{# Szablon - okruszki NAD nagłówkiem H1, ostatni element nieklikalny #}\n{% raw %}<nav class=\"okruszki\" aria-label=\"Nawigacja okruszkowa\">\n  <ol>\n    {% for element in okruszki %}\n      <li>\n        {% if forloop.last %}\n          <span aria-current=\"page\">{{ element.nazwa }}</span>\n        {% else %}\n          <a href=\"{{ element.adres }}\">{{ element.nazwa }}</a>\n        {% endif %}\n      </li>\n    {% endfor %}\n  </ol>\n</nav>\n\n<h1>{{ obiekt.tytul }}</h1>{% endraw %}\n\n# Budowa pełnej ścieżki - z elementem końcowym\ndef zbuduj_okruszki(obiekt):\n    sciezka = [{\"nazwa\": \"Strona główna\", \"adres\": \"/\"}]\n    for przodek in obiekt.kategoria.przodkowie():          # rodzic i wyżej\n        sciezka.append({\"nazwa\": przodek.nazwa, \"adres\": przodek.get_absolute_url()})\n    sciezka.append({\"nazwa\": obiekt.kategoria.nazwa, \"adres\": obiekt.kategoria.get_absolute_url()})\n    sciezka.append({\"nazwa\": obiekt.tytul, \"adres\": obiekt.get_absolute_url()})  # element końcowy\n    return sciezka\n\n<style>\n.okruszki ol{display:flex;flex-wrap:wrap;gap:.5rem;list-style:none;padding:0;margin:0 0 1rem}\n.okruszki li+li::before{content:\"/\";margin-inline-end:.5rem;opacity:.5}\n</style>",
+    "geo_impact": "Okruszki umieszczone przed treścią główną są dla parsera pierwszym sygnałem kontekstu dokumentu - model poznaje przynależność tematyczną, zanim zacznie czytać treść. Ścieżka ucięta na poziomie kategorii pozbawia go informacji o tym, czym konkretnie jest bieżąca strona."
+  },
+  {
+    "key": "head_order_and_modal_before_content",
+    "category": "architecture",
+    "cms_framework": "uniwersalny",
+    "title": "Obszerna klauzula informacyjna na początku <body> i przeładowana sekcja <head>",
+    "definition": "Kolejność kodu decyduje, jak szybko robot dociera do właściwej treści dokumentu. Najważniejsze znaczniki meta powinny znaleźć się na początku <head>, a treść merytoryczna - możliwie wysoko w <body>.",
+    "technical_cause": "Okno modalne z klauzulą informacyjną (kilkaset słów, identyczne na każdej podstronie) jest wstawiane na samym początku <body>, przed nagłówkiem serwisu, bo tak najprościej zapewnić mu wyświetlenie przed resztą interfejsu. Równolegle sekcja <head> puchnie od stylów osadzonych inline przez bundler, spychając tag canonical i znaczniki meta głęboko w dół dokumentu.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Przenieś kontener z klauzulą informacyjną na koniec dokumentu, bezpośrednio przed </body> - to zmiana wyłącznie w kolejności kodu, bez wpływu na wygląd i działanie.",
+      "Krok 2: Umieść znaczniki meta, canonical, hreflang i tytuł na samym początku <head>, przed blokami stylów.",
+      "Krok 3: Przenieś główne style do plików zewnętrznych, zostawiając inline wyłącznie Critical CSS pierwszego okna.",
+      "Krok 4: Sprawdź, czy treść powtarzalna umieszczona wysoko nie trafia do fragmentów wyników wyszukiwania zamiast meta description."
+    ],
+    "code_recipe": "<!DOCTYPE html>\n<html lang=\"pl\">\n<head>\n  <!-- 1. Najpierw metadane - muszą być w pierwszych kilobajtach dokumentu -->\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>Tytuł podstrony - Marka A</title>\n  <meta name=\"description\" content=\"...\">\n  <link rel=\"canonical\" href=\"https://www.klient-a.pl/podstrona\">\n  <meta name=\"robots\" content=\"index, follow\">\n\n  <!-- 2. Dopiero potem Critical CSS (krótki) i asynchroniczne arkusze -->\n  <style>/* wyłącznie style pierwszego okna */</style>\n  <link rel=\"preload\" href=\"/static/css/main.css\" as=\"style\"\n        onload=\"this.onload=null;this.rel='stylesheet'\">\n</head>\n<body>\n  <!-- 3. Treść merytoryczna wysoko w dokumencie -->\n  <header>...</header>\n  <nav aria-label=\"Menu główne\">...</nav>\n  <main>\n    <h1>Główny temat podstrony</h1>\n    ...\n  </main>\n  <footer>...</footer>\n\n  <!-- 4. Klauzula informacyjna NA KOŃCU - nakładka pozycjonowana przez CSS -->\n  <div class=\"klauzula-modal\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"klauzula-tytul\" hidden>\n    <h2 id=\"klauzula-tytul\">Informacja o przetwarzaniu danych</h2>\n    ...\n  </div>\n</body>\n</html>",
+    "geo_impact": "Parsery pracujące na limicie pierwszych N kilobajtów dokumentu mogą w ogóle nie dotrzeć do treści właściwej, jeśli poprzedza ją kilkaset słów klauzuli powtarzanej na każdej podstronie. Model dostaje wtedy z każdej strony serwisu ten sam tekst prawny zamiast unikalnej zawartości."
+  },
+  {
+    "key": "semantic_html_main_nav_button_anchor",
+    "category": "architecture",
+    "cms_framework": "uniwersalny",
+    "title": "Zduplikowane <main>, brak <nav> i odnośniki zagnieżdżone w przyciskach",
+    "definition": "Znaczniki sekcjonujące HTML wyznaczają granice bloków dokumentu: <main> obejmuje treść właściwą, <nav> bloki nawigacyjne. Poprawny podział pozwala robotom oddzielić treść unikalną od elementów powtarzalnych.",
+    "technical_cause": "Komponenty okien modalnych są budowane z własnym <main>, bo szablon komponentu powstał jako kopia szablonu strony. Menu i stopka używają zwykłych <div> zamiast <nav>. Do tego elementy pełniące funkcję odnośnika są zagnieżdżane wewnątrz przycisków (albo odwrotnie), co daje niepoprawną strukturę interaktywną i utrudnia odczyt technologiom asystującym.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Ogranicz liczbę elementów <main> do jednego na dokument - w komponentach modalnych zastąp go neutralnym <div> lub <section>.",
+      "Krok 2: Otocz menu główne i stopkę znacznikiem <nav> z opisowym aria-label - ułatwia to identyfikację bloków nawigacyjnych i wzmacnia przepływ linkowania wewnętrznego.",
+      "Krok 3: Rozdziel role: element prowadzący pod adres to <a href>, element uruchamiający akcję w obrębie strony to <button>; nie zagnieżdżaj ich wzajemnie.",
+      "Krok 4: Uzupełnij podział o <article> dla samodzielnych jednostek treści i <aside> dla materiału pobocznego."
+    ],
+    "code_recipe": "<!-- ŹLE - odnośnik wewnątrz przycisku, <main> w komponencie modalnym -->\n<button type=\"button\"><a href=\"/katalog\">Przejdź do katalogu</a></button>\n<div class=\"modal\"><main>...</main></div>\n\n<!-- DOBRZE - jasny podział ról i jeden <main> na dokument -->\n<header>\n  <nav aria-label=\"Menu główne\">\n    <ul>\n      <li><a href=\"/katalog\">Katalog</a></li>\n      <li><a href=\"/o-nas\">O nas</a></li>\n    </ul>\n  </nav>\n</header>\n\n<main>                                   <!-- dokładnie jeden na dokument -->\n  <article>\n    <h1>Tytuł dokumentu</h1>\n    <p>Treść właściwa...</p>\n  </article>\n\n  <aside aria-label=\"Materiały powiązane\">\n    <div class=\"tytul-sekcji\">Zobacz też</div>   <!-- bez znacznika Hx -->\n  </aside>\n</main>\n\n<nav aria-label=\"Stopka\">\n  <ul><li><a href=\"/kontakt\">Kontakt</a></li></ul>\n</nav>\n\n<!-- Przejście pod adres = <a>. Akcja w obrębie strony = <button>. -->\n<a class=\"przycisk\" href=\"/katalog\">Przejdź do katalogu</a>\n<button type=\"button\" class=\"przycisk\" data-otworz-modal>Pokaż szczegóły</button>\n\n<div class=\"modal\" role=\"dialog\" aria-modal=\"true\" hidden>\n  <section>...</section>                 <!-- NIE <main> -->\n</div>",
+    "geo_impact": "Parsery ekstrahujące treść główną (readability, boilerplate removal) opierają się na znacznikach sekcjonujących. Zduplikowany <main> albo jego brak sprawia, że algorytm wycina niewłaściwy fragment - model dostaje menu i stopkę zamiast artykułu."
+  },
+  {
+    "key": "outbound_links_nofollow_policy",
+    "category": "architecture",
+    "cms_framework": "uniwersalny",
+    "title": "Nadmiar odnośników wychodzących bez atrybutu rel",
+    "definition": "Odnośnik wychodzący przekazuje część autorytetu domeny stronie docelowej. Przy dużej liczbie takich odnośników moc rankingowa rozprasza się poza serwis, zamiast wspierać jego własne podstrony.",
+    "technical_cause": "Redakcja wstawia odnośniki zewnętrzne przez edytor WYSIWYG, który nie dodaje żadnego atrybutu rel. Osobnym przypadkiem są odnośniki do skracaczy adresów (systemy kampanijne) - przekazują one moc stronie przekierowującej, nie treści docelowej, i dodatkowo wprowadzają zbędny skok.",
+    "action_plan": [
+      "Krok 1 (Answer-First): Dodaj rel=\"nofollow\" do odnośników zewnętrznych w treściach redakcyjnych; wyjątkiem są odwołania do źródeł budujących wiarygodność, gdzie właściwsze bywa pozostawienie follow.",
+      "Krok 2: Zastąp odnośniki do skracaczy adresów bezpośrednimi adresami docelowymi - skracacz to dodatkowy skok i utrata mocy bez żadnej korzyści.",
+      "Krok 3: Oznacz odnośniki w treściach sponsorowanych rel=\"sponsored\", a w materiałach tworzonych przez użytkowników rel=\"ugc\".",
+      "Krok 4: Wprowadź regułę na poziomie filtra szablonu, żeby polityka obowiązywała automatycznie, zamiast zależeć od dyscypliny redakcji."
+    ],
+    "code_recipe": "# Django - filtr szablonu nadający politykę rel automatycznie\nfrom urllib.parse import urlparse\nfrom django.utils.safestring import mark_safe\nfrom bs4 import BeautifulSoup\nfrom django import template\n\nregister = template.Library()\n\nWLASNE_DOMENY = {\"klient-a.pl\", \"www.klient-a.pl\"}\n# Źródła budujące wiarygodność - tu follow jest sygnałem pozytywnym\nZAUFANE_ZRODLA = {\"gov.pl\", \"sejm.gov.pl\", \"nauka.gov.pl\", \"who.int\"}\n\n\n@register.filter\ndef polityka_linkow(html: str) -> str:\n    \"\"\"Uzupełnia rel i target dla odnośników wychodzących poza serwis.\"\"\"\n    zupa = BeautifulSoup(html, \"html.parser\")\n    for link in zupa.find_all(\"a\", href=True):\n        host = (urlparse(link[\"href\"]).hostname or \"\").lower()\n        if not host or host in WLASNE_DOMENY:\n            continue\n        if any(host.endswith(zaufana) for zaufana in ZAUFANE_ZRODLA):\n            link[\"rel\"] = [\"noopener\"]          # źródło merytoryczne - follow zostaje\n        else:\n            link[\"rel\"] = [\"nofollow\", \"noopener\"]\n        link[\"target\"] = \"_blank\"\n    return mark_safe(str(zupa))\n\n# Treści sponsorowane i tworzone przez użytkowników - osobne wartości rel\n# <a href=\"...\" rel=\"sponsored noopener\">materiał partnera</a>\n# <a href=\"...\" rel=\"ugc nofollow noopener\">link z komentarza</a>",
+    "geo_impact": "Odnośniki do zewnętrznych źródeł eksperckich (domeny rządowe, edukacyjne, uznane publikacje) są dla modeli sygnałem, że autor opiera twierdzenia na zewnętrznej wiedzy, a nie wyłącznie na własnej opinii. Polityka rel powinna więc rozróżniać źródła merytoryczne od odnośników komercyjnych, zamiast oznaczać wszystko jednakowo."
+  }
+]

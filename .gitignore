@@ -5,3 +5,11 @@ db.sqlite3
 chroma_db/
 .env
 client_secret*.json
+
+# Źródłowe dokumenty audytowe klientów - zawierają nazwy firm, domeny, dane
+# kontaktowe i statystyki objęte poufnością. NIE trafiają do repozytorium.
+docs/audits/*
+
+# Wyjątek: zanonimizowana baza wiedzy RAG jest produktem pochodnym tych dokumentów
+# i ma być wersjonowana - to ona zasila silnik rekomendacji (auditor.services.rag).
+!docs/audits/rag_knowledge_base.json
