@@ -10,6 +10,8 @@
         </div>
         <pre><code>{{ segment.content }}</code></pre>
     </div>
+    {% elif segment.type == "heading" %}
+    <div class="recommendation-heading">{{ segment.content }}</div>
     {% else %}
     <p>{{ segment.content }}</p>
     {% endif %}

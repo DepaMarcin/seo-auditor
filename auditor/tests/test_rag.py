@@ -6,12 +6,12 @@ OpenAIEmbeddings, chroma_collection) są tu w pełni zamockowane.
 """
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from django.test import TestCase
 
 from auditor.models import KnowledgeDocument
-from auditor.services.rag import RAGEngine
+from auditor.services.rag import COLLECTION_NAME, RAGEngine
 
 
 class OpenAIPermissionDeniedError(Exception):
@@ -91,6 +91,88 @@ class RAGEngineIndexKnowledgeBaseTests(TestCase):
         count = engine.index_knowledge_base()
 
         self.assertEqual(count, 0)
+
+
+class ChromaDimensionMismatchError(Exception):
+    """Symuluje chromadb.errors.InvalidArgumentError przy zmianie modelu embeddingów."""
+
+    def __str__(self) -> str:
+        return "Collection expecting embedding with dimension of 384, got 1536"
+
+
+class RAGEngineCollectionRebuildTests(TestCase):
+    """Zmiana modelu embeddingów zmienia długość wektora, a ChromaDB ustala ją
+    bezpowrotnie przy tworzeniu kolekcji.
+
+    Regresja: po odzyskaniu dostępu do embeddingów OpenAI (1536 wymiarów) indeks
+    zbudowany domyślnym modelem ChromaDB (384) odrzucał każdy zapis, a komenda
+    raportowała "zaindeksowano 0" - wyszukiwanie po cichu zostawało na fallbacku.
+    """
+
+    def setUp(self):
+        KnowledgeDocument.objects.create(title="Meta description", content="...", category="seo")
+        KnowledgeDocument.objects.create(title="Canonical", content="...", category="technical")
+
+    def test_dimension_mismatch_rebuilds_collection_and_retries(self):
+        stara = MagicMock(name="kolekcja-384")
+        stara.upsert.side_effect = ChromaDimensionMismatchError()
+        nowa = MagicMock(name="kolekcja-1536")
+        engine = _make_engine(collection=stara)
+
+        with patch.object(RAGEngine, "_recreate_collection") as przebudowa:
+            def podmien():
+                engine._collection = nowa
+                return nowa
+
+            przebudowa.side_effect = podmien
+            count = engine.index_knowledge_base()
+
+        self.assertEqual(count, 2)
+        przebudowa.assert_called_once()
+        nowa.upsert.assert_called_once()
+
+    def test_other_chroma_error_does_not_rebuild_collection(self):
+        """Przebudowa kasuje kolekcję - nie może być reakcją na dowolny błąd zapisu."""
+        mock_collection = MagicMock()
+        mock_collection.upsert.side_effect = RuntimeError("dysk pełny")
+        engine = _make_engine(collection=mock_collection)
+
+        with patch.object(RAGEngine, "_recreate_collection") as przebudowa:
+            count = engine.index_knowledge_base()
+
+        self.assertEqual(count, 0)
+        przebudowa.assert_not_called()
+
+    def test_failure_after_rebuild_returns_zero_without_raising(self):
+        stara = MagicMock()
+        stara.upsert.side_effect = ChromaDimensionMismatchError()
+        engine = _make_engine(collection=stara)
+
+        with patch.object(RAGEngine, "_recreate_collection", side_effect=RuntimeError("brak katalogu")):
+            count = engine.index_knowledge_base()
+
+        self.assertEqual(count, 0)
+
+    def test_recreate_collection_deletes_before_creating(self):
+        klient = MagicMock()
+        engine = _make_engine()
+        engine._chroma_client = klient
+
+        engine._recreate_collection()
+
+        klient.delete_collection.assert_called_once_with(COLLECTION_NAME)
+        klient.get_or_create_collection.assert_called_once_with(COLLECTION_NAME)
+
+    def test_recreate_collection_survives_missing_collection(self):
+        """Katalog chroma_db bywa czyszczony ręcznie - brak kolekcji to nie błąd."""
+        klient = MagicMock()
+        klient.delete_collection.side_effect = RuntimeError("Collection not found")
+        engine = _make_engine()
+        engine._chroma_client = klient
+
+        engine._recreate_collection()
+
+        klient.get_or_create_collection.assert_called_once_with(COLLECTION_NAME)
 
 
 class RAGEngineRetrieveKnowledgeTests(TestCase):

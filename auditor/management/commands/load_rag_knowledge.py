@@ -285,4 +285,14 @@ class Command(BaseCommand):
             )
             return
 
+        if not ile:
+            self.stdout.write(
+                self.style.WARNING(
+                    "Indeksowanie ChromaDB nie objęło żadnego dokumentu. Import do bazy się "
+                    "powiódł, ale wyszukiwanie zejdzie na fallback po kategorii - sprawdź log "
+                    "auditor.services.rag."
+                )
+            )
+            return
+
         self.stdout.write(self.style.SUCCESS(f"Zaindeksowano {ile} dokument(ów) w ChromaDB."))

@@ -1,0 +1,318 @@
+{
+  "summary": {
+    "structure_score": 0.0,
+    "content_score": 61.8,
+    "code_score": 88.2,
+    "average": 50.0,
+    "retrieval_hit_rate": 100.0,
+    "cases": 17
+  },
+  "results": [
+    {
+      "test_id": "lcp_hero_image_optimization",
+      "category": "performance",
+      "expected_key": "lcp_hero_image_optimization",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "render_blocking_css_and_fonts",
+        "image_next_gen_formats_and_sizing"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka lcp poza normą (wartość: 7.05s). Technologia: Nuxt.js. Zastany element: <img src=\"/_nuxt/hero-baner.jpg\" loading=\"lazy\" class=\"hero__img\">",
+      "answer": "Aby poprawić metrykę LCP, należy usunąć atrybut `loading=\"lazy\"` z obrazu LCP oraz dodać atrybut `fetchpriority=\"high\"`. Proponowany kod HTML powinien wyglądać następująco:\n\n```html\n<img src=\"/_nuxt/hero-baner.jpg\" \n     fetchpriority=\"high\" \n     width=\"1920\" height=\"900\" \n     alt=\"Opis zawartości grafiki z frazą kluczową podstrony\">\n```\n\nDodatkowo warto rozważyć dodanie znacznika `<link rel=\"preload\" as=\"image\" href=\"/_nuxt/hero-baner.jpg\">` w sekcji `<head>`, aby przyspieszyć ładowanie obrazu.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wszystkie wymagania dotyczące kodu.",
+      "average": 50.0
+    },
+    {
+      "test_id": "render_blocking_css_and_fonts",
+      "category": "performance",
+      "expected_key": "render_blocking_css_and_fonts",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "render_blocking_css_and_fonts",
+        "inp_main_thread_blocking"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka fcp poza normą (wartość: 4.8s). Technologia: Nuxt.js. Zastany element: <link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter\">",
+      "answer": "Aby poprawić metrykę FCP, zaleca się przenieść ładowanie fontów z Google na własną domenę oraz użyć `@font-face` z `font-display: swap`, co zminimalizuje opóźnienia związane z zewnętrznymi żądaniami. Dodatkowo, warto dodać preload dla najważniejszych krojów fontów, aby przyspieszyć ich ładowanie. \n\nPrzykładowy kod do implementacji:\n\n```html\n<!-- Preload fontu z własnej domeny -->\n<link rel=\"preload\" href=\"/static/fonts/inter-regular.woff2\" as=\"font\" type=\"font/woff2\" crossorigin>\n<style>\n  @font-face {\n    font-family: \"Inter\";\n    src: url(\"/static/fonts/inter-regular.woff2\") format(\"woff2\");\n    font-weight: 400;\n    font-display: swap; /* tekst widoczny od razu krojem zapasowym */\n  }\n</style>\n```",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji oraz tylko częściowe pokrycie słów kluczowych, mimo że kod spełnia wszystkie wymagania.",
+      "average": 50.0
+    },
+    {
+      "test_id": "cls_missing_image_dimensions",
+      "category": "performance",
+      "expected_key": "cls_missing_image_dimensions",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "cls_missing_image_dimensions",
+        "image_next_gen_formats_and_sizing"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka cls poza normą (wartość: 0.58). Technologia: WordPress. Zastany element: <img src=\"/wp-content/uploads/2026/oferta.jpg\" alt=\"Oferta\">",
+      "answer": "Aby poprawić metrykę CLS, należy dodać atrybuty `width` i `height` do znacznika `<img>`, co pozwoli przeglądarce zarezerwować odpowiednią przestrzeń przed załadowaniem obrazu. \n\nObecnie: \n```html\n<img src=\"/wp-content/uploads/2026/oferta.jpg\" alt=\"Oferta\">\n```\nProponowane: \n```html\n<img src=\"/wp-content/uploads/2026/oferta.jpg\" width=\"800\" height=\"450\" alt=\"Oferta\">\n``` \n\nDodatkowo, jeśli obraz jest elementem LCP, rozważ usunięcie `loading=\"lazy\"` oraz dodanie `fetchpriority=\"high\"` dla lepszego wczytywania.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wszystkie wymagania dotyczące kodu.",
+      "average": 50.0
+    },
+    {
+      "test_id": "inp_main_thread_blocking",
+      "category": "performance",
+      "expected_key": "inp_main_thread_blocking",
+      "retrieved_keys": [
+        "render_blocking_css_and_fonts",
+        "inp_main_thread_blocking",
+        "forced_reflow_layout_thrashing"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka inp poza normą (wartość: 345ms). Technologia: React. Zastany element: Wątek główny zajęty 4,8 s; 789 kB nieużywanego JavaScriptu.",
+      "answer": "Aby poprawić wydajność strony i zredukować czas zajęcia wątku głównego, zalecam usunięcie nieużywanego JavaScriptu oraz zastosowanie techniki code splitting. Proponuję również przenieść skrypty zewnętrzne, takie jak analityka, na koniec ładowania strony, używając atrybutu `defer`. \n\nPrzykład poprawki:\n```html\n<script src=\"/static/js/app.js\" defer></script>\n```\n\nDodatkowo, warto rozważyć podział kodu na mniejsze fragmenty, które będą ładowane tylko w razie potrzeby, co przyczyni się do szybszego renderowania i lepszego doświadczenia użytkownika.",
+      "structure_score": 0.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, mimo że wszystkie kluczowe pojęcia i wymagania dotyczące kodu zostały spełnione.",
+      "average": 66.66666666666667
+    },
+    {
+      "test_id": "js_pagination_button_blocks_crawl",
+      "category": "technical",
+      "expected_key": "js_pagination_button_blocks_crawl",
+      "retrieved_keys": [
+        "js_pagination_button_blocks_crawl",
+        "tiles_without_anchor_orphan_pages",
+        "semantic_html_main_nav_button_anchor"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka internal_linking poza normą (wartość: 25 z ~100 pozycji katalogu w initial HTML). Technologia: Nuxt.js. Zastany element: <button type=\"button\" class=\"link\">Więcej wyników</button>",
+      "answer": "Obecnie: `<button type=\"button\" class=\"link\">Więcej wyników</button>` -> Proponowane: \n```html\n<nav class=\"paginacja\" aria-label=\"Paginacja katalogu\">\n  <a class=\"paginacja-wiecej\" href=\"?page=2\" rel=\"next\" data-paginacja>\n    Więcej wyników\n  </a>\n</nav>\n```\nZamień przycisk na klasyczny odnośnik, aby umożliwić robotom wyszukiwarek dostęp do kolejnych stron katalogu. Upewnij się, że adres URL jest poprawnie aktualizowany przez JavaScript, aby zachować wygodę użytkownika.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wszystkie wymagania dotyczące kodu.",
+      "average": 50.0
+    },
+    {
+      "test_id": "url_non_ascii_and_uppercase",
+      "category": "technical",
+      "expected_key": "url_non_ascii_and_uppercase",
+      "retrieved_keys": [
+        "js_pagination_button_blocks_crawl",
+        "sitemap_index_segmentation",
+        "url_non_ascii_and_uppercase"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka canonical poza normą (wartość: 195 adresów ze znakami spoza ASCII, 2836 z wielkimi literami). Technologia: WordPress. Zastany element: https://przyklad.pl/katalog/Kopalnia-złota,64",
+      "answer": "Obecnie: `https://przyklad.pl/katalog/Kopalnia-złota,64` -> Proponowane: `https://przyklad.pl/katalog/kopalnia-zlota-64`. \n\nZalecam wprowadzenie transliteracji do ASCII oraz konwersji na małe litery dla adresów URL w CMS, aby uniknąć problemów z indeksowaniem i linkowaniem. Dodatkowo, upewnij się, że wszystkie adresy URL są jednolite i nie zawierają znaków diakrytycznych ani wielkich liter.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 0.0,
+      "justification": "Brak wymaganych sekcji oraz fragmentu kodu, a jedynie częściowe pokrycie słów kluczowych.",
+      "average": 16.666666666666668
+    },
+    {
+      "test_id": "sitemap_index_segmentation",
+      "category": "technical",
+      "expected_key": "sitemap_index_segmentation",
+      "retrieved_keys": [
+        "sitemap_index_segmentation",
+        "redirect_chain_and_domain_canonicalization",
+        "robots_ai_bot_access_control"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka http_errors poza normą (wartość: sitemap.xml z 2681 adresami, ostatnia aktualizacja 2020). Technologia: Django. Zastany element: Mapa zawiera adresy 404, 301 oraz zablokowane w robots.txt.",
+      "answer": "Aby poprawić jakość mapy witryny i uniknąć problemów z błędami HTTP, należy zaktualizować sposób jej generowania. Proponuję zastąpić statyczny plik generatorem działającym na żywo, który uwzględnia tylko adresy ze statusem 200 oraz dyrektywą index. Dodatkowo, warto podzielić mapę na segmenty tematyczne, co ułatwi diagnostykę. Oto przykładowy kod do implementacji w Django:\n\n```python\n# config/urls.py\nfrom django.contrib.sitemaps.views import index, sitemap\nfrom katalog.sitemaps import KategorieSitemap, ProduktySitemap, BlogSitemap, StronySitemap\n\nSITEMAPS = {\n    \"kategorie\": KategorieSitemap,\n    \"produkty\": ProduktySitemap,\n    \"blog\": BlogSitemap,\n    \"strony\": StronySitemap,\n}\n\nurlpatterns = [\n    path(\"sitemap.xml\", index, {\"sitemaps\": SITEMAPS}, name=\"sitemap-index\"),\n    path(\"sitemap-<section>.xml\", sitemap, {\"sitemaps\": SITEMAPS},\n         name=\"django.contrib.sitemaps.views.sitemap\"),\n]\n```",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, co wpłynęło na niską ocenę struktury, natomiast spełniono wszystkie wymagania dotyczące kodu.",
+      "average": 50.0
+    },
+    {
+      "test_id": "robots_ai_bot_access_control",
+      "category": "technical",
+      "expected_key": "robots_ai_bot_access_control",
+      "retrieved_keys": [
+        "sitemap_index_segmentation",
+        "redirect_chain_and_domain_canonicalization",
+        "robots_ai_bot_access_control"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka robots_ai_bots poza normą (wartość: GPTBot: 403, ClaudeBot: 403, Google-Extended: brak reguły). Technologia: uniwersalny. Zastany element: User-agent: *\nDisallow: /szukaj/",
+      "answer": "Obecnie: \n```\nUser-agent: *\nDisallow: /szukaj/\n```\nProponowane: \n```\nUser-agent: Google-Extended\nAllow: /\n\nUser-agent: GPTBot\nAllow: /\n\nUser-agent: ClaudeBot\nAllow: /\n\nUser-agent: *\nDisallow: /koszyk/\nDisallow: /szukaj/\nAllow: /\n```\nZaleca się dodanie jawnych reguł Allow dla agentów AI w pliku robots.txt, aby umożliwić im dostęp do strony i poprawić widoczność w odpowiedziach generatywnych.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji oraz tylko częściowe pokrycie słów kluczowych, ale spełniono wszystkie wymagania dotyczące kodu.",
+      "average": 50.0
+    },
+    {
+      "test_id": "redirect_chain_domain_canonicalization",
+      "category": "technical",
+      "expected_key": "redirect_chain_and_domain_canonicalization",
+      "retrieved_keys": [
+        "url_non_ascii_and_uppercase",
+        "redirect_chain_and_domain_canonicalization",
+        "temporary_redirect_302_instead_of_301"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka redirect_chain poza normą (wartość: 3 skoki: http://domena -> https://domena -> https://www.domena). Technologia: uniwersalny. Zastany element: http://przyklad.pl/ -> 301 -> https://przyklad.pl/ -> 301 -> https://www.przyklad.pl/",
+      "answer": "Aby poprawić łańcuch przekierowań, należy zredukować go do jednego skoku 301, który przekierowuje z adresu http://przyklad.pl/ bezpośrednio na https://www.przyklad.pl/. Proponowane rozwiązanie to zastosowanie jednej reguły w konfiguracji serwera, która obsłuży wszystkie warianty adresów. \n\nPrzykład reguły w Nginx:\n\n```nginx\nserver {\n    listen 80;\n    server_name przyklad.pl;\n    return 301 https://www.przyklad.pl$request_uri;\n}\n\nserver {\n    listen 443 ssl http2;\n    server_name przyklad.pl;\n    return 301 https://www.przyklad.pl$request_uri;\n}\n```\n\nDzięki temu wszystkie zapytania zostaną przekierowane w jednym kroku, co poprawi efektywność SEO.",
+      "structure_score": 0.0,
+      "content_score": 75.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wszystkie wymagania dotyczące kodu oraz większość kluczowych pojęć.",
+      "average": 58.333333333333336
+    },
+    {
+      "test_id": "schema_faqpage_for_answer_boxes",
+      "category": "structure",
+      "expected_key": "schema_faqpage_for_answer_boxes",
+      "retrieved_keys": [
+        "schema_faqpage_for_answer_boxes",
+        "answer_first_modular_content",
+        "hidden_content_ssr_details_pattern"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka structured_content poza normą (wartość: sekcja FAQ obecna wizualnie, brak JSON-LD). Technologia: WordPress. Zastany element: <div class=\"akordeon\"><button>Jaki jest czas realizacji?</button></div>",
+      "answer": "Aby poprawić SEO sekcji FAQ na stronie, należy dodać odpowiednią strukturę JSON-LD, aby Google mógł zrozumieć pytania i odpowiedzi. Przykład poprawki: \n\n```html\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"FAQPage\",\n  \"mainEntity\": [\n    {\n      \"@type\": \"Question\",\n      \"name\": \"Jaki jest czas realizacji?\",\n      \"acceptedAnswer\": {\n        \"@type\": \"Answer\",\n        \"text\": \"Zamówienia złożone do godziny 14:00 realizujemy tego samego dnia roboczego.\"\n      }\n    }\n  ]\n}\n</script>\n\n<section class=\"faq\">\n  <h2>Najczęstsze pytania</h2>\n  <details>\n    <summary><h3>Jaki jest czas realizacji?</h3></summary>\n    <p>Zamówienia złożone do godziny 14:00 realizujemy tego samego dnia roboczego.</p>\n  </details>\n</section>\n```\n\nUpewnij się, że pełna treść odpowiedzi jest dostępna w HTML, nawet gdy sekcja jest zwinięta.",
+      "structure_score": 0.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, mimo że wszystkie pojęcia kluczowe i wymagania dotyczące kodu zostały spełnione.",
+      "average": 66.66666666666667
+    },
+    {
+      "test_id": "schema_graph_organization_website",
+      "category": "structure",
+      "expected_key": "schema_graph_organization_website",
+      "retrieved_keys": [
+        "schema_graph_organization_website",
+        "schema_breadcrumblist",
+        "schema_article_completeness"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka schema_entity_linking poza normą (wartość: brak Organization i WebSite). Technologia: Nuxt.js. Zastany element: Brak bloku application/ld+json w sekcji <head> strony głównej.",
+      "answer": "Aby poprawić problem z brakiem metryki schema_entity_linking, należy dodać blok JSON-LD w sekcji <head> strony głównej, który zawiera encje Organization, WebSite i WebPage. \n\nProponowany kod do dodania to:\n\n```html\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@graph\": [\n    {\n      \"@type\": \"Organization\",\n      \"@id\": \"https://www.klient-a.pl/#organization\",\n      \"name\": \"Marka A\",\n      \"url\": \"https://www.klient-a.pl/\"\n    },\n    {\n      \"@type\": \"WebSite\",\n      \"@id\": \"https://www.klient-a.pl/#website\",\n      \"url\": \"https://www.klient-a.pl/\",\n      \"name\": \"klient-a.pl\"\n    },\n    {\n      \"@type\": \"WebPage\",\n      \"@id\": \"https://www.klient-a.pl/#webpage\",\n      \"url\": \"https://www.klient-a.pl/\",\n      \"name\": \"Marka A - oficjalny serwis\",\n      \"isPartOf\": { \"@id\": \"https://www.klient-a.pl/#website\" }\n    }\n  ]\n}\n</script>\n```\n\nDodanie tego bloku poprawi spójność danych strukturalnych i ułatwi wyszukiwarkom zrozumienie tożsamości marki.",
+      "structure_score": 0.0,
+      "content_score": 75.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wszystkie wymagania dotyczące kodu oraz 75% pojęć kluczowych.",
+      "average": 58.333333333333336
+    },
+    {
+      "test_id": "heading_noise_in_navigation",
+      "category": "structure",
+      "expected_key": "heading_noise_in_navigation",
+      "retrieved_keys": [
+        "heading_noise_in_navigation",
+        "answer_first_modular_content",
+        "hidden_content_ssr_details_pattern"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka heading_noise poza normą (wartość: 14 znaczników H2/H3 w stopce i module rekomendacji). Technologia: WordPress. Zastany element: <aside class=\"czytaj-wiecej\"><h2>Czytaj więcej</h2><a href=\"/wpis\"><h3>Tytuł</h3></a></aside>",
+      "answer": "Aby poprawić problem szumu nagłówkowego na stronie, należy zamienić znaczniki H2 i H3 w module \"Czytaj więcej\" na neutralne semantycznie elementy, co pomoże w utrzymaniu właściwej hierarchii nagłówków. \n\nObecnie: \n```html\n<aside class=\"czytaj-wiecej\"><h2>Czytaj więcej</h2><a href=\"/wpis\"><h3>Tytuł</h3></a></aside>\n```\nProponowane: \n```html\n<aside class=\"czytaj-wiecej\" aria-label=\"Powiązane artykuły\">\n  <div class=\"czytaj-wiecej-tytul\">Czytaj więcej</div>\n  <a href=\"/wpis\"><span class=\"czytaj-wiecej-pozycja\">Tytuł</span></a>\n</aside>\n```\n\nDzięki tej zmianie, roboty wyszukiwarek będą miały lepszy dostęp do tematyki strony, co poprawi jej autorytet w wynikach wyszukiwania.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wszystkie wymagania dotyczące kodu oraz połowę pojęć kluczowych.",
+      "average": 50.0
+    },
+    {
+      "test_id": "csr_to_ssr_content_availability",
+      "category": "structure",
+      "expected_key": "csr_to_ssr_content_availability",
+      "retrieved_keys": [
+        "schema_faqpage_for_answer_boxes",
+        "csr_to_ssr_content_availability",
+        "hidden_content_ssr_details_pattern"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka javascript_rendering poza normą (wartość: 36,5% treści doładowywane przez JS; lista ofert pusta bez JS). Technologia: React. Zastany element: <div id=\"root\"></div><script src=\"/static/app.js\"></script>",
+      "answer": "Aby poprawić problem z renderowaniem treści na stronie, należy przenieść kluczowe dane z komponentów React do surowego HTML, aby były dostępne dla robotów wyszukiwarek. Proponuję zastosować podejście \"HTML-First\", co oznacza, że wszystkie istotne informacje powinny być renderowane po stronie serwera. Przykładowo, zamiast używać `<div id=\"root\"></div><script src=\"/static/app.js\"></script>`, należy umieścić pełną treść w HTML, jak poniżej:\n\n```html\n<div id=\"root\">\n  <section>\n    <h2>Oferty</h2>\n    <ul>\n      <li>Oferta 1: Szczegóły oferty 1</li>\n      <li>Oferta 2: Szczegóły oferty 2</li>\n    </ul>\n  </section>\n</div>\n<script src=\"/static/app.js\"></script>\n```\n\nDzięki temu treść będzie dostępna dla robotów wyszukiwarek, nawet gdy JavaScript jest wyłączony.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 50.0,
+      "justification": "Brak wymaganych sekcji oraz niepełne pokrycie słów kluczowych i wymagań kodu.",
+      "average": 33.333333333333336
+    },
+    {
+      "test_id": "sitewide_duplicate_title_and_description",
+      "category": "seo",
+      "expected_key": "sitewide_duplicate_title_and_description",
+      "retrieved_keys": [
+        "author_entity_person_hub",
+        "freshness_signal_and_verification_date",
+        "sitewide_duplicate_title_and_description"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka title poza normą (wartość: ten sam title na wszystkich badanych podstronach). Technologia: Nuxt.js. Zastany element: <title>Sklep internetowy - oferta i promocje</title>",
+      "answer": "Obecnie: `<title>Sklep internetowy - oferta i promocje</title>` -> Proponowane: `<title>Oferta i promocje w Sklepie Internetowym - [Nazwa Marki]</title>`. Należy zróżnicować tytuły dla każdej podstrony, aby lepiej odzwierciedlały ich zawartość oraz intencje użytkowników. Upewnij się, że każdy tytuł nie przekracza 65 znaków i zawiera unikalne informacje dotyczące danej podstrony.",
+      "structure_score": 0.0,
+      "content_score": 75.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wszystkie wymagania dotyczące kodu oraz 3 z 4 kluczowych pojęć.",
+      "average": 58.333333333333336
+    },
+    {
+      "test_id": "meta_description_duplication",
+      "category": "seo",
+      "expected_key": "sitewide_duplicate_title_and_description",
+      "retrieved_keys": [
+        "author_entity_person_hub",
+        "sitewide_duplicate_title_and_description",
+        "internal_linking_semantic_context"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka meta_description poza normą (wartość: identyczny opis na 480 podstronach). Technologia: WordPress. Zastany element: <meta name=\"description\" content=\"Wejdź i sprawdź naszą ofertę!\">",
+      "answer": "Obecnie: <meta name=\"description\" content=\"Wejdź i sprawdź naszą ofertę!\"> -> Proponowane: <meta name=\"description\" content=\"Odkryj naszą różnorodną ofertę i znajdź idealne rozwiązanie dla siebie! Sprawdź teraz!\">. Należy zróżnicować meta description dla każdej podstrony, aby lepiej odzwierciedlało jej zawartość i zwiększało CTR. Warto również dostosować długość opisu do 140-155 znaków, aby zmaksymalizować jego efektywność w wynikach wyszukiwania.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wymagania dotyczące fragmentu kodu.",
+      "average": 50.0
+    },
+    {
+      "test_id": "author_entity_person_hub",
+      "category": "seo",
+      "expected_key": "author_entity_person_hub",
+      "retrieved_keys": [
+        "author_entity_person_hub",
+        "freshness_signal_and_verification_date",
+        "sitewide_duplicate_title_and_description"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka eeat_authorship poza normą (wartość: author wskazuje Organization, brak stron autorów). Technologia: WordPress. Zastany element: \"author\": {\"@type\": \"Organization\", \"name\": \"Marka A\"}",
+      "answer": "Obecnie: `\"author\": {\"@type\": \"Organization\", \"name\": \"Marka A\"}` -> Proponowane: `\"author\": {\"@type\": \"Person\", \"name\": \"Imię Nazwisko\", \"jobTitle\": \"Stanowisko\", \"url\": \"https://www.klient-b.pl/eksperci/imie-nazwisko\", \"sameAs\": [\"https://www.linkedin.com/in/imie-nazwisko\"]}`. \n\nZaleca się utworzenie dedykowanej podstrony biograficznej dla każdego autora, aby zwiększyć wiarygodność treści i umożliwić użytkownikom oraz wyszukiwarkom lepsze zrozumienie kompetencji autora.",
+      "structure_score": 0.0,
+      "content_score": 75.0,
+      "code_score": 50.0,
+      "justification": "Brak wymaganych sekcji oraz niepełne spełnienie wymagań dotyczących kodu wpłynęły na niskie oceny.",
+      "average": 41.666666666666664
+    },
+    {
+      "test_id": "freshness_signal_and_verification_date",
+      "category": "seo",
+      "expected_key": "freshness_signal_and_verification_date",
+      "retrieved_keys": [
+        "author_entity_person_hub",
+        "freshness_signal_and_verification_date",
+        "sitewide_duplicate_title_and_description"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka eeat_freshness poza normą (wartość: datePublished == dateModified, 19 miesięcy bez zmian). Technologia: WordPress. Zastany element: \"datePublished\": \"2024-11-08\", \"dateModified\": \"2024-11-08\"",
+      "answer": "Aby poprawić sygnał świeżości treści, należy zaktualizować datę modyfikacji artykułu, aby odzwierciedlała ostatnią weryfikację merytoryczną, a nie była identyczna z datą publikacji. Proponuję wprowadzić osobne pole \"data weryfikacji merytorycznej\" oraz zaktualizować JSON-LD. \n\nObecnie: \n```json\n\"datePublished\": \"2024-11-08\", \"dateModified\": \"2024-11-08\"\n```\nProponowane: \n```json\n\"datePublished\": \"2024-11-08\", \"dateModified\": \"2026-09-02\"\n```\n\nDodatkowo, umieść widoczny znacznik aktualności pod nagłówkiem H1, aby użytkownicy mogli zobaczyć datę ostatniej weryfikacji.",
+      "structure_score": 0.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Brak wymaganych sekcji w odpowiedzi, ale spełniono wszystkie wymagania dotyczące kodu.",
+      "average": 50.0
+    }
+  ]
+}

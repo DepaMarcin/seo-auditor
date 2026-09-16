@@ -1,0 +1,318 @@
+{
+  "summary": {
+    "structure_score": 100.0,
+    "content_score": 100.0,
+    "code_score": 100.0,
+    "average": 100.0,
+    "retrieval_hit_rate": 100.0,
+    "cases": 17
+  },
+  "results": [
+    {
+      "test_id": "lcp_hero_image_optimization",
+      "category": "performance",
+      "expected_key": "lcp_hero_image_optimization",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "render_blocking_css_and_fonts",
+        "image_next_gen_formats_and_sizing"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka lcp poza normą (wartość: 7.05s). Technologia: Nuxt.js. Zastany element: <img src=\"/_nuxt/hero-baner.jpg\" loading=\"lazy\" class=\"hero__img\">",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z metryką LCP (Largest Contentful Paint), która wynosi 7.05s, co jest znacznie powyżej normy. Głównym powodem jest to, że obraz LCP, który jest kluczowym elementem wizualnym, ma atrybut `loading=\"lazy\"`. Ten atrybut powoduje, że przeglądarka opóźnia pobranie obrazu do momentu, gdy inne zasoby (jak skrypty i style) zostaną załadowane, co znacząco wpływa na czas wyrysowania tego elementu. Dodatkowo, jeśli obraz jest wstrzykiwany przez JavaScript, to nie jest on wykrywany w surowym HTML, co jeszcze bardziej opóźnia jego renderowanie.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Usuń atrybut `loading=\"lazy\"` z obrazu stanowiącego element LCP i dodaj `fetchpriority=\"high\"`, aby zapewnić priorytetowe pobieranie tego obrazu.\n2. Dodaj do sekcji `<head>` element `<link rel=\"preload\" as=\"image\">` z odpowiednim `imagesrcset` dla obrazu LCP, aby umożliwić równoległe pobieranie.\n3. Wprowadź regułę w szablonie, aby zachować `loading=\"lazy\"` dla wszystkich obrazów poniżej pierwszego okna, co pozwoli na efektywne wykorzystanie leniwego ładowania.\n4. Jeśli obraz LCP jest tłem CSS, przenieś go do znacznika `<img>`, aby zapewnić jego wczesne renderowanie.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- HEAD: skaner wstępny pobiera obraz LCP równolegle z CSS -->\n<link rel=\"preload\" as=\"image\"\n      href=\"/media/hero-1280.avif\"\n      imagesrcset=\"/media/hero-640.avif 640w,\n                   /media/hero-1280.avif 1280w,\n                   /media/hero-1920.avif 1920w\"\n      imagesizes=\"100vw\"\n      fetchpriority=\"high\">\n\n<!-- BODY: element LCP - BEZ loading=\"lazy\", z jawnymi wymiarami -->\n<img src=\"/media/hero-1280.avif\"\n     srcset=\"/media/hero-640.avif 640w,\n             /media/hero-1280.avif 1280w,\n             /media/hero-1920.avif 1920w\"\n     sizes=\"100vw\"\n     width=\"1920\" height=\"900\"\n     fetchpriority=\"high\"\n     decoding=\"async\"\n     alt=\"Opis zawartości grafiki z frazą kluczową podstrony\">\n\n<!-- Obrazy PONIŻEJ pierwszego okna - dopiero tutaj leniwe ładowanie -->\n<img src=\"/media/sekcja-2.avif\" width=\"800\" height=\"450\"\n     loading=\"lazy\" decoding=\"async\" alt=\"...\">\n```\nObecnie: `<img src=\"/_nuxt/hero-baner.jpg\" loading=\"lazy\" class=\"hero__img\">` -> Proponowane: `<img src=\"/media/hero-1280.avif\" srcset=\"/media/hero-640.avif 640w, /media/hero-1280.avif 1280w, /media/hero-1920.avif 1920w\" sizes=\"100vw\" width=\"1920\" height=\"900\" fetchpriority=\"high\" decoding=\"async\" alt=\"Opis zawartości grafiki z frazą kluczową podstrony\">`.",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "render_blocking_css_and_fonts",
+      "category": "performance",
+      "expected_key": "render_blocking_css_and_fonts",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "render_blocking_css_and_fonts",
+        "inp_main_thread_blocking"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka fcp poza normą (wartość: 4.8s). Technologia: Nuxt.js. Zastany element: <link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter\">",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z metryką FCP (First Contentful Paint), która wynosi 4.8 sekundy, co jest wartością znacznie przekraczającą normę. Główną przyczyną tego opóźnienia jest zewnętrzny arkusz stylów Google Fonts, który blokuje renderowanie, a także sposób, w jaki Nuxt.js ładował style. Element `<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter\">` jest jednym z zasobów, które przyczyniają się do opóźnienia, ponieważ przeglądarka musi najpierw pobrać ten arkusz, zanim wyświetli jakiekolwiek treści na stronie.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Krok 1 (Answer-First)**: Przenieś plik fontu na własną domenę i wczytaj go przez `@font-face` z `font-display: swap`, aby zminimalizować opóźnienia związane z zewnętrznym źródłem.\n2. **Krok 2**: Wyodrębnij Critical CSS dla pierwszego okna i osadź go inline w `<style>` w `<head>`, aby przyspieszyć pierwsze wyrysowanie.\n3. **Krok 3**: Dodaj preload dla najważniejszych krojów fontów, aby przeglądarka mogła je pobrać równolegle z innymi zasobami.\n4. **Krok 4**: Zastosuj technikę asynchronicznego ładowania pozostałych arkuszy CSS, aby nie blokowały renderowania.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- 1. Font z własnej domeny + preload TYLKO kroju podstawowego -->\n<link rel=\"preload\" href=\"/static/fonts/inter-regular.woff2\" as=\"font\" type=\"font/woff2\" crossorigin>\n<style>\n  @font-face {\n    font-family: \"Inter\";\n    src: url(\"/static/fonts/inter-regular.woff2\") format(\"woff2\");\n    font-weight: 400;\n    font-display: swap; /* tekst widoczny od razu krojem zapasowym */\n  }\n</style>\n\n<!-- 2. Critical CSS pierwszego okna - inline, bez żądania sieciowego -->\n<style>\n  :root { --kolor-tla: #fff; --kolor-tekstu: #111; }\n  body { margin: 0; font-family: \"Inter\", system-ui, sans-serif; background: var(--kolor-tla); }\n  .naglowek { min-height: 64px; }\n  .hero { min-height: 480px; }\n</style>\n\n<!-- 3. Reszta stylów asynchronicznie (nie blokuje wyrysowania) -->\n<link rel=\"preload\" href=\"/static/css/main.css\" as=\"style\" onload=\"this.onload=null;this.rel='stylesheet'\">\n<noscript><link rel=\"stylesheet\" href=\"/static/css/main.css\"></noscript>\n```\nObecnie: `<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter\">` -> Proponowane: `@font-face` z własnej domeny oraz preload dla fontów.",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "cls_missing_image_dimensions",
+      "category": "performance",
+      "expected_key": "cls_missing_image_dimensions",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "cls_missing_image_dimensions",
+        "image_next_gen_formats_and_sizing"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka cls poza normą (wartość: 0.58). Technologia: WordPress. Zastany element: <img src=\"/wp-content/uploads/2026/oferta.jpg\" alt=\"Oferta\">",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z metryką CLS (Cumulative Layout Shift), której wartość wynosi 0.58, co wskazuje na niestabilność wizualną. Przyczyną tego problemu jest brak zdefiniowanych atrybutów `width` i `height` w znaczniku `<img>`, co powoduje, że przeglądarka rezerwuje zerową wysokość dla obrazu. W rezultacie, gdy obraz jest wczytywany, układ strony przesuwa się, co prowadzi do nieoczekiwanych przesunięć treści. Dodatkowo, globalny mechanizm szablonu dodaje atrybut `loading=\"lazy\"` do wszystkich obrazów, co może opóźniać ich wczytywanie i wpływać na LCP (Largest Contentful Paint).\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Usuń atrybut `loading=\"lazy\"` z obrazu `<img>` stanowiącego element LCP oraz dodaj do niego atrybut `fetchpriority=\"high\"`.\n2. Dodaj atrybuty `width` i `height` do znacznika `<img>`, aby przeglądarka mogła zarezerwować odpowiednią przestrzeń przed pobraniem obrazu.\n3. Wstaw `<link rel=\"preload\" as=\"image\">` w sekcji `<head>` dla obrazu LCP, aby skaner wstępny pobrał go równolegle z CSS.\n4. Zachowaj `loading=\"lazy\"` dla wszystkich obrazów poniżej pierwszego okna i wymuś to regułą w szablonie.\n5. Upewnij się, że wszystkie obrazy są w odpowiednich formatach (AVIF/WebP) oraz mają odpowiednie rozdzielczości.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\nObecnie: \n```html\n<img src=\"/wp-content/uploads/2026/oferta.jpg\" alt=\"Oferta\">\n```\nProponowane:\n```html\n<!-- HEAD: skaner wstępny pobiera obraz LCP równolegle z CSS -->\n<link rel=\"preload\" as=\"image\" \n      href=\"/wp-content/uploads/2026/oferta.jpg\" \n      fetchpriority=\"high\">\n\n<!-- BODY: element LCP - BEZ loading=\"lazy\", z jawnymi wymiarami -->\n<img src=\"/wp-content/uploads/2026/oferta.jpg\" \n     width=\"800\" height=\"450\" \n     fetchpriority=\"high\" \n     decoding=\"async\" \n     alt=\"Oferta\">\n```\nDzięki tym zmianom, przeglądarka będzie mogła zarezerwować odpowiednią przestrzeń dla obrazu, co zredukuje przesunięcia układu i poprawi metrykę CLS.",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "inp_main_thread_blocking",
+      "category": "performance",
+      "expected_key": "inp_main_thread_blocking",
+      "retrieved_keys": [
+        "render_blocking_css_and_fonts",
+        "inp_main_thread_blocking",
+        "forced_reflow_layout_thrashing"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka inp poza normą (wartość: 345ms). Technologia: React. Zastany element: Wątek główny zajęty 4,8 s; 789 kB nieużywanego JavaScriptu.",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa audytowanej stronie występuje problem z metryką INP, która wynosi 345 ms, co przekracza akceptowalny próg 200 ms. Przyczyną tego stanu jest zablokowanie wątku głównego przez nadmiar JavaScriptu, w tym 789 kB nieużywanego kodu. Wątek główny jest zajęty przez 4,8 sekundy, co oznacza, że przetwarzanie skryptów oraz renderowanie treści są znacznie opóźnione. Dodatkowo, zbyt duża ilość skryptów ładowanych synchronicznie oraz brak podziału kodu na mniejsze fragmenty (code splitting) przyczyniają się do długiego czasu odpowiedzi na interakcje użytkownika.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Usuń nieużywany JavaScript** - Zidentyfikuj i usuń kod, który nie jest wykorzystywany na danym szablonie. Podziel bundle na mniejsze fragmenty ładowane per trasa (code splitting).\n2. **Przenieś skrypty zewnętrzne** - Użyj atrybutu `defer` dla skryptów zewnętrznych, aby nie blokowały one parsowania dokumentu. Rozważ ładowanie ich po pierwszej interakcji użytkownika lub w web workerze.\n3. **Rozbij długie zadania** - Zastosuj techniki, które pozwolą na rozbicie długich zadań na mniejsze porcje, oddając sterowanie przeglądarce (np. `scheduler.yield` lub `setTimeout(0)`).\n4. **Inicjalizuj komponenty na widoku** - Użyj `IntersectionObserver`, aby opóźnić inicjalizację komponentów, które nie są widoczne w pierwszym oknie przeglądarki, aż użytkownik do nich przewinie.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- Skrypty zewnętrzne: defer zamiast blokowania parsowania -->\n<script src=\"/static/js/app.js\" defer></script>\n\n<script>\n// Ciężkie skrypty (czat, testy A/B) dopiero po pierwszej interakcji\nconst zaladujPoInterakcji = (src) => {\n  let zaladowany = false;\n  const uruchom = () => {\n    if (zaladowany) return;\n    zaladowany = true;\n    const s = document.createElement(\"script\");\n    s.src = src; s.async = true;\n    document.head.appendChild(s);\n  };\n  [\"pointerdown\", \"keydown\", \"scroll\"].forEach(\n    (zdarzenie) => addEventListener(zdarzenie, uruchom, { once: true, passive: true })\n  );\n  setTimeout(uruchom, 8000);  // zabezpieczenie dla użytkowników bez interakcji\n};\nzaladujPoInterakcji(\"https://cdn.przyklad.pl/widget.js\");\n\n// Rozbijanie długiego zadania - oddaj sterowanie, żeby obsłużyć kliknięcie\nasync function przetworzWsad(elementy) {\n  for (let i = 0; i < elementy.length; i++) {\n    przetworzJeden(elementy[i]);\n    if (i % 50 === 0) {\n      await (scheduler?.yield?.() ?? new Promise((r) => setTimeout(r, 0)));\n    }\n  }\n}\n\n// Inicjalizacja komponentu dopiero, gdy wjedzie w widok\nnew IntersectionObserver(([wpis], obserwator) => {\n  if (!wpis.isIntersecting) return;\n  obserwator.disconnect();\n  import(\"/static/js/karuzela.js\").then((m) => m.init(wpis.target));\n}).observe(document.querySelector(\".karuzela\"));\n</script>\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "js_pagination_button_blocks_crawl",
+      "category": "technical",
+      "expected_key": "js_pagination_button_blocks_crawl",
+      "retrieved_keys": [
+        "js_pagination_button_blocks_crawl",
+        "tiles_without_anchor_orphan_pages",
+        "semantic_html_main_nav_button_anchor"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka internal_linking poza normą (wartość: 25 z ~100 pozycji katalogu w initial HTML). Technologia: Nuxt.js. Zastany element: <button type=\"button\" class=\"link\">Więcej wyników</button>",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z wewnętrznym linkowaniem, co skutkuje niską wartością metryki internal_linking (25 z ~100 pozycji). Zastany element `<button type=\"button\" class=\"link\">Więcej wyników</button>` jest przyciskiem, który nie generuje zmiany adresu URL, co uniemożliwia robotom wyszukiwarek dostęp do kolejnych stron katalogu. Mechanizm ten oparty na JavaScript (np. infinite scroll) nie pozwala na zaindeksowanie wszystkich pozycji, ponieważ roboty nie klikają w przyciski ani nie wykonują akcji JavaScript. W rezultacie, tylko pierwsza porcja wyników jest widoczna dla wyszukiwarek, co ogranicza widoczność strony w wynikach wyszukiwania.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Zamień przycisk na klasyczny odnośnik**: Zmień `<button>` na `<a>` z odpowiednim atrybutem `href`, który prowadzi do następnej strony, aby umożliwić robotom dostęp do wszystkich wyników.\n2. **Utrzymaj wygodę użytkownika**: Dodaj skrypt, który przechwyci kliknięcie na nowym linku, aby asynchronicznie załadować dane i zaktualizować adres w pasku przeglądarki za pomocą `history.pushState`.\n3. **Zadbaj o renderowanie po stronie serwera**: Upewnij się, że adresy URL z parametrem `?page=N` zwracają pełną listę wyników, aby crawlerzy mogli je zaindeksować.\n4. **Dodaj odnośniki rel=\"next\" i rel=\"prev\"**: Umieść odpowiednie linki w sekcji `<head>` każdej podstrony paginacji oraz dodaj te podstrony do mapy witryny.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- Progresywne ulepszanie: działa bez JS, wygodne z JS -->\n<nav class=\"paginacja\" aria-label=\"Paginacja katalogu\">\n  <a class=\"paginacja-wiecej\" href=\"?page=2\" rel=\"next\" data-paginacja>\n    Pokaż więcej\n  </a>\n</nav>\n\n<script>\ndocument.addEventListener(\"click\", async (zdarzenie) => {\n  const link = zdarzenie.target.closest(\"[data-paginacja]\");\n  if (!link) return;\n  zdarzenie.preventDefault();\n\n  const odpowiedz = await fetch(link.href, { headers: { \"X-Requested-With\": \"fetch\" } });\n  const html = await odpowiedz.text();\n  const dokument = new DOMParser().parseFromString(html, \"text/html\");\n\n  document.querySelector(\".lista\").append(...dokument.querySelectorAll(\".lista > *\"));\n\n  const nastepny = dokument.querySelector(\"[data-paginacja]\");\n  if (nastepny) {\n    link.href = nastepny.href;\n    history.pushState({}, \"\", nastepny.href);   // adres linkowalny i odświeżalny\n  } else {\n    link.remove();\n  }\n});\n</script>\n\n<!-- HEAD każdej podstrony paginacji -->\n<link rel=\"prev\" href=\"https://www.klient-a.pl/katalog?page=1\">\n<link rel=\"next\" href=\"https://www.klient-a.pl/katalog?page=3\">\n\n<!-- Obecnie: <button type=\"button\" class=\"link\">Więcej wyników</button> -->\n<!-- Proponowane: <a class=\"paginacja-wiecej\" href=\"?page=2\" rel=\"next\" data-paginacja>Pokaż więcej</a> -->\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "url_non_ascii_and_uppercase",
+      "category": "technical",
+      "expected_key": "url_non_ascii_and_uppercase",
+      "retrieved_keys": [
+        "js_pagination_button_blocks_crawl",
+        "sitemap_index_segmentation",
+        "url_non_ascii_and_uppercase"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka canonical poza normą (wartość: 195 adresów ze znakami spoza ASCII, 2836 z wielkimi literami). Technologia: WordPress. Zastany element: https://przyklad.pl/katalog/Kopalnia-złota,64",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie https://przyklad.pl/katalog/Kopalnia-złota,64 występuje problem z metryką canonical, który wskazuje na obecność adresów URL zawierających znaki spoza ASCII oraz wielkie litery. Adres URL zawiera polski znak „ł” oraz wielką literę „K”, co prowadzi do nieprawidłowego traktowania tych adresów przez wyszukiwarki. CMS WordPress generuje slugi bez transliteracji i normalizacji, co skutkuje tym, że adresy URL są niezgodne z najlepszymi praktykami SEO. Taki stan rzeczy może prowadzić do problemów z indeksowaniem, a także do duplikacji treści, ponieważ wyszukiwarki mogą traktować różne warianty adresów jako osobne dokumenty.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Zamień slug w CMS**: Wymuś transliterację do ASCII oraz konwersję na małe litery dla wszystkich slugów w WordPressie, aby uniknąć znaków spoza ASCII i wielkich liter.\n2. **Zaktualizuj istniejące adresy**: Przeprowadź masową aktualizację wszystkich istniejących adresów URL, aby dostosować je do nowych zasad, stosując przekierowania 301 w relacji 1:1.\n3. **Ustaw reguły dla nowych plików**: Wprowadź zasady dla nowych plików, aby automatycznie stosowały transliterację i konwersję na małe litery przy ich uploadzie.\n4. **Zaimplementuj przekierowania w Nginx**: Dodaj reguły w konfiguracji serwera Nginx, aby automatycznie przekierowywać adresy z wielkimi literami na ich odpowiedniki z małymi literami.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```python\n# Funkcja do transliteracji slugów w WordPressie\nfunction custom_slug($title) {\n    $slug = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $title); // Translacja do ASCII\n    $slug = strtolower(trim($slug)); // Konwersja na małe litery\n    $slug = preg_replace('/[^a-z0-9-]+/', '-', $slug); // Zamiana spacji i innych znaków na myślniki\n    return rtrim($slug, '-'); // Usunięcie myślnika na końcu\n}\n\n// Przykład użycia w funkcji zapisu postu\nadd_action('save_post', 'update_slug');\nfunction update_slug($post_id) {\n    $post = get_post($post_id);\n    $new_slug = custom_slug($post->post_title);\n    if ($new_slug !== $post->post_name) {\n        remove_action('save_post', 'update_slug'); // Uniknięcie pętli\n        wp_update_post(array(\n            'ID' => $post_id,\n            'post_name' => $new_slug\n        ));\n        add_action('save_post', 'update_slug'); // Przywrócenie akcji\n    }\n}\n```\n\n```nginx\n# Nginx - przekierowanie adresów z wielkimi literami na małe litery\nlocation ~ [A-Z] {\n    rewrite ^/(.*)$ /$1 permanent;   # Umożliwia przekierowanie do wersji z małymi literami\n}\n```\n\nObecnie: `https://przyklad.pl/katalog/Kopalnia-złota,64` -> Proponowane: `https://przyklad.pl/katalog/kopalnia-zlota,64`",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "sitemap_index_segmentation",
+      "category": "technical",
+      "expected_key": "sitemap_index_segmentation",
+      "retrieved_keys": [
+        "sitemap_index_segmentation",
+        "redirect_chain_and_domain_canonicalization",
+        "robots_ai_bot_access_control"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka http_errors poza normą (wartość: sitemap.xml z 2681 adresami, ostatnia aktualizacja 2020). Technologia: Django. Zastany element: Mapa zawiera adresy 404, 301 oraz zablokowane w robots.txt.",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z mapą witryny (sitemap.xml), która zawiera adresy z błędami 404, przekierowaniami 301 oraz adresami zablokowanymi w pliku robots.txt. Taki stan rzeczy wynika z tego, że mapa została wygenerowana jako statyczny plik, który nie jest aktualizowany w czasie rzeczywistym. W efekcie, z czasem do mapy trafiają adresy, które nie powinny być indeksowane, co obniża jej wiarygodność w oczach wyszukiwarek. Dodatkowo, brak podziału na segmenty tematyczne utrudnia diagnostykę problemów zgłaszanych przez Search Console.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Zastąp statyczny plik generatorem mapy działającym na żywo, który będzie uwzględniał tylko adresy ze statusem 200, dyrektywą index oraz self-canonical.\n2. Podziel mapę na indeksy tematyczne (np. kategorie, produkty, blog, strony informacyjne), co pozwoli na łatwiejszą diagnostykę i zarządzanie.\n3. Upewnij się, że pole lastmod w mapie zawiera realną datę modyfikacji rekordu, a nie datę wygenerowania pliku.\n4. Dodaj test regresyjny, który będzie weryfikował, że żaden adres w mapie nie zwraca statusu innego niż 200 oraz nie jest zablokowany w robots.txt.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```python\n# Django - indeks map witryn z podziałem tematycznym\n# config/urls.py\nfrom django.contrib.sitemaps.views import index, sitemap\nfrom katalog.sitemaps import KategorieSitemap, ProduktySitemap, BlogSitemap, StronySitemap\n\nSITEMAPS = {\n    \"kategorie\": KategorieSitemap,\n    \"produkty\": ProduktySitemap,\n    \"blog\": BlogSitemap,\n    \"strony\": StronySitemap,\n}\n\nurlpatterns = [\n    path(\"sitemap.xml\", index, {\"sitemaps\": SITEMAPS}, name=\"sitemap-index\"),\n    path(\"sitemap-<section>.xml\", sitemap, {\"sitemaps\": SITEMAPS},\n         name=\"django.contrib.sitemaps.views.sitemap\"),\n]\n\n# katalog/sitemaps.py\nfrom django.contrib.sitemaps import Sitemap\nfrom .models import Produkt  # Zmodyfikuj import zgodnie z własną strukturą\n\nclass ProduktySitemap(Sitemap):\n    changefreq = \"weekly\"\n    protocol = \"https\"\n\n    def items(self):\n        # Do mapy trafia WYŁĄCZNIE to, co faktycznie ma być zaindeksowane\n        return (Produkt.objects\n                .filter(opublikowany=True, noindex=False, kanoniczny_do__isnull=True)\n                .order_by(\"-zmodyfikowano\"))\n\n    def lastmod(self, obj):\n        return obj.zmodyfikowano  # realna data zmiany, nie data generowania pliku\n```\nObecnie: Mapa zawiera adresy 404, 301 oraz zablokowane w robots.txt. -> Proponowane: Mapa będzie generowana dynamicznie i zawierać tylko adresy ze statusem 200, z odpowiednimi dyrektywami.",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "robots_ai_bot_access_control",
+      "category": "technical",
+      "expected_key": "robots_ai_bot_access_control",
+      "retrieved_keys": [
+        "sitemap_index_segmentation",
+        "redirect_chain_and_domain_canonicalization",
+        "robots_ai_bot_access_control"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka robots_ai_bots poza normą (wartość: GPTBot: 403, ClaudeBot: 403, Google-Extended: brak reguły). Technologia: uniwersalny. Zastany element: User-agent: *\nDisallow: /szukaj/",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z dostępnością dla botów AI, takich jak GPTBot i ClaudeBot, które zwracają błąd 403. Oznacza to, że te boty są zablokowane w pliku robots.txt, co uniemożliwia im skanowanie treści witryny. Dodatkowo brak reguły dla Google-Extended powoduje, że strona nie jest uwzględniana w odpowiedziach AI, co może ograniczać jej widoczność w kontekście generatywnej sztucznej inteligencji. Obecny fragment robots.txt, który zastałeś, nie zawiera jawnych reguł dla tych botów, co prowadzi do ich blokady.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Krok 1 (Answer-First)**: Zweryfikuj rzeczywisty stan dostępności botów AI, wykonując symulację żądania z podmienionym nagłówkiem User-Agent (np. za pomocą cURL), aby upewnić się, że zwracają one odpowiedni kod odpowiedzi.\n2. **Krok 2**: Sprawdź zawartość pliku robots.txt oraz nagłówka HTTP X-Robots-Tag, aby upewnić się, że nie ma ukrytych blokad dla botów AI.\n3. **Krok 3**: Zaktualizuj plik robots.txt, dodając jawne reguły Allow dla botów AI, które chcesz dopuścić do skanowania, zamiast polegać na regule domyślnej.\n4. **Krok 4**: Powtórz test dostępności dla każdego typu szablonu na stronie (np. strona główna, karta produktu, artykuł), aby upewnić się, że wszystkie ścieżki są odpowiednio skonfigurowane.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```plaintext\n# robots.txt - zaktualizowana wersja\nUser-agent: Googlebot\nAllow: /\n\nUser-agent: Google-Extended     # zgoda na użycie treści w Gemini i AI Overviews\nAllow: /\n\nUser-agent: GPTBot\nAllow: /\n\nUser-agent: ClaudeBot\nAllow: /\n\nUser-agent: PerplexityBot\nAllow: /\n\nUser-agent: *\nDisallow: /koszyk/\nDisallow: /szukaj/\nAllow: /\n\nSitemap: https://www.klient-a.pl/sitemap.xml\n```\nObecnie: \n```\nUser-agent: *\nDisallow: /szukaj/\n```\nProponowane:\n```\nUser-agent: *\nDisallow: /koszyk/\nDisallow: /szukaj/\nAllow: /\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "redirect_chain_domain_canonicalization",
+      "category": "technical",
+      "expected_key": "redirect_chain_and_domain_canonicalization",
+      "retrieved_keys": [
+        "url_non_ascii_and_uppercase",
+        "redirect_chain_and_domain_canonicalization",
+        "temporary_redirect_302_instead_of_301"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka redirect_chain poza normą (wartość: 3 skoki: http://domena -> https://domena -> https://www.domena). Technologia: uniwersalny. Zastany element: http://przyklad.pl/ -> 301 -> https://przyklad.pl/ -> 301 -> https://www.przyklad.pl/",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie http://przyklad.pl/ występuje problem z łańcuchem przekierowań, który składa się z trzech skoków: http://przyklad.pl/ -> 301 -> https://przyklad.pl/ -> 301 -> https://www.przyklad.pl/. Taki stan rzeczy wynika z niepoprawnej konfiguracji przekierowań na poziomie serwera. Zamiast jednego przekierowania 301, które powinno prowadzić bezpośrednio do adresu kanonicznego (https://www.przyklad.pl/), użytkownik przechodzi przez dwa dodatkowe kroki. Problemy te mogą prowadzić do rozproszenia sygnałów rankingowych oraz obniżenia efektywności SEO strony.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Zbuduj jedną regułę przekierowania na poziomie serwera, która sprowadza wszystkie warianty adresu do jednego kanonicznego adresu (https://www.przyklad.pl/) przy użyciu jednego skoku 301.\n2. Sprawdź i zamień wszystkie przekierowania 302 na 301, aby zapewnić, że wszystkie trwałe zmiany adresów są odpowiednio sygnalizowane.\n3. Ujednolić obsługę ukośnika końcowego, decydując się na jedną konwencję (np. bez ukośnika) i przekierować wszystkie inne warianty.\n4. Przeprowadź inwentaryzację subdomen oraz osieroconych adresów, aby upewnić się, że wszystkie prowadzą do właściwego miejsca lub są wyłączone.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```nginx\nserver {\n    listen 80;\n    listen 443 ssl http2;\n    server_name przyklad.pl www.przyklad.pl;\n\n    # Reguła przekierowania do adresu kanonicznego\n    if ($scheme != \"https\") {\n        return 301 https://www.przyklad.pl$request_uri;   # Przekierowanie do HTTPS\n    }\n    if ($host != \"www.przyklad.pl\") {\n        return 301 https://www.przyklad.pl$request_uri;   # Przekierowanie do wersji z www\n    }\n\n    # Ujednolicenie ukośnika końcowego - konwencja: BEZ ukośnika\n    rewrite ^/(.*)/$ /$1 permanent;\n\n    location / {\n        # Proxy pass do aplikacji\n        proxy_pass http://aplikacja;\n    }\n}\n```\nObecnie: `http://przyklad.pl/ -> 301 -> https://przyklad.pl/ -> 301 -> https://www.przyklad.pl/`  \nProponowane: `http://przyklad.pl/ -> 301 -> https://www.przyklad.pl/`",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "schema_faqpage_for_answer_boxes",
+      "category": "structure",
+      "expected_key": "schema_faqpage_for_answer_boxes",
+      "retrieved_keys": [
+        "schema_faqpage_for_answer_boxes",
+        "answer_first_modular_content",
+        "hidden_content_ssr_details_pattern"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka structured_content poza normą (wartość: sekcja FAQ obecna wizualnie, brak JSON-LD). Technologia: WordPress. Zastany element: <div class=\"akordeon\"><button>Jaki jest czas realizacji?</button></div>",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje sekcja FAQ, która jest wizualnie zrealizowana jako akordeon z użyciem elementów `<div>` i `<button>`. Problem polega na tym, że brak jest struktury JSON-LD, która pozwoliłaby wyszukiwarkom na prawidłowe zrozumienie par pytanie-odpowiedź. W obecnej formie, roboty wyszukiwarek mogą mieć trudności z interpretacją treści, ponieważ nie mają dostępu do odpowiedzi, które są ukryte w rozwijanym elemencie. To powoduje, że sekcja FAQ nie spełnia wymogów SEO dotyczących strukturyzacji danych.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Wygeneruj strukturę FAQPage w formacie JSON-LD, zawierającą wszystkie pytania i odpowiedzi, które są obecne w akordeonie.\n2. Umieść pełne treści odpowiedzi w kodzie HTML, aby były dostępne dla robotów wyszukiwarek, nawet gdy są wizualnie zwinięte.\n3. Zmień implementację akordeonu na element `<details>` i `<summary>`, co pozwoli na lepszą dostępność treści i zgodność z wytycznymi SEO.\n4. Upewnij się, że pytania są formułowane na podstawie rzeczywistych zapytań użytkowników, aby zwiększyć ich trafność i użyteczność.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"FAQPage\",\n  \"@id\": \"https://www.klient-a.pl/pomoc#faq\",\n  \"mainEntity\": [\n    {\n      \"@type\": \"Question\",\n      \"name\": \"Jaki jest czas realizacji zamówienia?\",\n      \"acceptedAnswer\": {\n        \"@type\": \"Answer\",\n        \"text\": \"Zamówienia złożone do godziny 14:00 realizujemy tego samego dnia roboczego. Przesyłka kurierska dociera zwykle następnego dnia, a paczkomat w ciągu 48 godzin.\"\n      }\n    },\n    {\n      \"@type\": \"Question\",\n      \"name\": \"Czy mogę zwrócić produkt po otwarciu opakowania?\",\n      \"acceptedAnswer\": {\n        \"@type\": \"Answer\",\n        \"text\": \"Tak. Prawo odstąpienia od umowy obejmuje 14 dni od otrzymania przesyłki, a otwarcie opakowania w celu sprawdzenia produktu go nie wyłącza. Szczegóły opisuje <a href=\\\"/zwroty\\\">regulamin zwrotów</a>.\"\n      }\n    }\n  ]\n}\n</script>\n\n<section class=\"faq\">\n  <h2>Najczęstsze pytania</h2>\n  <details>\n    <summary><h3>Jaki jest czas realizacji zamówienia?</h3></summary>\n    <p>Zamówienia złożone do godziny 14:00 realizujemy tego samego dnia roboczego. Przesyłka kurierska dociera zwykle następnego dnia, a paczkomat w ciągu 48 godzin.</p>\n  </details>\n  <details>\n    <summary><h3>Czy mogę zwrócić produkt po otwarciu opakowania?</h3></summary>\n    <p>Tak. Prawo odstąpienia od umowy obejmuje 14 dni od otrzymania przesyłki, a otwarcie opakowania w celu sprawdzenia produktu go nie wyłącza. Szczegóły opisuje <a href=\"/zwroty\">regulamin zwrotów</a>.</p>\n  </details>\n</section>\n```\nObecnie: `<div class=\"akordeon\"><button>Jaki jest czas realizacji?</button></div>` -> Proponowane: `<details><summary><h3>Jaki jest czas realizacji zamówienia?</h3></summary><p>Zamówienia złożone do godziny 14:00 realizujemy tego samego dnia roboczego...</p></details>`",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "schema_graph_organization_website",
+      "category": "structure",
+      "expected_key": "schema_graph_organization_website",
+      "retrieved_keys": [
+        "schema_graph_organization_website",
+        "schema_breadcrumblist",
+        "schema_article_completeness"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka schema_entity_linking poza normą (wartość: brak Organization i WebSite). Technologia: Nuxt.js. Zastany element: Brak bloku application/ld+json w sekcji <head> strony głównej.",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie głównej brakuje bloku `application/ld+json`, który powinien zawierać dane strukturalne dla encji `Organization`, `WebSite` oraz `WebPage`. Taki blok jest kluczowy dla poprawnego zrozumienia przez wyszukiwarki, kto jest właścicielem strony oraz jakie są jej główne cechy. Obecnie, brak tych danych strukturalnych powoduje, że wyszukiwarki nie są w stanie prawidłowo zidentyfikować marki, co wpływa negatywnie na SEO oraz widoczność w wynikach wyszukiwania. Problem wynika z tego, że dane strukturalne są implementowane punktowo, co prowadzi do braku spójności i referencji między różnymi encjami.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Zbuduj jeden blok `@graph` w sekcji `<head>` strony głównej, który będzie zawierał encje `Organization`, `WebSite` oraz `WebPage`, z odpowiednimi referencjami `@id`.\n2. Na pozostałych podstronach użyj referencji do encji `Organization` zamiast powielać jej definicję, co pozwoli na utrzymanie spójności danych.\n3. Uzupełnij pole `sameAs` o linki do profili zewnętrznych, takich jak Wikipedia czy Wikidata, aby wzmocnić tożsamość marki.\n4. Dodaj pole `knowsAbout` z listą obszarów kompetencji, co pomoże w określeniu kontekstu, w jakim marka powinna być cytowana.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- Strona GŁÓWNA - jeden graf spinający tożsamość marki -->\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@graph\": [\n    {\n      \"@type\": \"Organization\",\n      \"@id\": \"https://www.klient-a.pl/#organization\",\n      \"name\": \"Marka A\",\n      \"legalName\": \"Firma A sp. z o.o.\",\n      \"url\": \"https://www.klient-a.pl/\",\n      \"logo\": {\n        \"@type\": \"ImageObject\",\n        \"@id\": \"https://www.klient-a.pl/#logo\",\n        \"url\": \"https://www.klient-a.pl/static/logo.svg\",\n        \"width\": 512, \"height\": 512,\n        \"caption\": \"Marka A\"\n      },\n      \"image\": { \"@id\": \"https://www.klient-a.pl/#logo\" },\n      \"address\": {\n        \"@type\": \"PostalAddress\",\n        \"streetAddress\": \"ul. Przykladowa 1\",\n        \"postalCode\": \"00-001\",\n        \"addressLocality\": \"Warszawa\",\n        \"addressCountry\": \"PL\"\n      },\n      \"contactPoint\": [{\n        \"@type\": \"ContactPoint\",\n        \"contactType\": \"customer service\",\n        \"telephone\": \"+48 22 000 00 00\",\n        \"areaServed\": \"PL\",\n        \"availableLanguage\": \"pl\"\n      }],\n      \"sameAs\": [\n        \"https://www.facebook.com/markaa\",\n        \"https://www.linkedin.com/company/markaa\",\n        \"https://pl.wikipedia.org/wiki/Marka_A\",\n        \"https://www.wikidata.org/wiki/Q000000\"\n      ],\n      \"foundingDate\": \"1998-04-12\",\n      \"vatID\": \"PL0000000000\",\n      \"knowsAbout\": [\n        { \"@type\": \"Thing\", \"name\": \"Obszar kompetencji A\",\n          \"url\": \"https://www.klient-a.pl/obszar-a\",\n          \"sameAs\": \"https://pl.wikipedia.org/wiki/Obszar_A\" },\n        { \"@type\": \"Thing\", \"name\": \"Obszar kompetencji B\",\n          \"url\": \"https://www.klient-a.pl/obszar-b\" }\n      ]\n    },\n    {\n      \"@type\": \"WebSite\",\n      \"@id\": \"https://www.klient-a.pl/#website\",\n      \"url\": \"https://www.klient-a.pl/\",\n      \"name\": \"klient-a.pl\",\n      \"description\": \"Oficjalny serwis Marki A.\",\n      \"publisher\": { \"@id\": \"https://www.klient-a.pl/#organization\" },\n      \"inLanguage\": \"pl-PL\"\n    },\n    {\n      \"@type\": \"WebPage\",\n      \"@id\": \"https://www.klient-a.pl/#webpage\",\n      \"url\": \"https://www.klient-a.pl/\",\n      \"name\": \"Marka A - oficjalny serwis\",\n      \"isPartOf\": { \"@id\": \"https://www.klient-a.pl/#website\" },\n      \"about\": { \"@id\": \"https://www.klient-a.pl/#organization\" },\n      \"inLanguage\": \"pl-PL\"\n    }\n  ]\n}\n</script>\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "heading_noise_in_navigation",
+      "category": "structure",
+      "expected_key": "heading_noise_in_navigation",
+      "retrieved_keys": [
+        "heading_noise_in_navigation",
+        "answer_first_modular_content",
+        "hidden_content_ssr_details_pattern"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka heading_noise poza normą (wartość: 14 znaczników H2/H3 w stopce i module rekomendacji). Technologia: WordPress. Zastany element: <aside class=\"czytaj-wiecej\"><h2>Czytaj więcej</h2><a href=\"/wpis\"><h3>Tytuł</h3></a></aside>",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z nadmiarem nagłówków H2 i H3 w stopce oraz module rekomendacji, co prowadzi do tzw. szumu nagłówkowego. W analizowanym elemencie `<aside class=\"czytaj-wiecej\"><h2>Czytaj więcej</h2><a href=\"/wpis\"><h3>Tytuł</h3></a></aside>` nagłówki H2 i H3 są używane w kontekście nawigacyjnym, co nadaje im nieodpowiednią wagę semantyczną. W rezultacie roboty wyszukiwarek mogą mylnie interpretować te nagłówki jako kluczowe tematy dokumentu, co rozmywa autorytet tematyczny strony i może negatywnie wpłynąć na jej pozycjonowanie.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Zamień wszystkie znaczniki Hx w elementach nawigacyjnych** na neutralne semantycznie `<div>`, `<span>` lub `<strong>`, zachowując identyczny wygląd przez klasy CSS.\n2. **Zarezerwuj H1-H3 wyłącznie dla unikalnej treści merytorycznej dokumentu** i utrzymaj dokładnie jeden H1 na stronę.\n3. **Usuń puste znaczniki nagłówkowe** i zamień nagłówki pełniące funkcję opisową na `<p>`.\n4. **Zastąp nagłówki bez potencjału frazowego** sformułowaniami opisującymi zawartość sekcji.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- ŹLE - moduł rekomendacji rozmywa mapę tematyczną dokumentu -->\n<aside class=\"czytaj-wiecej\">\n  <h2>Czytaj więcej</h2>\n  <a href=\"/blog/wpis-sezonowy\"><h3>Wpis sezonowy o zupełnie innym temacie</h3></a>\n</aside>\n\n<!-- DOBRZE - identyczny wygląd, zero szumu semantycznego -->\n<aside class=\"czytaj-wiecej\" aria-label=\"Powiązane artykuły\">\n  <div class=\"czytaj-wiecej-tytul\">Czytaj więcej</div>\n  <a href=\"/blog/wpis-powiazany\">\n    <span class=\"czytaj-wiecej-pozycja\">Tytuł powiązanego artykułu</span>\n  </a>\n</aside>\n\n<style>\n/* Wygląd nagłówka bez znaczenia nagłówka */\n.czytaj-wiecej-tytul { font-size: 1.25rem; font-weight: 700; line-height: 1.3; margin-block-end: .75rem; }\n.czytaj-wiecej-pozycja { font-size: 1rem; font-weight: 600; }\n</style>\n\n<!-- Poprawna hierarchia dokumentu: dokładnie jeden H1, H3 pod swoim H2 -->\n<h1>Główny temat podstrony z frazą kluczową</h1>\n  <h2>Pierwsza sekcja merytoryczna</h2>\n    <h3>Zagadnienie w sekcji pierwszej</h3>\n  <h2>Druga sekcja merytoryczna</h2>\n    <h3>Zagadnienie w sekcji drugiej</h3>\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "csr_to_ssr_content_availability",
+      "category": "structure",
+      "expected_key": "csr_to_ssr_content_availability",
+      "retrieved_keys": [
+        "schema_faqpage_for_answer_boxes",
+        "csr_to_ssr_content_availability",
+        "hidden_content_ssr_details_pattern"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka javascript_rendering poza normą (wartość: 36,5% treści doładowywane przez JS; lista ofert pusta bez JS). Technologia: React. Zastany element: <div id=\"root\"></div><script src=\"/static/app.js\"></script>",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z renderowaniem treści, ponieważ 36,5% zawartości jest ładowane za pomocą JavaScript, co prowadzi do sytuacji, w której lista ofert jest pusta, gdy JavaScript jest wyłączony. Zastany element `<div id=\"root\"></div><script src=\"/static/app.js\"></script>` wskazuje, że cała aplikacja jest oparta na React i renderuje treść po stronie klienta (CSR). W efekcie, roboty wyszukiwarek, które nie wykonują JavaScriptu, nie widzą żadnej treści, co negatywnie wpływa na SEO i widoczność strony w wynikach wyszukiwania.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Krok 1 (HTML-First)**: Zmodyfikuj aplikację, aby wszystkie kluczowe dane (np. oferty) były renderowane na serwerze (SSR) i dostępne w surowym HTML przed wykonaniem jakiegokolwiek skryptu JavaScript.\n2. **Krok 2**: Przeanalizuj każdy komponent, aby upewnić się, że wszystkie istotne informacje są dostępne w HTML, a nie tylko w stanie komponentu.\n3. **Krok 3**: Użyj elementów semantycznych (np. `<details>` i `<summary>`) tam, gdzie to możliwe, aby zapewnić, że treści ukryte są dostępne w DOM, nawet gdy nie są wyświetlane wizualnie.\n4. **Krok 4**: Wprowadź testy CI, które sprawdzają, czy kluczowe selektory są obecne w HTML bez wykonywania JavaScriptu, aby zapobiec regresjom w przyszłości.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```javascript\n// Next.js / React - dane pobierane NA SERWERZE, nie w useEffect\n// ŹLE: treść powstaje dopiero w przeglądarce\nexport default function Oferty() {\n  const [oferty, setOferty] = useState([]);\n  useEffect(() => { fetch(\"/api/oferty\").then(r => r.json()).then(setOferty); }, []);\n  return <ul>{oferty.map(o => <li key={o.id}>{o.nazwa}</li>)}</ul>;\n}\n\n// DOBRZE: serwer zwraca gotowy HTML z ofertami\nexport default async function Oferty() {\n  const oferty = await pobierzOferty(); // wykonuje się na serwerze\n  return (\n    <section>\n      <h2>Oferty</h2>\n      <ul>\n        {oferty.map((o) => (\n          <li key={o.id}>{o.nazwa}</li>\n        ))}\n      </ul>\n    </section>\n  );\n}\n\n// Przykład użycia <details> dla FAQ\n<section class=\"faq\">\n  <h2>Najczęstsze pytania</h2>\n  <details>\n    <summary><h3>Jakie są godziny otwarcia?</h3></summary>\n    <p>Nasze godziny otwarcia to poniedziałek-piątek 9:00-17:00.</p>\n  </details>\n</section>\n```\nObecnie: `<div id=\"root\"></div><script src=\"/static/app.js\"></script>` -> Proponowane: `<section><h2>Oferty</h2><ul>...</ul></section>` z danymi renderowanymi na serwerze.",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "sitewide_duplicate_title_and_description",
+      "category": "seo",
+      "expected_key": "sitewide_duplicate_title_and_description",
+      "retrieved_keys": [
+        "author_entity_person_hub",
+        "freshness_signal_and_verification_date",
+        "sitewide_duplicate_title_and_description"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka title poza normą (wartość: ten sam title na wszystkich badanych podstronach). Technologia: Nuxt.js. Zastany element: <title>Sklep internetowy - oferta i promocje</title>",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa audytowanej stronie występuje problem z metryką title, ponieważ wszystkie badane podstrony mają ten sam tytuł: `<title>Sklep internetowy - oferta i promocje</title>`. Taki stan rzeczy wynika z zastosowania statycznego szablonu, który nie różnicuje tytułów w zależności od treści podstrony. W aplikacjach jednostronicowych, takich jak Nuxt.js, metadane mogą być ustawiane po stronie klienta, co prowadzi do sytuacji, w której surowy HTML każdej podstrony zawiera tę samą wartość domyślną. Brak unikalnych tytułów na podstronach ogranicza możliwości wyszukiwarek do rozróżnienia treści, co negatywnie wpływa na SEO i widoczność w wynikach wyszukiwania.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Zbuduj schematy metadanych per typ szablonu (np. kategoria, karta produktu, artykuł) i wyprowadź je z danych obiektu, zamiast korzystać z wartości statycznej w szablonie bazowym.\n2. Utrzymaj długość tytułu do około 65 znaków i meta description w przedziale 140-155 znaków, z wezwaniem do działania dopasowanym do intencji podstrony.\n3. Zróżnicuj tytuł względem nagłówka H1, aby oba znaczniki nie były identyczne (np. dodając nazwę marki na końcu tytułu).\n4. Wprowadź test regresyjny, który wykryje duplikaty title i description w obrębie mapy witryny, aby zapobiec ich ponownemu pojawieniu się.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n{# Szablon bazowy - blok do NADPISANIA, nie wartość domyślna dla całego serwisu #}\n{% raw %}<title>{% block meta_title %}{{ marka }}{% endblock %}</title>\n<meta name=\"description\" content=\"{% block meta_description %}{% endblock %}\">{% endraw %}\n\n{# Szablon karty produktu - schemat wyprowadzony z danych obiektu #}\n{% block meta_title %}{{ produkt.nazwa }} - cena i parametry - {{ marka }}{% endblock %}\n{% block meta_description %}\n  {{ produkt.nazwa }} w cenie {{ produkt.cena }} zł. {{ produkt.opis_krotki|truncatechars:90 }}\n  Sprawdź dostępność i zamów online.\n{% endblock %}\n\n{# Szablon artykułu - schemat wyprowadzony z danych obiektu #}\n{% block meta_title %}{{ artykul.tytul }} - {{ marka }}{% endblock %}\n{% block meta_description %}\n  Przeczytaj artykuł o {{ artykul.temat }}. Dowiedz się więcej o {{ artykul.zawartosc|truncatechars:90 }}.\n{% endblock %}\n\n# Test regresyjny - duplikaty metadanych wracają przy każdej zmianie szablonów\ndef test_metadane_sa_unikalne_w_obrebie_serwisu(self):\n    tytuly, opisy = [], []\n    for adres in self.adresy_z_mapy_witryny():\n        html = self.client.get(adres).content.decode()\n        tytuly.append(re.search(r\"<title>(.*?)</title>\", html, re.S).group(1).strip())\n        opisy.append(re.search(r'name=\"description\" content=\"(.*?)\"', html, re.S).group(1))\n    self.assertEqual(len(tytuly), len(set(tytuly)), \"Zduplikowane znaczniki <title>\")\n    self.assertEqual(len(opisy), len(set(opisy)), \"Zduplikowane meta description\")\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "meta_description_duplication",
+      "category": "seo",
+      "expected_key": "sitewide_duplicate_title_and_description",
+      "retrieved_keys": [
+        "author_entity_person_hub",
+        "sitewide_duplicate_title_and_description",
+        "internal_linking_semantic_context"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka meta_description poza normą (wartość: identyczny opis na 480 podstronach). Technologia: WordPress. Zastany element: <meta name=\"description\" content=\"Wejdź i sprawdź naszą ofertę!\">",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z duplikacją meta description, ponieważ na 480 podstronach używany jest ten sam opis: `<meta name=\"description\" content=\"Wejdź i sprawdź naszą ofertę!\">`. Taki stan rzeczy wynika z zastosowania szablonu bazowego w WordPressie, który definiuje statyczne wartości dla meta description. W rezultacie każda podstrona nie ma unikalnego opisu, co negatywnie wpływa na SEO, ponieważ wyszukiwarki nie mogą rozróżnić treści poszczególnych stron, co obniża ich widoczność w wynikach wyszukiwania.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Zbuduj dynamiczne metadane**: Zmień szablon meta description w WordPressie, aby generował unikalne opisy na podstawie treści podstron (np. tytuł artykułu, krótki opis).\n2. **Ustal długość meta description**: Upewnij się, że nowo generowane opisy mieszczą się w zalecanym zakresie 140-155 znaków, aby były czytelne i atrakcyjne dla użytkowników.\n3. **Zróżnicuj meta description**: Wprowadź różnice w opisach, aby były one zgodne z treścią każdej podstrony i odpowiadały intencji użytkownika.\n4. **Przeprowadź audyt metadanych**: Wprowadź test regresyjny, który wykryje duplikaty meta description w obrębie całej witryny, aby upewnić się, że wszystkie opisy są unikalne.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n{# Szablon bazowy - blok do NADPISANIA, nie wartość domyślna dla całego serwisu #}\n<title>{% block meta_title %}{{ marka }}{% endblock %}</title>\n<meta name=\"description\" content=\"{% block meta_description %}{% endblock %}\">\n\n{# Szablon artykułu - schemat wyprowadzony z danych obiektu #}\n{% block meta_description %}\n  {{ artykul.tytul }} - przeczytaj więcej o {{ artykul.temat }}. Dowiedz się, jak {{ artykul.opis_krotki|truncatechars:90 }}.\n{% endblock %}\n\n{# Test regresyjny - duplikaty metadanych wracają przy każdej zmianie szablonów #}\ndef test_metadane_sa_unikalne_w_obrebie_serwisu(self):\n    tytuly, opisy = [], []\n    for adres in self.adresy_z_mapy_witryny():\n        html = self.client.get(adres).content.decode()\n        tytuly.append(re.search(r\"<title>(.*?)</title>\", html, re.S).group(1).strip())\n        opisy.append(re.search(r'name=\"description\" content=\"(.*?)\"', html, re.S).group(1))\n    self.assertEqual(len(tytuly), len(set(tytuly)), \"Zduplikowane znaczniki <title>\")\n    self.assertEqual(len(opisy), len(set(opisy)), \"Zduplikowane meta description\")\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "author_entity_person_hub",
+      "category": "seo",
+      "expected_key": "author_entity_person_hub",
+      "retrieved_keys": [
+        "author_entity_person_hub",
+        "freshness_signal_and_verification_date",
+        "sitewide_duplicate_title_and_description"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka eeat_authorship poza normą (wartość: author wskazuje Organization, brak stron autorów). Technologia: WordPress. Zastany element: \"author\": {\"@type\": \"Organization\", \"name\": \"Marka A\"}",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z metryką eeat_authorship, ponieważ autorstwo przypisane jest organizacji zamiast konkretnej osoby. W zastanym elemencie JSON-LD widnieje: `\"author\": {\"@type\": \"Organization\", \"name\": \"Marka A\"}`, co nie spełnia wymogów dotyczących sygnałów Expertise i Authoritativeness. Taka konfiguracja jest wynikiem domyślnej ustawienia wtyczki SEO w WordPressie, która generuje dane w formacie JSON-LD. Brak dedykowanych stron biograficznych dla autorów oraz powiązań z ich profilami zewnętrznymi sprawia, że nie można ustalić kompetencji autora, co negatywnie wpływa na ocenę wiarygodności treści.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Utwórz dedykowane podstrony biograficzne dla głównych autorów, zawierające opis ich kompetencji, certyfikatów oraz listę publikacji.\n2. Zmień w JSON-LD typ autora z \"Organization\" na \"Person\", dodając pola takie jak name, jobTitle, url do strony autora oraz sameAs do profilu zewnętrznego (np. LinkedIn).\n3. Podlinkuj nazwisko autora w notce biograficznej do jego strony oraz dodaj pole knowsAbout z obszarami specjalizacji.\n4. Utrzymuj autorstwo organizacyjne wyłącznie dla treści korporacyjnych (np. komunikaty prasowe), a teksty eksperckie podpisuj osobą.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\nObecnie: \n```json\n\"author\": {\"@type\": \"Organization\", \"name\": \"Marka A\"}\n```\nProponowane: \n```json\n\"author\": {\n  \"@type\": \"Person\",\n  \"name\": \"Metodyk A\",\n  \"jobTitle\": \"Metodyk nauczania, trener nauczycieli\",\n  \"url\": \"https://www.klient-b.pl/eksperci/metodyk-a\",\n  \"sameAs\": [\"https://www.linkedin.com/in/metodyk-a\"],\n  \"knowsAbout\": [\"Metodyka nauczania\", \"Praca z grupą mieszaną\", \"Ocenianie kształtujące\"]\n}\n```\n\nKod JSON-LD dla autora:\n```html\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@graph\": [\n    {\n      \"@type\": \"ProfilePage\",\n      \"@id\": \"https://www.klient-b.pl/eksperci/metodyk-a#webpage\",\n      \"url\": \"https://www.klient-b.pl/eksperci/metodyk-a\",\n      \"mainEntity\": { \"@id\": \"https://www.klient-b.pl/eksperci/metodyk-a#person\" },\n      \"isPartOf\": { \"@id\": \"https://www.klient-b.pl/#website\" }\n    },\n    {\n      \"@type\": \"Person\",\n      \"@id\": \"https://www.klient-b.pl/eksperci/metodyk-a#person\",\n      \"name\": \"Metodyk A\",\n      \"jobTitle\": \"Metodyk nauczania, trener nauczycieli\",\n      \"description\": \"Od 12 lat prowadzi szkolenia metodyczne; autorka programu dla grup mieszanych wiekowo.\",\n      \"url\": \"https://www.klient-b.pl/eksperci/metodyk-a\",\n      \"image\": \"https://www.klient-b.pl/media/eksperci/metodyk-a.avif\",\n      \"worksFor\": { \"@id\": \"https://www.klient-b.pl/#organization\" },\n      \"sameAs\": [\"https://www.linkedin.com/in/metodyk-a\"],\n      \"knowsAbout\": [\"Metodyka nauczania\", \"Praca z grupą mieszaną\", \"Ocenianie kształtujące\"],\n      \"hasCredential\": {\n        \"@type\": \"EducationalOccupationalCredential\",\n        \"credentialCategory\": \"certyfikat\",\n        \"name\": \"Certyfikat trenerski poziomu zaawansowanego\"\n      }\n    }\n  ]\n}\n</script>\n```\n\nNotka pod artykułem:\n```html\n<footer class=\"nota-autora\">\n  <img src=\"/media/eksperci/metodyk-a.avif\" width=\"96\" height=\"96\" alt=\"\" loading=\"lazy\">\n  <p>\n    <a href=\"/eksperci/metodyk-a\" rel=\"author\"><strong>Metodyk A</strong></a> -\n    metodyk nauczania, od 12 lat prowadzi szkolenia dla nauczycieli.\n  </p>\n</footer>\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje są obecne, wszystkie kluczowe pojęcia są użyte w kontekście działań naprawczych, a wszystkie wymagane fragmenty kodu są zawarte w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "freshness_signal_and_verification_date",
+      "category": "seo",
+      "expected_key": "freshness_signal_and_verification_date",
+      "retrieved_keys": [
+        "author_entity_person_hub",
+        "freshness_signal_and_verification_date",
+        "sitewide_duplicate_title_and_description"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka eeat_freshness poza normą (wartość: datePublished == dateModified, 19 miesięcy bez zmian). Technologia: WordPress. Zastany element: \"datePublished\": \"2024-11-08\", \"dateModified\": \"2024-11-08\"",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z metryką eeat_freshness, ponieważ wartości `datePublished` i `dateModified` są identyczne i wynoszą \"2024-11-08\". Oznacza to, że treść nie była aktualizowana przez 19 miesięcy, co nie daje sygnału o jej świeżości. Technicznie, CMS WordPress ustawia `dateModified` równą `datePublished` przy tworzeniu wpisu i nie aktualizuje jej przy merytorycznych zmianach treści. Dodatkowo, brak widocznego sygnału aktualności dla użytkowników i modeli językowych może negatywnie wpływać na postrzeganą wiarygodność treści.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Wprowadź w modelu treści osobne pole \"data weryfikacji merytorycznej\", które będzie ustawiane przez redakcję i będzie wyprowadzać `dateModified`.\n2. Umieść widoczny znacznik aktualności pod nagłówkiem H1 z datą ostatniej weryfikacji, używając znacznika `<time>` z atrybutem `datetime`.\n3. Ustal cykl przeglądu dla treści, które szybko się dezaktualizują, aby regularnie je aktualizować.\n4. Nie aktualizuj daty modyfikacji przy kosmetycznych zmianach w treści, aby uniknąć sztucznego odświeżania dat.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- Widoczny sygnał świeżości pod nagłówkiem H1 -->\n<h1>Tytuł artykułu</h1>\n<p class=\"znacznik-aktualnosci\">\n  Ostatnia weryfikacja merytoryczna:\n  <time datetime=\"2026-09-02\">2 września 2026</time>\n  · Zgodność ze standardami obowiązującymi w roku szkolnym 2026/2027\n</p>\n\n<script type=\"application/ld+json\">\n{\n  \"@context\": \"https://schema.org\",\n  \"@type\": \"Article\",\n  \"datePublished\": \"2024-11-08T10:00:00+01:00\",\n  \"dateModified\": \"2026-09-02T14:20:00+02:00\"\n}\n</script>\n``` \n\nObecnie: `\"datePublished\": \"2024-11-08\", \"dateModified\": \"2024-11-08\"` -> Proponowane: `\"datePublished\": \"2024-11-08\", \"dateModified\": \"2026-09-02\"`",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    }
+  ]
+}

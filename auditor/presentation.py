@@ -34,6 +34,11 @@ OVERVIEW_CATEGORY_ORDER = [
 # Wyodrębnia bloki kodu ```...``` (opcjonalnie z nazwą języka) z tekstu rekomendacji AI.
 _CODE_FENCE_RE = re.compile(r"```[a-zA-Z]*\n?(.*?)```", re.DOTALL)
 
+# Nagłówki sekcji rekomendacji ("### 1. CO TO JEST?"). Dopuszczamy 2-4 krzyżyki,
+# bo model bywa niekonsekwentny w poziomie nagłówka, a dla nas liczy się sam fakt,
+# że to nagłówek sekcji, a nie treść.
+_HEADING_RE = re.compile(r"^\s*#{2,4}\s+(.+?)\s*$", re.MULTILINE)
+
 # Ikony kategorii wyświetlane w nagłówku karty metryki.
 CATEGORY_ICONS = {
     "seo": "🏷️",
@@ -286,8 +291,14 @@ def group_technical_accordions(metrics: list[AuditMetric]) -> list[dict]:
 
 
 def split_recommendation_segments(recommendation: str | None) -> list[dict]:
-    """Dzieli tekst rekomendacji AI na segmenty tekstowe i bloki kodu (```...```),
-    żeby móc wyrenderować kod w podświetlanej ramce z przyciskiem "Kopiuj"."""
+    """Dzieli tekst rekomendacji AI na segmenty: nagłówki, akapity i bloki kodu.
+
+    Prompt generatora (auditor.services.rag) wymusza cztery sekcje oznaczone
+    `### N. NAZWA`. Bez wydzielenia ich na osobne segmenty znaczniki Markdown
+    trafiałyby dosłownie do `<p>` i użytkownik widziałby "### 1. CO TO JEST?".
+    Bloki kodu (```...```) idą osobno, żeby wyrenderować je w ramce z przyciskiem
+    "Kopiuj".
+    """
     if not recommendation:
         return []
 
@@ -295,21 +306,34 @@ def split_recommendation_segments(recommendation: str | None) -> list[dict]:
     last_end = 0
     for match in _CODE_FENCE_RE.finditer(recommendation):
         if match.start() > last_end:
-            text = recommendation[last_end:match.start()].strip()
-            if text:
-                segments.append({"type": "text", "content": text})
+            segments.extend(_split_headings(recommendation[last_end:match.start()]))
         code = match.group(1).strip()
         if code:
             segments.append({"type": "code", "content": code})
         last_end = match.end()
 
-    remaining = recommendation[last_end:].strip()
-    if remaining:
-        segments.append({"type": "text", "content": remaining})
+    segments.extend(_split_headings(recommendation[last_end:]))
 
     if not segments and recommendation.strip():
         segments.append({"type": "text", "content": recommendation.strip()})
 
+    return segments
+
+
+def _split_headings(text: str) -> list[dict]:
+    """Rozdziela fragment tekstu na nagłówki `### ...` i akapity między nimi."""
+    segments = []
+    ostatni = 0
+    for match in _HEADING_RE.finditer(text):
+        akapit = text[ostatni:match.start()].strip()
+        if akapit:
+            segments.append({"type": "text", "content": akapit})
+        segments.append({"type": "heading", "content": match.group(1).strip()})
+        ostatni = match.end()
+
+    reszta = text[ostatni:].strip()
+    if reszta:
+        segments.append({"type": "text", "content": reszta})
     return segments
 
 

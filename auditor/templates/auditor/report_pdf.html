@@ -140,6 +140,7 @@
     .callout.ocena.warning { border-left-color: #eab308; }
     .callout.rekomendacja { border-left-color: var(--accent); background: rgba(0, 230, 118, 0.08); }
     .callout-label { font-size: 0.7rem; text-transform: uppercase; font-weight: 700; color: var(--accent-ink); margin-bottom: 0.25rem; }
+    .rekomendacja-naglowek { font-size: 0.72rem; text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; color: #334155; margin: 0.6rem 0 0.15rem; }
     .code-frame-pdf {
         margin-top: 0.5rem;
         background: var(--dark-surface);
@@ -287,6 +288,8 @@
             {% for segment in metric.recommendation_segments %}
             {% if segment.type == "code" %}
             <div class="code-frame-pdf">{{ segment.content }}</div>
+            {% elif segment.type == "heading" %}
+            <p class="rekomendacja-naglowek">{{ segment.content }}</p>
             {% else %}
             <p style="margin: 0.3rem 0;">{{ segment.content }}</p>
             {% endif %}
@@ -318,6 +321,8 @@
             {% for segment in metric.recommendation_segments %}
             {% if segment.type == "code" %}
             <div class="code-frame-pdf">{{ segment.content }}</div>
+            {% elif segment.type == "heading" %}
+            <p class="rekomendacja-naglowek">{{ segment.content }}</p>
             {% else %}
             <p style="margin: 0.3rem 0;">{{ segment.content }}</p>
             {% endif %}
@@ -349,6 +354,8 @@
             {% for segment in metric.recommendation_segments %}
             {% if segment.type == "code" %}
             <div class="code-frame-pdf">{{ segment.content }}</div>
+            {% elif segment.type == "heading" %}
+            <p class="rekomendacja-naglowek">{{ segment.content }}</p>
             {% else %}
             <p style="margin: 0.3rem 0;">{{ segment.content }}</p>
             {% endif %}
@@ -380,6 +387,8 @@
             {% for segment in metric.recommendation_segments %}
             {% if segment.type == "code" %}
             <div class="code-frame-pdf">{{ segment.content }}</div>
+            {% elif segment.type == "heading" %}
+            <p class="rekomendacja-naglowek">{{ segment.content }}</p>
             {% else %}
             <p style="margin: 0.3rem 0;">{{ segment.content }}</p>
             {% endif %}

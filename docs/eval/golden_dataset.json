@@ -1,0 +1,472 @@
+[
+  {
+    "test_id": "lcp_hero_image_optimization",
+    "category": "performance",
+    "key": "lcp_hero_image_optimization",
+    "input_context": {
+      "metric_key": "lcp",
+      "value": "7.05s",
+      "cms": "Nuxt.js",
+      "current_value": "<img src=\"/_nuxt/hero-baner.jpg\" loading=\"lazy\" class=\"hero__img\">"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "fetchpriority",
+        "loading=\"lazy\"",
+        "preload",
+        "LCP"
+      ],
+      "code_snippet_requirements": [
+        "<link rel=\"preload\"",
+        "fetchpriority=\"high\""
+      ]
+    }
+  },
+  {
+    "test_id": "render_blocking_css_and_fonts",
+    "category": "performance",
+    "key": "render_blocking_css_and_fonts",
+    "input_context": {
+      "metric_key": "fcp",
+      "value": "4.8s",
+      "cms": "Nuxt.js",
+      "current_value": "<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter\">"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "Critical CSS",
+        "font-display",
+        "asynchron",
+        "swap"
+      ],
+      "code_snippet_requirements": [
+        "font-display",
+        "rel=\"preload\""
+      ]
+    }
+  },
+  {
+    "test_id": "cls_missing_image_dimensions",
+    "category": "performance",
+    "key": "cls_missing_image_dimensions",
+    "input_context": {
+      "metric_key": "cls",
+      "value": "0.58",
+      "cms": "WordPress",
+      "current_value": "<img src=\"/wp-content/uploads/2026/oferta.jpg\" alt=\"Oferta\">"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "width",
+        "height",
+        "aspect-ratio",
+        "przesunię"
+      ],
+      "code_snippet_requirements": [
+        "width=\"",
+        "height=\""
+      ]
+    }
+  },
+  {
+    "test_id": "inp_main_thread_blocking",
+    "category": "performance",
+    "key": "inp_main_thread_blocking",
+    "input_context": {
+      "metric_key": "inp",
+      "value": "345ms",
+      "cms": "React",
+      "current_value": "Wątek główny zajęty 4,8 s; 789 kB nieużywanego JavaScriptu."
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "defer",
+        "nieużywan",
+        "wątek główny",
+        "code splitting"
+      ],
+      "code_snippet_requirements": [
+        "defer"
+      ]
+    }
+  },
+  {
+    "test_id": "js_pagination_button_blocks_crawl",
+    "category": "technical",
+    "key": "js_pagination_button_blocks_crawl",
+    "input_context": {
+      "metric_key": "internal_linking",
+      "value": "25 z ~100 pozycji katalogu w initial HTML",
+      "cms": "Nuxt.js",
+      "current_value": "<button type=\"button\" class=\"link\">Więcej wyników</button>"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "href",
+        "odnośnik",
+        "paginacj",
+        "pushState"
+      ],
+      "code_snippet_requirements": [
+        "<a",
+        "href=\"?page=2\""
+      ]
+    }
+  },
+  {
+    "test_id": "url_non_ascii_and_uppercase",
+    "category": "technical",
+    "key": "url_non_ascii_and_uppercase",
+    "input_context": {
+      "metric_key": "canonical",
+      "value": "195 adresów ze znakami spoza ASCII, 2836 z wielkimi literami",
+      "cms": "WordPress",
+      "current_value": "https://przyklad.pl/katalog/Kopalnia-złota,64"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "ASCII",
+        "małe litery",
+        "myślnik",
+        "301"
+      ],
+      "code_snippet_requirements": [
+        "slug"
+      ]
+    }
+  },
+  {
+    "test_id": "sitemap_index_segmentation",
+    "category": "technical",
+    "key": "sitemap_index_segmentation",
+    "input_context": {
+      "metric_key": "http_errors",
+      "value": "sitemap.xml z 2681 adresami, ostatnia aktualizacja 2020",
+      "cms": "Django",
+      "current_value": "Mapa zawiera adresy 404, 301 oraz zablokowane w robots.txt."
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "indeks map",
+        "lastmod",
+        "200",
+        "generator"
+      ],
+      "code_snippet_requirements": [
+        "Sitemap"
+      ]
+    }
+  },
+  {
+    "test_id": "robots_ai_bot_access_control",
+    "category": "technical",
+    "key": "robots_ai_bot_access_control",
+    "input_context": {
+      "metric_key": "robots_ai_bots",
+      "value": "GPTBot: 403, ClaudeBot: 403, Google-Extended: brak reguły",
+      "cms": "uniwersalny",
+      "current_value": "User-agent: *\nDisallow: /szukaj/"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "GPTBot",
+        "Google-Extended",
+        "robots.txt",
+        "Allow"
+      ],
+      "code_snippet_requirements": [
+        "User-agent:",
+        "Allow:"
+      ]
+    }
+  },
+  {
+    "test_id": "redirect_chain_domain_canonicalization",
+    "category": "technical",
+    "key": "redirect_chain_and_domain_canonicalization",
+    "input_context": {
+      "metric_key": "redirect_chain",
+      "value": "3 skoki: http://domena -> https://domena -> https://www.domena",
+      "cms": "uniwersalny",
+      "current_value": "http://przyklad.pl/ -> 301 -> https://przyklad.pl/ -> 301 -> https://www.przyklad.pl/"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "301",
+        "jeden skok",
+        "kanoniczn",
+        "łańcuch"
+      ],
+      "code_snippet_requirements": [
+        "return 301"
+      ]
+    }
+  },
+  {
+    "test_id": "schema_faqpage_for_answer_boxes",
+    "category": "structure",
+    "key": "schema_faqpage_for_answer_boxes",
+    "input_context": {
+      "metric_key": "structured_content",
+      "value": "sekcja FAQ obecna wizualnie, brak JSON-LD",
+      "cms": "WordPress",
+      "current_value": "<div class=\"akordeon\"><button>Jaki jest czas realizacji?</button></div>"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "FAQPage",
+        "JSON-LD",
+        "acceptedAnswer",
+        "mainEntity"
+      ],
+      "code_snippet_requirements": [
+        "\"@type\": \"FAQPage\"",
+        "application/ld+json"
+      ]
+    }
+  },
+  {
+    "test_id": "schema_graph_organization_website",
+    "category": "structure",
+    "key": "schema_graph_organization_website",
+    "input_context": {
+      "metric_key": "schema_entity_linking",
+      "value": "brak Organization i WebSite",
+      "cms": "Nuxt.js",
+      "current_value": "Brak bloku application/ld+json w sekcji <head> strony głównej."
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "Organization",
+        "WebSite",
+        "@graph",
+        "sameAs"
+      ],
+      "code_snippet_requirements": [
+        "\"@graph\"",
+        "\"@id\""
+      ]
+    }
+  },
+  {
+    "test_id": "heading_noise_in_navigation",
+    "category": "structure",
+    "key": "heading_noise_in_navigation",
+    "input_context": {
+      "metric_key": "heading_noise",
+      "value": "14 znaczników H2/H3 w stopce i module rekomendacji",
+      "cms": "WordPress",
+      "current_value": "<aside class=\"czytaj-wiecej\"><h2>Czytaj więcej</h2><a href=\"/wpis\"><h3>Tytuł</h3></a></aside>"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "nagłówk",
+        "div",
+        "span",
+        "hierarchi"
+      ],
+      "code_snippet_requirements": [
+        "<div",
+        "class="
+      ]
+    }
+  },
+  {
+    "test_id": "csr_to_ssr_content_availability",
+    "category": "structure",
+    "key": "csr_to_ssr_content_availability",
+    "input_context": {
+      "metric_key": "javascript_rendering",
+      "value": "36,5% treści doładowywane przez JS; lista ofert pusta bez JS",
+      "cms": "React",
+      "current_value": "<div id=\"root\"></div><script src=\"/static/app.js\"></script>"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "SSR",
+        "serwer",
+        "HTML",
+        "JavaScript"
+      ],
+      "code_snippet_requirements": [
+        "<table",
+        "await"
+      ]
+    }
+  },
+  {
+    "test_id": "sitewide_duplicate_title_and_description",
+    "category": "seo",
+    "key": "sitewide_duplicate_title_and_description",
+    "input_context": {
+      "metric_key": "title",
+      "value": "ten sam title na wszystkich badanych podstronach",
+      "cms": "Nuxt.js",
+      "current_value": "<title>Sklep internetowy - oferta i promocje</title>"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "unikaln",
+        "65",
+        "duplikacj",
+        "schemat"
+      ],
+      "code_snippet_requirements": [
+        "<title>"
+      ]
+    }
+  },
+  {
+    "test_id": "meta_description_duplication",
+    "category": "seo",
+    "key": "sitewide_duplicate_title_and_description",
+    "input_context": {
+      "metric_key": "meta_description",
+      "value": "identyczny opis na 480 podstronach",
+      "cms": "WordPress",
+      "current_value": "<meta name=\"description\" content=\"Wejdź i sprawdź naszą ofertę!\">"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "unikaln",
+        "155",
+        "CTR",
+        "duplikacj"
+      ],
+      "code_snippet_requirements": [
+        "name=\"description\""
+      ]
+    }
+  },
+  {
+    "test_id": "author_entity_person_hub",
+    "category": "seo",
+    "key": "author_entity_person_hub",
+    "input_context": {
+      "metric_key": "eeat_authorship",
+      "value": "author wskazuje Organization, brak stron autorów",
+      "cms": "WordPress",
+      "current_value": "\"author\": {\"@type\": \"Organization\", \"name\": \"Marka A\"}"
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "Person",
+        "sameAs",
+        "autor",
+        "jobTitle"
+      ],
+      "code_snippet_requirements": [
+        "\"@type\": \"Person\"",
+        "\"sameAs\""
+      ]
+    }
+  },
+  {
+    "test_id": "freshness_signal_and_verification_date",
+    "category": "seo",
+    "key": "freshness_signal_and_verification_date",
+    "input_context": {
+      "metric_key": "eeat_freshness",
+      "value": "datePublished == dateModified, 19 miesięcy bez zmian",
+      "cms": "WordPress",
+      "current_value": "\"datePublished\": \"2024-11-08\", \"dateModified\": \"2024-11-08\""
+    },
+    "expected_criteria": {
+      "required_sections": [
+        "DIAGNOZA",
+        "PLAN DZIAŁANIA",
+        "RECEPTA KODOWA"
+      ],
+      "key_action_keywords": [
+        "dateModified",
+        "weryfikac",
+        "aktualn",
+        "data"
+      ],
+      "code_snippet_requirements": [
+        "dateModified",
+        "<time"
+      ]
+    }
+  }
+]

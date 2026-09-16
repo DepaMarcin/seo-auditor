@@ -14,6 +14,17 @@ COLLECTION_NAME = "seo_knowledge"
 MAX_UNTRUSTED_CHARS = 2000
 
 
+def _czy_niezgodnosc_wymiaru(exc: Exception) -> bool:
+    """Czy błąd ChromaDB wynika z innej długości wektora niż ustalona w kolekcji.
+
+    ChromaDB nie ma dla tego przypadku osobnego typu wyjątku - zgłasza go jako
+    `InvalidArgumentError` z komunikatem "Collection expecting embedding with
+    dimension of 384, got 1536".
+    """
+    komunikat = str(exc).lower()
+    return "dimension" in komunikat and "embedding" in komunikat
+
+
 class RAGEngine:
     """
     Silnik RAG (Retrieval-Augmented Generation) odpowiedzialny za:
@@ -104,17 +115,55 @@ class RAGEngine:
                 vectors = None
 
         try:
-            if vectors is not None:
-                self.chroma_collection.upsert(
-                    ids=ids, embeddings=vectors, documents=texts, metadatas=metadatas
-                )
-            else:
-                self.chroma_collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
-        except Exception:
-            logger.exception("Nie udało się zaindeksować bazy wiedzy w ChromaDB.")
-            return 0
+            self._upsert(ids, texts, metadatas, vectors)
+        except Exception as exc:
+            if not _czy_niezgodnosc_wymiaru(exc):
+                logger.exception("Nie udało się zaindeksować bazy wiedzy w ChromaDB.")
+                return 0
+
+            # Każdy model embeddingów ma własną długość wektora (domyślny model ChromaDB
+            # 384, text-embedding-ada-002 1536), a ChromaDB ustala ją bezpowrotnie przy
+            # tworzeniu kolekcji. Po zmianie modelu - np. gdy konto OpenAI odzyska dostęp
+            # do embeddingów - stary indeks odrzuca nowe wektory i zostaje nieaktualny.
+            # Kolekcja jest w całości odtwarzalna z KnowledgeDocument (odtwarzamy ją
+            # w tym samym wywołaniu), więc przebudowa jest bezpieczniejsza niż milczące
+            # pozostawienie indeksu zbudowanego innym modelem.
+            logger.warning(
+                "Indeks ChromaDB zbudowano innym modelem embeddingów (%s) - przebudowuję kolekcję.",
+                exc,
+            )
+            try:
+                self._recreate_collection()
+                self._upsert(ids, texts, metadatas, vectors)
+            except Exception:
+                logger.exception("Nie udało się przebudować indeksu ChromaDB.")
+                return 0
 
         return len(documents)
+
+    def _upsert(self, ids, texts, metadatas, vectors) -> None:
+        """Zapis do ChromaDB. Bez `vectors` kolekcja liczy embeddingi własnym modelem."""
+        if vectors is not None:
+            self.chroma_collection.upsert(
+                ids=ids, embeddings=vectors, documents=texts, metadatas=metadatas
+            )
+        else:
+            self.chroma_collection.upsert(ids=ids, documents=texts, metadatas=metadatas)
+
+    def _recreate_collection(self):
+        """Usuwa i tworzy od nowa kolekcję - jedyny sposób na zmianę wymiaru wektorów."""
+        import chromadb
+
+        if self._chroma_client is None:
+            self._chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        try:
+            self._chroma_client.delete_collection(COLLECTION_NAME)
+        except Exception:
+            # Kolekcji może nie być (np. po ręcznym czyszczeniu katalogu) - to nie błąd,
+            # bo i tak zaraz ją tworzymy.
+            logger.debug("Kolekcja %s nie istniała przy przebudowie.", COLLECTION_NAME)
+        self._collection = self._chroma_client.get_or_create_collection(COLLECTION_NAME)
+        return self._collection
 
     # ------------------------------------------------------------------
     # Wyszukiwanie (retrieval)
@@ -197,13 +246,28 @@ class RAGEngine:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         system_prompt = (
-            "Jesteś ekspertem SEO. Na podstawie wykrytego problemu, zastanego elementu ze "
-            "strony oraz kontekstu z bazy wiedzy przygotuj krótką, konkretną rekomendację "
-            "naprawczą w języku polskim (maksymalnie 4 zdania). Jeśli podano zastany element "
-            "(np. tekst tytułu, meta description, nagłówka), ZAWSZE podaj bezpośredni przykład "
-            "poprawki w formacie: 'Obecnie: [zastany tekst] -> Proponowane: [poprawiona wersja]'. "
-            "Jeśli problem dotyczy brakującego atrybutu alt lub innego znacznika HTML, podaj "
-            "gotowy fragment kodu HTML z prawidłową składnią (w bloku kodu)."
+            "Jesteś ekspertem SEO i Technical SEO. Na podstawie wykrytego problemu, zastanego "
+            "elementu ze strony oraz kontekstu z bazy wiedzy przygotuj wyczerpującą rekomendację "
+            "naprawczą w języku polskim.\n\n"
+            "Odpowiedź MUSI mieć dokładnie trzy sekcje, w tej kolejności i z tymi nagłówkami:\n\n"
+            "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\n"
+            "Co konkretnie jest nie tak na TEJ stronie i skąd się to bierze technicznie. "
+            "Odnieś się wprost do zastanego elementu, jeśli go podano.\n\n"
+            "### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n"
+            "Ponumerowana lista czynności do wykonania przez dewelopera. Pierwszy krok ma być "
+            "najważniejszy i możliwy do wdrożenia od razu. Nie ograniczaj się do jednego kroku, "
+            "jeśli kontekst z bazy wiedzy opisuje ich więcej.\n\n"
+            "### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n"
+            "Kompletny, produkcyjny fragment kodu w bloku kodu (HTML / CSS / JSON-LD / Nginx / "
+            "Python). Przenieś kod z kontekstu bazy wiedzy w całości i dostosuj go do zastanego "
+            "elementu - nie streszczaj go prozą. Jeśli podano zastany element, dodaj w tej sekcji "
+            "bezpośrednie porównanie w formacie: 'Obecnie: [zastany tekst] -> Proponowane: "
+            "[poprawiona wersja]'.\n\n"
+            "Opieraj się na kontekście z bazy wiedzy - to on zawiera sprawdzone przepisy. "
+            "Nie dodawaj wstępu przed pierwszą sekcją ani podsumowania po ostatniej.\n\n"
+            "NIE definiuj problemu ogólnie ani nie tłumacz, czym jest dana metryka - statyczną "
+            "definicję pokazuje już karta testu nad Twoją odpowiedzią (sekcja \"Co to jest?\"). "
+            "Zacznij od razu od diagnozy TEJ konkretnej strony."
         )
         # `current_value` to surowy fragment AUDYTOWANEJ (obcej) strony - dane całkowicie
         # niezaufane. Bez jawnego oznaczenia ich jako danych, strona mogłaby umieścić w
