@@ -15,28 +15,37 @@ MAX_UNTRUSTED_CHARS = 2000
 
 
 # ------------------------------------------------------------------
-# Routing modeli - dobór modelu do złożoności problemu
+# Routing modeli - WYŁĄCZONY na podstawie pomiaru
 # ------------------------------------------------------------------
-# Model mocniejszy kosztuje kilkanaście razy więcej za token, a audyt generuje
-# rekomendację dla KAŻDEJ metryki ze statusem warning/error (przy 41 testach bywa
-# ich ponad dwadzieścia). Płacenie stawki gpt-4o za "brak atrybutu alt" jest
-# marnotrawstwem, ale oszczędzanie na diagnozie LCP czy renderowania JS odbija się
-# na jakości rekomendacji, którą deweloper ma faktycznie wdrożyć.
+# Hipoteza brzmiała: metryki wymagające wnioskowania o przyczynie (Core Web Vitals,
+# architektura crawlowania, powiązania encji, E-E-A-T) zyskają na mocniejszym modelu,
+# a proste metryki meta mogą zostać na tańszym. Sprawdziliśmy ją benchmarkiem
+# LLM-as-a-Judge (`manage.py run_evaluator`, 17 przypadków, 5 wymiarów oceny),
+# uśredniając po trzy przebiegi każdego wariantu - temperatura generatora wynosi 0.3,
+# więc pojedynczy przebieg nie rozstrzyga.
+#
+# Wynik (docs/eval/pass_routing_*.json vs docs/eval/pass_mini_*.json):
+#
+#     wymiar     gpt-4o-mini        routing      różnica
+#     STRUKT     100.0% ±0.0     99.2% ±1.1     -0.8 pp
+#     MERYT       96.1% ±1.8     99.5% ±0.7     +3.4 pp
+#     KOD        100.0% ±0.0     98.0% ±2.8     -2.0 pp
+#     REFAKT      94.1% ±4.1     92.1% ±2.8     -2.0 pp
+#     CMS         77.5% ±5.0     75.5% ±5.0     -2.0 pp
+#     ŚREDNIA     93.5% ±1.8     92.9% ±2.0     -0.7 pp
+#
+# Routing wypadł nieznacznie GORZEJ, a rozrzut między przebiegami tej samej
+# konfiguracji (do 4.9 pp) jest wielokrotnie większy niż różnica między
+# konfiguracjami (0.7 pp) - czyli przewagi nie ma, jest szum. Przy ~18-krotnie
+# wyższej cenie gpt-4o za token nie ma czego kupować.
+#
+# Mechanizm zostaje, bo działa i jest otestowany: żeby przywrócić routing, wystarczy
+# wypełnić COMPLEX_METRICS kluczami metryk. Zanim to zrobisz - powtórz pomiar.
 MODEL_ZLOZONY = "gpt-4o"
 MODEL_PROSTY = "gpt-4o-mini"
 
-# Metryki, dla których rekomendacja wymaga wnioskowania o przyczynie, a nie samego
-# przepisania przepisu z bazy wiedzy: zależności wydajnościowe, architektura
-# crawlowania, powiązania encji w danych strukturalnych i sygnały E-E-A-T.
-COMPLEX_METRICS = {
-    # Wydajność (Core Web Vitals) - diagnoza wymaga powiązania kilku przyczyn naraz.
-    "lcp", "inp", "cls", "fcp", "render_blocking",
-    # Techniczne - dotyczą architektury serwisu, nie pojedynczego znacznika.
-    "internal_linking", "redirect_chain", "javascript_rendering", "canonical", "http_errors",
-    # Dane strukturalne i E-E-A-T - wymagają zrozumienia relacji między encjami.
-    "structured_content", "schema_entity_linking", "heading_noise",
-    "eeat_authorship", "eeat_freshness",
-}
+# Pusty zbiór = jeden model dla wszystkich metryk. Patrz komentarz wyżej.
+COMPLEX_METRICS: set[str] = set()
 
 # Prefiksy doklejane przez AuditService do metryk PageSpeed (patrz
 # `_build_pagespeed_metrics_for_strategy`): klucz zapisany w bazie to "mobile_lcp",

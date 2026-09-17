@@ -33,18 +33,25 @@ DOMYSLNY_ZESTAW = Path(settings.BASE_DIR) / "docs" / "eval" / "golden_dataset.js
 # jakość promptu i kontekstu RAG, a nie różnicę między dwoma modelami.
 MODEL_SEDZIEGO = "gpt-4o-mini"
 
-WYMIARY = ("structure_score", "content_score", "code_score")
+# Pięć wymiarów oceny. Trzy pierwsze sprawdzają, czy model przeniósł przepis z bazy
+# wiedzy. Dwa ostatnie sprawdzają, czy zrobił z nim COŚ WIĘCEJ: dopasował go do
+# zastanego elementu i do technologii serwisu. To one mają rozstrzygnąć, czy droższy
+# model wnosi wartość - przepisanie gotowca opanował już model tańszy (efekt sufitu
+# w poprzednim zestawie kryteriów).
+WYMIARY = ("structure_score", "content_score", "code_score", "refactor_score", "cms_fit_score")
 ETYKIETY = {
     "structure_score": "STRUKT.",
     "content_score": "MERYT.",
     "code_score": "KOD",
+    "refactor_score": "REFAKT.",
+    "cms_fit_score": "CMS",
 }
 
 PROMPT_SEDZIEGO = """Jesteś rygorystycznym audytorem jakości rekomendacji SEO. Oceniasz
 ODPOWIEDŹ wygenerowaną przez system wobec KRYTERIÓW. Nie oceniasz elegancji języka ani
 tego, czy rekomendacja Ci się podoba - wyłącznie zgodność z kryteriami.
 
-Oceń trzy wymiary w skali 0-100:
+Oceń pięć wymiarów w skali 0-100:
 
 1. structure_score - jaki odsetek wymaganych sekcji (required_sections) faktycznie
    występuje w odpowiedzi jako wyodrębniony nagłówek lub wyraźnie oznaczona sekcja.
@@ -61,8 +68,26 @@ Oceń trzy wymiary w skali 0-100:
    Jeśli odpowiedź nie zawiera kodu, a wymagania są niepuste, oceń 0.
    Wzór: (liczba spełnionych wymagań / liczba wymagań) * 100.
 
+4. refactor_score - czy RECEPTA KODOWA jest REFAKTORYZACJĄ zastanego elementu, a nie
+   przepisanym gotowcem z bazy wiedzy. Sprawdź, czy kod w odpowiedzi zawiera konkretne
+   elementy z listy current_value_anchors: ścieżki src/href, nazwy klas CSS, identyfikatory,
+   nazwy zmiennych i wartości przekazane w zastanym elemencie.
+   Wzór: (liczba kotwic obecnych w bloku kodu / liczba kotwic) * 100.
+   Kotwica obecna wyłącznie w tekście opisowym, a nie w kodzie, NIE liczy się.
+   Kod operujący na przykładowych ścieżkach z bazy wiedzy (np. "/media/hero.avif")
+   zamiast na ścieżce zastanej to wynik 0 za daną kotwicę.
+
+5. cms_fit_score - czy kod jest osadzony w technologii podanej w cms_expectations.
+   Oceniaj idiomy frameworka, nie same deklaracje: czy użyto właściwego mechanizmu
+   konfiguracji, właściwej składni szablonu i właściwego miejsca w projekcie.
+   100 - kod jest w pełni idiomatyczny dla wskazanej technologii.
+   50  - kod działa, ale jest generyczny (czysty HTML tam, gdzie framework ma własny
+         mechanizm) albo idiomatyczny tylko częściowo.
+   0   - kod jest sprzeczny z technologią albo użyto idiomów innego frameworka.
+
 Zwróć WYŁĄCZNIE obiekt JSON, bez komentarza i bez bloku kodu:
 {"structure_score": <0-100>, "content_score": <0-100>, "code_score": <0-100>,
+ "refactor_score": <0-100>, "cms_fit_score": <0-100>,
  "justification": "<jedno zdanie po polsku, co zadecydowało o ocenach>"}"""
 
 
@@ -258,9 +283,9 @@ class Command(BaseCommand):
     def _tabela(self, wyniki: list[dict]) -> None:
         szerokosc = max(len(w["test_id"]) for w in wyniki) + 2
         naglowek = (
-            f"{'TEST':<{szerokosc}}{'KATEGORIA':<13}"
-            f"{ETYKIETY['structure_score']:>9}{ETYKIETY['content_score']:>9}"
-            f"{ETYKIETY['code_score']:>9}{'ŚREDNIA':>10}"
+            f"{'TEST':<{szerokosc}}{'MODEL':<13}"
+            + "".join(f"{ETYKIETY[w]:>9}" for w in WYMIARY)
+            + f"{'ŚREDNIA':>10}"
         )
         kreska = "-" * len(naglowek)
 
@@ -269,9 +294,9 @@ class Command(BaseCommand):
         self.stdout.write(kreska)
         for w in wyniki:
             wiersz = (
-                f"{w['test_id']:<{szerokosc}}{w['category']:<13}"
-                f"{w['structure_score']:>8.0f}%{w['content_score']:>8.0f}%"
-                f"{w['code_score']:>8.0f}%{w['average']:>9.0f}%"
+                f"{w['test_id']:<{szerokosc}}{w['model_used']:<13}"
+                + "".join(f"{w[wymiar]:>8.0f}%" for wymiar in WYMIARY)
+                + f"{w['average']:>9.0f}%"
             )
             self.stdout.write(self._pokoloruj(wiersz, w["average"]))
         self.stdout.write(kreska)
@@ -280,8 +305,8 @@ class Command(BaseCommand):
         calosc = mean(x["average"] for x in wyniki)
         podsumowanie = (
             f"{'ŚREDNIA SYSTEMU':<{szerokosc}}{'':<13}"
-            f"{srednie['structure_score']:>8.0f}%{srednie['content_score']:>8.0f}%"
-            f"{srednie['code_score']:>8.0f}%{calosc:>9.0f}%"
+            + "".join(f"{srednie[wymiar]:>8.0f}%" for wymiar in WYMIARY)
+            + f"{calosc:>9.0f}%"
         )
         self.stdout.write(self.style.MIGRATE_HEADING(podsumowanie))
         self.stdout.write(kreska)
@@ -294,11 +319,12 @@ class Command(BaseCommand):
         self.stdout.write("\nWynik wg kategorii:")
         for kategoria in sorted(kategorie):
             grupa = kategorie[kategoria]
+            wymiary = ", ".join(
+                f"{ETYKIETY[wymiar].rstrip('.').lower()} {mean(x[wymiar] for x in grupa):.0f}%"
+                for wymiar in WYMIARY
+            )
             self.stdout.write(
-                f"  {kategoria:<13} {mean(x['average'] for x in grupa):>5.0f}%   "
-                f"(struktura {mean(x['structure_score'] for x in grupa):.0f}%, "
-                f"merytoryka {mean(x['content_score'] for x in grupa):.0f}%, "
-                f"kod {mean(x['code_score'] for x in grupa):.0f}%)"
+                f"  {kategoria:<13} {mean(x['average'] for x in grupa):>5.0f}%   ({wymiary})"
             )
 
         uzyte: dict[str, int] = {}
@@ -308,9 +334,15 @@ class Command(BaseCommand):
             if w["model_routed"] != w["model_used"]:
                 rozjazd.append(w["model_routed"])
 
-        self.stdout.write("\nModel, który wygenerował odpowiedź:")
+        self.stdout.write("\nWynik wg modelu, który wygenerował odpowiedź:")
         for model in sorted(uzyte):
-            self.stdout.write(f"  {model:<24} {uzyte[model]:>2} przypadk(ów)")
+            grupa = [w for w in wyniki if w["model_used"] == model]
+            wymiary = "  ".join(
+                f"{ETYKIETY[wymiar]} {mean(x[wymiar] for x in grupa):.0f}%" for wymiar in WYMIARY
+            )
+            self.stdout.write(
+                f"  {model:<13} {len(grupa):>2} przyp.  śr. {mean(x['average'] for x in grupa):>5.0f}%   {wymiary}"
+            )
         if rozjazd:
             self.stdout.write(
                 self.style.WARNING(

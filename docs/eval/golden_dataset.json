@@ -24,7 +24,12 @@
       "code_snippet_requirements": [
         "<link rel=\"preload\"",
         "fetchpriority=\"high\""
-      ]
+      ],
+      "current_value_anchors": [
+        "/_nuxt/hero-baner.jpg",
+        "hero__img"
+      ],
+      "cms_expectations": "Nuxt 3: konfiguracja <head> przez useHead()/definePageMeta w komponencie albo app.head w nuxt.config.ts, komponenty <NuxtImg>/<NuxtLink> zamiast surowych <img>/<a>, pliki w app/ i server/. Wklejenie surowego <link> do <head> bez mechanizmu Nuxta to rozwiązanie generyczne."
     }
   },
   {
@@ -52,7 +57,12 @@
       "code_snippet_requirements": [
         "font-display",
         "rel=\"preload\""
-      ]
+      ],
+      "current_value_anchors": [
+        "fonts.googleapis.com",
+        "Inter"
+      ],
+      "cms_expectations": "Nuxt 3: konfiguracja <head> przez useHead()/definePageMeta w komponencie albo app.head w nuxt.config.ts, komponenty <NuxtImg>/<NuxtLink> zamiast surowych <img>/<a>, pliki w app/ i server/. Wklejenie surowego <link> do <head> bez mechanizmu Nuxta to rozwiązanie generyczne."
     }
   },
   {
@@ -80,7 +90,12 @@
       "code_snippet_requirements": [
         "width=\"",
         "height=\""
-      ]
+      ],
+      "current_value_anchors": [
+        "/wp-content/uploads/2026/oferta.jpg",
+        "Oferta"
+      ],
+      "cms_expectations": "WordPress: hooki i filtry w functions.php lub wtyczce (wp_enqueue_script, wp_head, add_filter), funkcje szablonu (the_post_thumbnail, get_template_part), sanityzacja przez esc_attr/esc_url. Sam HTML wklejony do pliku motywu bez hooka to rozwiązanie generyczne."
     }
   },
   {
@@ -107,7 +122,11 @@
       ],
       "code_snippet_requirements": [
         "defer"
-      ]
+      ],
+      "current_value_anchors": [
+        "789"
+      ],
+      "cms_expectations": "React: komponent funkcyjny w JSX (className zamiast class, {} dla wyrażeń), pobieranie danych po stronie serwera (Server Component / getServerSideProps) tam, gdzie problemem jest CSR. Sam HTML bez komponentu to rozwiązanie generyczne."
     }
   },
   {
@@ -135,7 +154,12 @@
       "code_snippet_requirements": [
         "<a",
         "href=\"?page=2\""
-      ]
+      ],
+      "current_value_anchors": [
+        "Więcej wyników",
+        "link"
+      ],
+      "cms_expectations": "Nuxt 3: konfiguracja <head> przez useHead()/definePageMeta w komponencie albo app.head w nuxt.config.ts, komponenty <NuxtImg>/<NuxtLink> zamiast surowych <img>/<a>, pliki w app/ i server/. Wklejenie surowego <link> do <head> bez mechanizmu Nuxta to rozwiązanie generyczne."
     }
   },
   {
@@ -162,7 +186,12 @@
       ],
       "code_snippet_requirements": [
         "slug"
-      ]
+      ],
+      "current_value_anchors": [
+        "Kopalnia-złota",
+        "64"
+      ],
+      "cms_expectations": "WordPress: hooki i filtry w functions.php lub wtyczce (wp_enqueue_script, wp_head, add_filter), funkcje szablonu (the_post_thumbnail, get_template_part), sanityzacja przez esc_attr/esc_url. Sam HTML wklejony do pliku motywu bez hooka to rozwiązanie generyczne."
     }
   },
   {
@@ -189,7 +218,11 @@
       ],
       "code_snippet_requirements": [
         "Sitemap"
-      ]
+      ],
+      "current_value_anchors": [
+        "robots.txt"
+      ],
+      "cms_expectations": "Django: kod w warstwie aplikacji - klasy Sitemap z django.contrib.sitemaps, model/QuerySet, tagi szablonu {% %}, wpis w urls.py. Statyczny plik XML albo sam HTML to rozwiązanie generyczne."
     }
   },
   {
@@ -217,7 +250,11 @@
       "code_snippet_requirements": [
         "User-agent:",
         "Allow:"
-      ]
+      ],
+      "current_value_anchors": [
+        "/szukaj/"
+      ],
+      "cms_expectations": "Technologia nieokreślona: kod ma być konkretny i gotowy do wdrożenia po stronie serwera lub w pliku konfiguracyjnym (robots.txt, konfiguracja serwera WWW). Oczekujemy pełnej, działającej konfiguracji, a nie fragmentu do uzupełnienia."
     }
   },
   {
@@ -244,7 +281,12 @@
       ],
       "code_snippet_requirements": [
         "return 301"
-      ]
+      ],
+      "current_value_anchors": [
+        "www.przyklad.pl",
+        "przyklad.pl"
+      ],
+      "cms_expectations": "Technologia nieokreślona: kod ma być konkretny i gotowy do wdrożenia po stronie serwera lub w pliku konfiguracyjnym (robots.txt, konfiguracja serwera WWW). Oczekujemy pełnej, działającej konfiguracji, a nie fragmentu do uzupełnienia."
     }
   },
   {
@@ -272,7 +314,12 @@
       "code_snippet_requirements": [
         "\"@type\": \"FAQPage\"",
         "application/ld+json"
-      ]
+      ],
+      "current_value_anchors": [
+        "Jaki jest czas realizacji?",
+        "akordeon"
+      ],
+      "cms_expectations": "WordPress: hooki i filtry w functions.php lub wtyczce (wp_enqueue_script, wp_head, add_filter), funkcje szablonu (the_post_thumbnail, get_template_part), sanityzacja przez esc_attr/esc_url. Sam HTML wklejony do pliku motywu bez hooka to rozwiązanie generyczne."
     }
   },
   {
@@ -300,7 +347,11 @@
       "code_snippet_requirements": [
         "\"@graph\"",
         "\"@id\""
-      ]
+      ],
+      "current_value_anchors": [
+        "application/ld+json"
+      ],
+      "cms_expectations": "Nuxt 3: konfiguracja <head> przez useHead()/definePageMeta w komponencie albo app.head w nuxt.config.ts, komponenty <NuxtImg>/<NuxtLink> zamiast surowych <img>/<a>, pliki w app/ i server/. Wklejenie surowego <link> do <head> bez mechanizmu Nuxta to rozwiązanie generyczne."
     }
   },
   {
@@ -328,7 +379,12 @@
       "code_snippet_requirements": [
         "<div",
         "class="
-      ]
+      ],
+      "current_value_anchors": [
+        "czytaj-wiecej",
+        "/wpis"
+      ],
+      "cms_expectations": "WordPress: hooki i filtry w functions.php lub wtyczce (wp_enqueue_script, wp_head, add_filter), funkcje szablonu (the_post_thumbnail, get_template_part), sanityzacja przez esc_attr/esc_url. Sam HTML wklejony do pliku motywu bez hooka to rozwiązanie generyczne."
     }
   },
   {
@@ -356,7 +412,12 @@
       "code_snippet_requirements": [
         "<table",
         "await"
-      ]
+      ],
+      "current_value_anchors": [
+        "root",
+        "/static/app.js"
+      ],
+      "cms_expectations": "React: komponent funkcyjny w JSX (className zamiast class, {} dla wyrażeń), pobieranie danych po stronie serwera (Server Component / getServerSideProps) tam, gdzie problemem jest CSR. Sam HTML bez komponentu to rozwiązanie generyczne."
     }
   },
   {
@@ -383,7 +444,11 @@
       ],
       "code_snippet_requirements": [
         "<title>"
-      ]
+      ],
+      "current_value_anchors": [
+        "Sklep internetowy"
+      ],
+      "cms_expectations": "Nuxt 3: konfiguracja <head> przez useHead()/definePageMeta w komponencie albo app.head w nuxt.config.ts, komponenty <NuxtImg>/<NuxtLink> zamiast surowych <img>/<a>, pliki w app/ i server/. Wklejenie surowego <link> do <head> bez mechanizmu Nuxta to rozwiązanie generyczne."
     }
   },
   {
@@ -410,7 +475,11 @@
       ],
       "code_snippet_requirements": [
         "name=\"description\""
-      ]
+      ],
+      "current_value_anchors": [
+        "Wejdź i sprawdź naszą ofertę!"
+      ],
+      "cms_expectations": "WordPress: hooki i filtry w functions.php lub wtyczce (wp_enqueue_script, wp_head, add_filter), funkcje szablonu (the_post_thumbnail, get_template_part), sanityzacja przez esc_attr/esc_url. Sam HTML wklejony do pliku motywu bez hooka to rozwiązanie generyczne."
     }
   },
   {
@@ -438,7 +507,11 @@
       "code_snippet_requirements": [
         "\"@type\": \"Person\"",
         "\"sameAs\""
-      ]
+      ],
+      "current_value_anchors": [
+        "Marka A"
+      ],
+      "cms_expectations": "WordPress: hooki i filtry w functions.php lub wtyczce (wp_enqueue_script, wp_head, add_filter), funkcje szablonu (the_post_thumbnail, get_template_part), sanityzacja przez esc_attr/esc_url. Sam HTML wklejony do pliku motywu bez hooka to rozwiązanie generyczne."
     }
   },
   {
@@ -466,7 +539,11 @@
       "code_snippet_requirements": [
         "dateModified",
         "<time"
-      ]
+      ],
+      "current_value_anchors": [
+        "2024-11-08"
+      ],
+      "cms_expectations": "WordPress: hooki i filtry w functions.php lub wtyczce (wp_enqueue_script, wp_head, add_filter), funkcje szablonu (the_post_thumbnail, get_template_part), sanityzacja przez esc_attr/esc_url. Sam HTML wklejony do pliku motywu bez hooka to rozwiązanie generyczne."
     }
   }
 ]

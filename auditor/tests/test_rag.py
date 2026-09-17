@@ -316,51 +316,69 @@ class RAGEngineGenerateRecommendationTests(TestCase):
         self.assertEqual(recommendation, "Zalecana weryfikacja: Jakiś nietypowy problem SEO.")
 
 
-class ModelRoutingTests(TestCase):
-    """Dobór modelu do złożoności metryki.
+class RoutingWylaczonyTests(TestCase):
+    """Obowiązujący kontrakt: JEDEN model dla wszystkich metryk.
 
-    Audyt generuje rekomendację dla każdej metryki ze statusem warning/error, więc
-    stawka mocniejszego modelu na wszystkich testach to wielokrotność rachunku bez
-    zysku dla jakości. Routing ma tę różnicę wyłapywać.
+    Routing został wycofany po pomiarze (3 przebiegi benchmarku na wariant): przewaga
+    gpt-4o wyniosła -0.7 pp przy rozrzucie losowym do 4.9 pp - patrz komentarz przy
+    COMPLEX_METRICS w rag.py. Te testy pilnują, że domyślna konfiguracja nie zacznie
+    po cichu sięgać po droższy model.
     """
 
-    def test_prosta_metryka_wybiera_model_tanszy(self):
-        for klucz in ("title", "meta_description", "images_alt", "h1_structure", "robots_txt"):
+    def test_domyslnie_zaden_klucz_nie_kieruje_na_drozszy_model(self):
+        klucze = (
+            "title", "meta_description", "images_alt", "h1_structure", "robots_txt",
+            "lcp", "mobile_lcp", "desktop_inp", "javascript_rendering",
+            "internal_linking", "schema_entity_linking", "eeat_authorship",
+        )
+        for klucz in klucze:
             with self.subTest(metryka=klucz):
                 self.assertEqual(get_model_for_metric(klucz), MODEL_PROSTY)
 
-    def test_zlozona_metryka_wybiera_model_mocniejszy(self):
-        for klucz in ("lcp", "javascript_rendering", "internal_linking", "schema_entity_linking"):
-            with self.subTest(metryka=klucz):
-                self.assertEqual(get_model_for_metric(klucz), MODEL_ZLOZONY)
+    def test_zbior_metryk_zlozonych_jest_pusty(self):
+        """Pusty zbiór to świadoma decyzja poparta pomiarem, nie przeoczenie."""
+        self.assertEqual(COMPLEX_METRICS, set())
 
-    def test_kazda_metryka_z_listy_zlozonych_trafia_do_mocniejszego_modelu(self):
-        for klucz in COMPLEX_METRICS:
-            with self.subTest(metryka=klucz):
-                self.assertEqual(get_model_for_metric(klucz), MODEL_ZLOZONY)
-
-    def test_metryki_pagespeed_z_prefiksem_strategii_sa_rozpoznawane(self):
-        """AuditService zapisuje "mobile_lcp", nie "lcp" - bez odcięcia prefiksu
-        routing pomijałby wszystkie Core Web Vitals."""
-        for klucz in ("mobile_lcp", "desktop_lcp", "mobile_cls", "desktop_inp", "mobile_fcp"):
-            with self.subTest(metryka=klucz):
-                self.assertEqual(get_model_for_metric(klucz), MODEL_ZLOZONY)
-
-    def test_prefiks_nie_promuje_metryki_prostej(self):
-        self.assertEqual(get_model_for_metric("mobile_pagespeed"), MODEL_PROSTY)
-
-    def test_override_ma_pierwszenstwo_nad_routingiem(self):
-        self.assertEqual(get_model_for_metric("title", override_model="gpt-4o"), "gpt-4o")
-        self.assertEqual(get_model_for_metric("lcp", override_model="gpt-4o-mini"), "gpt-4o-mini")
-
-    def test_brak_klucza_metryki_wybiera_model_tanszy(self):
-        """Starszy kod woła generator bez metric_key - nie może przez to dostać
-        droższego modelu."""
+    def test_brak_klucza_metryki_wybiera_model_domyslny(self):
         self.assertEqual(get_model_for_metric(None), MODEL_PROSTY)
         self.assertEqual(get_model_for_metric(""), MODEL_PROSTY)
 
+    def test_override_dziala_mimo_wylaczonego_routingu(self):
+        """Ewaluator porównuje modele przez --model-override - to musi działać
+        niezależnie od tego, czy routing jest włączony."""
+        self.assertEqual(get_model_for_metric("title", override_model="gpt-4o"), "gpt-4o")
+        self.assertEqual(get_model_for_metric("lcp", override_model="gpt-4o-mini"), MODEL_PROSTY)
+
+
+class MechanizmRoutinguTests(TestCase):
+    """Sam mechanizm zostaje sprawny - przywrócenie routingu to wypełnienie
+    COMPLEX_METRICS. Testy działają na podstawionym zbiorze, żeby sprawdzać logikę,
+    a nie obowiązującą konfigurację."""
+
+    def test_metryka_ze_zbioru_kieruje_na_drozszy_model(self):
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp", "javascript_rendering"}):
+            self.assertEqual(get_model_for_metric("lcp"), MODEL_ZLOZONY)
+            self.assertEqual(get_model_for_metric("javascript_rendering"), MODEL_ZLOZONY)
+
+    def test_metryka_spoza_zbioru_zostaje_na_modelu_domyslnym(self):
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
+            self.assertEqual(get_model_for_metric("title"), MODEL_PROSTY)
+
+    def test_prefiks_strategii_pagespeed_jest_odcinany(self):
+        """AuditService zapisuje "mobile_lcp", nie "lcp" - bez odcięcia prefiksu
+        routing pomijałby wszystkie Core Web Vitals."""
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp", "cls", "inp", "fcp"}):
+            for klucz in ("mobile_lcp", "desktop_lcp", "mobile_cls", "desktop_inp", "mobile_fcp"):
+                with self.subTest(metryka=klucz):
+                    self.assertEqual(get_model_for_metric(klucz), MODEL_ZLOZONY)
+
+    def test_prefiks_nie_promuje_metryki_spoza_zbioru(self):
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
+            self.assertEqual(get_model_for_metric("mobile_pagespeed"), MODEL_PROSTY)
+
     def test_wielkosc_liter_i_biale_znaki_nie_maja_znaczenia(self):
-        self.assertEqual(get_model_for_metric("  LCP  "), MODEL_ZLOZONY)
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
+            self.assertEqual(get_model_for_metric("  LCP  "), MODEL_ZLOZONY)
 
 
 class ModelRoutingIntegrationTests(TestCase):
@@ -390,15 +408,17 @@ class ModelRoutingIntegrationTests(TestCase):
             engine.generate_recommendation("Problem z metryką.", **kwargs)
         return budowniczy
 
-    def test_zlozona_metryka_buduje_klienta_mocniejszego_modelu(self):
-        budowniczy = self._wywolaj(self._engine_z_atrapa_klienta(), metric_key="lcp")
+    def test_domyslnie_kazda_metryka_buduje_klienta_modelu_domyslnego(self):
+        for klucz in ("lcp", "images_alt", "javascript_rendering"):
+            with self.subTest(metryka=klucz):
+                budowniczy = self._wywolaj(self._engine_z_atrapa_klienta(), metric_key=klucz)
+                budowniczy.assert_called_once_with(MODEL_PROSTY)
+
+    def test_po_wlaczeniu_routingu_metryka_zlozona_siega_po_drozszy_model(self):
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
+            budowniczy = self._wywolaj(self._engine_z_atrapa_klienta(), metric_key="lcp")
 
         budowniczy.assert_called_once_with(MODEL_ZLOZONY)
-
-    def test_prosta_metryka_buduje_klienta_tanszego_modelu(self):
-        budowniczy = self._wywolaj(self._engine_z_atrapa_klienta(), metric_key="images_alt")
-
-        budowniczy.assert_called_once_with(MODEL_PROSTY)
 
     def test_model_override_wymusza_model_niezaleznie_od_metryki(self):
         budowniczy = self._wywolaj(
@@ -458,8 +478,9 @@ class RoutingWAuditServiceTests(TestCase):
             "mobile_lcp",
         )
 
-    def test_przekazany_klucz_prowadzi_do_wlasciwego_modelu(self):
-        """Test domyka łańcuch: klucz z AuditService -> router -> nazwa modelu."""
+    def test_przekazany_klucz_domyka_lancuch_do_nazwy_modelu(self):
+        """Klucz z AuditService -> router -> nazwa modelu. Przy wycofanym routingu
+        obie metryki trafiają na ten sam model - łańcuch nadal działa."""
         service = self._service()
 
         service._make_metric("seo", "images_alt", {"note": "Brak atrybutów alt."}, "warning")
@@ -469,7 +490,10 @@ class RoutingWAuditServiceTests(TestCase):
         zlozony = service.rag_engine.generate_recommendation.call_args.kwargs["metric_key"]
 
         self.assertEqual(get_model_for_metric(prosty), MODEL_PROSTY)
-        self.assertEqual(get_model_for_metric(zlozony), MODEL_ZLOZONY)
+        self.assertEqual(get_model_for_metric(zlozony), MODEL_PROSTY)
+
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"javascript_rendering"}):
+            self.assertEqual(get_model_for_metric(zlozony), MODEL_ZLOZONY)
 
 
 class DegradacjaModeluTests(TestCase):
@@ -502,7 +526,8 @@ class DegradacjaModeluTests(TestCase):
         zepsuty.invoke.side_effect = OpenAIPermissionDeniedError("403 model_not_found")
 
         klienci = {MODEL_ZLOZONY: zepsuty, MODEL_PROSTY: dzialajacy}
-        with patch.object(RAGEngine, "_build_llm", side_effect=lambda m: klienci[m]):
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}), \
+                patch.object(RAGEngine, "_build_llm", side_effect=lambda m: klienci[m]):
             wynik = self._engine().generate_recommendation("Problem.", metric_key="lcp")
 
         self.assertIn("DIAGNOZA z modelu taniego", wynik)
@@ -515,7 +540,8 @@ class DegradacjaModeluTests(TestCase):
         klienci = {MODEL_ZLOZONY: zepsuty, MODEL_PROSTY: dzialajacy}
 
         engine = self._engine()
-        with patch.object(RAGEngine, "_build_llm", side_effect=lambda m: klienci[m]):
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}), \
+                patch.object(RAGEngine, "_build_llm", side_effect=lambda m: klienci[m]):
             for _ in range(4):
                 engine.generate_recommendation("Problem.", metric_key="lcp")
 

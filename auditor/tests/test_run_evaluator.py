@@ -35,8 +35,18 @@ def _przypadek(test_id: str = "lcp_test", category: str = "performance", key: st
             "required_sections": ["DIAGNOZA", "PLAN DZIAŁANIA", "RECEPTA KODOWA"],
             "key_action_keywords": ["fetchpriority", "preload"],
             "code_snippet_requirements": ['fetchpriority="high"'],
+            "current_value_anchors": ["/hero.jpg"],
+            "cms_expectations": "Nuxt 3: useHead() albo komponent <NuxtImg>.",
         },
     }
+
+
+def _ocena(struktura=0, meryt=0, kod=0, refakt=0, cms=0, uzasadnienie="") -> str:
+    """Odpowiedź sędziego dla wszystkich pięciu wymiarów."""
+    return json.dumps({
+        "structure_score": struktura, "content_score": meryt, "code_score": kod,
+        "refactor_score": refakt, "cms_fit_score": cms, "justification": uzasadnienie,
+    })
 
 
 def _dokument(key: str) -> MagicMock:
@@ -93,43 +103,47 @@ class OcenaPrzypadkuTests(EvaluatorTestCase):
         wyjscie, _ = self._uruchom(
             [_przypadek("dobry"), _przypadek("slaby")],
             [
-                '{"structure_score": 100, "content_score": 100, "code_score": 100, "justification": "komplet"}',
-                '{"structure_score": 0, "content_score": 25, "code_score": 0, "justification": "brak kodu"}',
+                _ocena(100, 100, 100, 100, 100, "komplet"),
+                _ocena(0, 25, 0, 0, 0, "gotowiec z bazy, bez refaktoryzacji"),
             ],
         )
 
         self.assertIn("dobry", wyjscie)
-        self.assertRegex(wyjscie, r"dobry\s+performance\s+100%\s+100%\s+100%\s+100%")
-        self.assertRegex(wyjscie, r"slaby\s+performance\s+0%\s+25%\s+0%\s+8%")
+        self.assertRegex(wyjscie, r"dobry\s+gpt-4o-mini\s+100%\s+100%\s+100%\s+100%\s+100%\s+100%")
+        self.assertRegex(wyjscie, r"slaby\s+gpt-4o-mini\s+0%\s+25%\s+0%\s+0%\s+0%\s+5%")
 
     def test_srednia_systemu_liczona_ze_wszystkich_wymiarow(self):
         wyjscie, _ = self._uruchom(
             [_przypadek("a"), _przypadek("b")],
-            [
-                '{"structure_score": 0, "content_score": 60, "code_score": 90}',
-                '{"structure_score": 0, "content_score": 40, "code_score": 70}',
-            ],
+            [_ocena(0, 60, 90, 100, 50), _ocena(0, 40, 70, 80, 50)],
         )
 
-        # struktura (0+0)/2=0, merytoryka (60+40)/2=50, kod (90+70)/2=80, średnia 43
-        self.assertRegex(wyjscie, r"ŚREDNIA SYSTEMU\s+0%\s+50%\s+80%\s+43%")
+        # średnie kolumn: 0, 50, 80, 90, 50 -> średnia systemu 54
+        self.assertRegex(wyjscie, r"ŚREDNIA SYSTEMU\s+0%\s+50%\s+80%\s+90%\s+50%\s+54%")
 
     def test_kryteria_i_odpowiedz_trafiaja_do_sedziego(self):
-        _, sedzia = self._uruchom(
-            [_przypadek()],
-            ['{"structure_score": 50, "content_score": 50, "code_score": 50}'],
-        )
+        _, sedzia = self._uruchom([_przypadek()], [_ocena(50, 50, 50, 50, 50)])
         prompt = sedzia.prompty[0]
 
         self.assertIn("fetchpriority", prompt)
         self.assertIn("RECEPTA KODOWA", prompt)
         self.assertIn('Dodaj fetchpriority="high".', prompt)
 
+    def test_kotwice_i_oczekiwania_cms_trafiaja_do_sedziego(self):
+        """Bez nich sędzia nie ma jak ocenić refaktoryzacji ani dopasowania do CMS."""
+        _, sedzia = self._uruchom([_przypadek()], [_ocena(50, 50, 50, 50, 50)])
+        prompt = sedzia.prompty[0]
+
+        self.assertIn("current_value_anchors", prompt)
+        self.assertIn("/hero.jpg", prompt)
+        self.assertIn("cms_expectations", prompt)
+        self.assertIn("NuxtImg", prompt)
+
     def test_odpowiedz_jest_dla_sedziego_danymi_a_nie_instrukcja(self):
         """Rekomendacja pochodzi od modelu - nie może sterować własną oceną."""
         _, sedzia = self._uruchom(
             [_przypadek()],
-            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+            [_ocena()],
         )
         prompt = sedzia.prompty[0]
 
@@ -139,7 +153,7 @@ class OcenaPrzypadkuTests(EvaluatorTestCase):
 
 class OpisProblemuTests(EvaluatorTestCase):
     def test_opis_powstaje_z_kontekstu_metryki(self):
-        self._uruchom([_przypadek()], ['{"structure_score": 0, "content_score": 0, "code_score": 0}'])
+        self._uruchom([_przypadek()], [_ocena()])
         opis = self.silnik.generate_recommendation.call_args.args[0]
 
         self.assertIn("lcp", opis)
@@ -149,13 +163,13 @@ class OpisProblemuTests(EvaluatorTestCase):
 
     def test_opis_nie_zawiera_klucza_z_bazy_wiedzy(self):
         """Zapytanie zawierające odpowiedź unieważniłoby pomiar trafności wyszukiwania."""
-        self._uruchom([_przypadek()], ['{"structure_score": 0, "content_score": 0, "code_score": 0}'])
+        self._uruchom([_przypadek()], [_ocena()])
         opis = self.silnik.generate_recommendation.call_args.args[0]
 
         self.assertNotIn("lcp_key", opis)
 
     def test_zastany_element_trafia_do_generatora_osobnym_parametrem(self):
-        self._uruchom([_przypadek()], ['{"structure_score": 0, "content_score": 0, "code_score": 0}'])
+        self._uruchom([_przypadek()], [_ocena()])
 
         self.assertEqual(
             self.silnik.generate_recommendation.call_args.kwargs["current_value"],
@@ -167,7 +181,7 @@ class TrafnoscWyszukiwaniaTests(EvaluatorTestCase):
     def test_trafienie_gdy_oczekiwany_wpis_jest_w_kontekscie(self):
         wyjscie, _ = self._uruchom(
             [_przypadek(key="lcp_key")],
-            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+            [_ocena()],
         )
 
         self.assertIn("1/1 (100%)", wyjscie)
@@ -177,7 +191,7 @@ class TrafnoscWyszukiwaniaTests(EvaluatorTestCase):
 
         wyjscie, _ = self._uruchom(
             [_przypadek("test_bez_trafienia", key="lcp_key")],
-            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+            [_ocena()],
         )
 
         self.assertIn("0/1 (0%)", wyjscie)
@@ -188,31 +202,32 @@ class OdpowiedzSedziegoTests(EvaluatorTestCase):
     def test_json_w_bloku_kodu_jest_parsowany(self):
         wyjscie, _ = self._uruchom(
             [_przypadek("a")],
-            ['```json\n{"structure_score": 80, "content_score": 60, "code_score": 40}\n```'],
+            ['```json\n' + _ocena(80, 60, 40, 20, 100) + '\n```'],
         )
 
-        self.assertRegex(wyjscie, r"a\s+performance\s+80%\s+60%\s+40%")
+        self.assertRegex(wyjscie, r"a\s+gpt-4o-mini\s+80%\s+60%\s+40%\s+20%\s+100%")
 
     def test_odpowiedz_bez_json_daje_zera_i_ostrzezenie(self):
         wyjscie, _ = self._uruchom([_przypadek("a")], ["Nie umiem tego ocenić."])
 
         self.assertIn("nie zwrócił JSON-a", wyjscie)
-        self.assertRegex(wyjscie, r"a\s+performance\s+0%\s+0%\s+0%")
+        self.assertRegex(wyjscie, r"a\s+gpt-4o-mini\s+0%\s+0%\s+0%\s+0%\s+0%")
 
     def test_wartosci_spoza_skali_sa_przycinane(self):
         wyjscie, _ = self._uruchom(
             [_przypadek("a")],
-            ['{"structure_score": 150, "content_score": -20, "code_score": "brak"}'],
+            ['{"structure_score": 150, "content_score": -20, "code_score": "brak",'
+             ' "refactor_score": null, "cms_fit_score": []}'],
         )
 
-        self.assertRegex(wyjscie, r"a\s+performance\s+100%\s+0%\s+0%")
+        self.assertRegex(wyjscie, r"a\s+gpt-4o-mini\s+100%\s+0%\s+0%\s+0%\s+0%")
 
 
 class FiltryIRaportTests(EvaluatorTestCase):
     def test_filtr_kategorii(self):
         wyjscie, _ = self._uruchom(
             [_przypadek("perf", "performance"), _przypadek("seo1", "seo")],
-            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+            [_ocena()],
             category="performance",
         )
 
@@ -222,7 +237,7 @@ class FiltryIRaportTests(EvaluatorTestCase):
     def test_filtr_pojedynczego_testu(self):
         wyjscie, _ = self._uruchom(
             [_przypadek("a"), _przypadek("b")],
-            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+            [_ocena()],
             only="b",
         )
 
@@ -232,7 +247,7 @@ class FiltryIRaportTests(EvaluatorTestCase):
     def test_limit_ogranicza_liczbe_wywolan_api(self):
         self._uruchom(
             [_przypadek("a"), _przypadek("b"), _przypadek("c")],
-            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'] * 3,
+            [_ocena()] * 3,
             limit=1,
         )
 
@@ -242,7 +257,7 @@ class FiltryIRaportTests(EvaluatorTestCase):
         with self.assertRaises(CommandError):
             self._uruchom(
                 [_przypadek("a", "performance")],
-                ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+                [_ocena()],
                 category="structure",
             )
 
@@ -257,10 +272,7 @@ class FiltryIRaportTests(EvaluatorTestCase):
         cel = self.katalog / "raport.json"
         self._uruchom(
             [_przypadek("a"), _przypadek("b")],
-            [
-                '{"structure_score": 0, "content_score": 60, "code_score": 90}',
-                '{"structure_score": 0, "content_score": 40, "code_score": 70}',
-            ],
+            [_ocena(0, 60, 90, 100, 50), _ocena(0, 40, 70, 80, 50)],
             save=str(cel),
         )
         raport = json.loads(cel.read_text(encoding="utf-8"))
@@ -295,7 +307,10 @@ class GoldenDatasetTests(SimpleTestCase):
                 )
                 self.assertEqual(
                     set(przypadek["expected_criteria"]),
-                    {"required_sections", "key_action_keywords", "code_snippet_requirements"},
+                    {
+                        "required_sections", "key_action_keywords", "code_snippet_requirements",
+                        "current_value_anchors", "cms_expectations",
+                    },
                 )
                 self.assertIn("metric_key", przypadek["input_context"])
 
@@ -321,6 +336,36 @@ class GoldenDatasetTests(SimpleTestCase):
         for przypadek in przypadki:
             with self.subTest(test_id=przypadek["test_id"]):
                 self.assertIn(przypadek["key"], klucze)
+
+    def test_kotwice_pochodza_z_zastanego_elementu(self):
+        """Kotwica spoza current_value nie mierzyłaby refaktoryzacji, tylko przypadek."""
+        przypadki = json.loads(self.sciezka.read_text(encoding="utf-8"))
+
+        for przypadek in przypadki:
+            zastane = przypadek["input_context"]["current_value"].lower()
+            kotwice = przypadek["expected_criteria"]["current_value_anchors"]
+
+            with self.subTest(test_id=przypadek["test_id"]):
+                self.assertTrue(kotwice, "przypadek bez kotwic nie zmierzy refaktoryzacji")
+            for kotwica in kotwice:
+                with self.subTest(test_id=przypadek["test_id"], kotwica=kotwica):
+                    self.assertIn(kotwica.lower(), zastane)
+
+    def test_kazdy_przypadek_ma_oczekiwania_wobec_technologii(self):
+        przypadki = json.loads(self.sciezka.read_text(encoding="utf-8"))
+
+        for przypadek in przypadki:
+            with self.subTest(test_id=przypadek["test_id"]):
+                oczekiwania = przypadek["expected_criteria"]["cms_expectations"]
+                self.assertIsInstance(oczekiwania, str)
+                self.assertGreater(len(oczekiwania), 40, "opis technologii zbyt ogólnikowy")
+
+    def test_zestaw_pokrywa_kilka_technologii(self):
+        """Jedna technologia w całym zestawie nie zmierzyłaby dopasowania do CMS."""
+        przypadki = json.loads(self.sciezka.read_text(encoding="utf-8"))
+        technologie = {p["input_context"]["cms"] for p in przypadki}
+
+        self.assertGreaterEqual(len(technologie), 4)
 
     def test_kryteria_maja_pokrycie_w_zrodlowym_wpisie(self):
         """Kryterium, którego nie ma w bazie wiedzy, mierzyłoby wiedzę modelu, nie RAG."""
@@ -352,22 +397,29 @@ class RaportowanieModeluTests(EvaluatorTestCase):
         cel = self.katalog / "raport.json"
         self._uruchom(
             [_przypadek()],
-            ['{"structure_score": 100, "content_score": 100, "code_score": 100}'],
+            [_ocena(100, 100, 100, 100, 100)],
             save=str(cel),
         )
         wynik = json.loads(cel.read_text(encoding="utf-8"))["results"][0]
 
-        self.assertEqual(wynik["model_routed"], "gpt-4o")
-        self.assertEqual(wynik["model_used"], "gpt-4o")
+        # Routing jest wycofany (COMPLEX_METRICS pusty), więc metryka "lcp" też
+        # trafia na model domyślny - router i wykonanie są zgodne.
+        self.assertEqual(wynik["model_routed"], "gpt-4o-mini")
+        self.assertEqual(wynik["model_used"], "gpt-4o-mini")
 
     def test_degradacja_modelu_jest_widoczna_w_raporcie(self):
-        """Router chciał gpt-4o, ale silnik zszedł na tańszy - raport ma to pokazać."""
+        """Router chciał gpt-4o, ale silnik zszedł na tańszy - raport ma to pokazać.
+
+        Routing jest domyślnie wycofany, więc na czas testu wymuszamy go podstawionym
+        zbiorem - sprawdzamy mechanizm raportowania, nie obowiązującą konfigurację.
+        """
         self.silnik.candidate_models.side_effect = lambda model: ["gpt-4o-mini"]
 
-        wyjscie, _ = self._uruchom(
-            [_przypadek()],
-            ['{"structure_score": 100, "content_score": 100, "code_score": 100}'],
-        )
+        with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
+            wyjscie, _ = self._uruchom(
+                [_przypadek()],
+                [_ocena(100, 100, 100, 100, 100)],
+            )
 
         self.assertIn("gpt-4o-mini", wyjscie)
         self.assertIn("zeszło na model zapasowy", wyjscie)
@@ -377,14 +429,14 @@ class RaportowanieModeluTests(EvaluatorTestCase):
 
         wyjscie, _ = self._uruchom(
             [_przypadek()],
-            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+            [_ocena()],
         )
 
         self.assertIn("fallback (baza wiedzy)", wyjscie)
 
     def test_metric_key_trafia_do_generatora(self):
         """Bez tego routing w ewaluacji mierzyłby konfigurację inną niż produkcyjna."""
-        self._uruchom([_przypadek()], ['{"structure_score": 0, "content_score": 0, "code_score": 0}'])
+        self._uruchom([_przypadek()], [_ocena()])
 
         self.assertEqual(
             self.silnik.generate_recommendation.call_args.kwargs["metric_key"], "lcp"
@@ -393,7 +445,7 @@ class RaportowanieModeluTests(EvaluatorTestCase):
     def test_model_override_przechodzi_do_generatora_i_raportu(self):
         wyjscie, _ = self._uruchom(
             [_przypadek()],
-            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+            [_ocena()],
             model_override="gpt-4o-mini",
         )
 
@@ -401,4 +453,3 @@ class RaportowanieModeluTests(EvaluatorTestCase):
             self.silnik.generate_recommendation.call_args.kwargs["model_override"], "gpt-4o-mini"
         )
         self.assertIn("gpt-4o-mini", wyjscie)
-
