@@ -14,6 +14,59 @@ COLLECTION_NAME = "seo_knowledge"
 MAX_UNTRUSTED_CHARS = 2000
 
 
+# ------------------------------------------------------------------
+# Routing modeli - dobór modelu do złożoności problemu
+# ------------------------------------------------------------------
+# Model mocniejszy kosztuje kilkanaście razy więcej za token, a audyt generuje
+# rekomendację dla KAŻDEJ metryki ze statusem warning/error (przy 41 testach bywa
+# ich ponad dwadzieścia). Płacenie stawki gpt-4o za "brak atrybutu alt" jest
+# marnotrawstwem, ale oszczędzanie na diagnozie LCP czy renderowania JS odbija się
+# na jakości rekomendacji, którą deweloper ma faktycznie wdrożyć.
+MODEL_ZLOZONY = "gpt-4o"
+MODEL_PROSTY = "gpt-4o-mini"
+
+# Metryki, dla których rekomendacja wymaga wnioskowania o przyczynie, a nie samego
+# przepisania przepisu z bazy wiedzy: zależności wydajnościowe, architektura
+# crawlowania, powiązania encji w danych strukturalnych i sygnały E-E-A-T.
+COMPLEX_METRICS = {
+    # Wydajność (Core Web Vitals) - diagnoza wymaga powiązania kilku przyczyn naraz.
+    "lcp", "inp", "cls", "fcp", "render_blocking",
+    # Techniczne - dotyczą architektury serwisu, nie pojedynczego znacznika.
+    "internal_linking", "redirect_chain", "javascript_rendering", "canonical", "http_errors",
+    # Dane strukturalne i E-E-A-T - wymagają zrozumienia relacji między encjami.
+    "structured_content", "schema_entity_linking", "heading_noise",
+    "eeat_authorship", "eeat_freshness",
+}
+
+# Prefiksy doklejane przez AuditService do metryk PageSpeed (patrz
+# `_build_pagespeed_metrics_for_strategy`): klucz zapisany w bazie to "mobile_lcp",
+# nie "lcp". Bez ich odcięcia routing pomijałby WSZYSTKIE Core Web Vitals - czyli
+# dokładnie te metryki, dla których mocniejszy model ma największe znaczenie.
+STRATEGY_PREFIXES = ("mobile_", "desktop_")
+
+
+def get_model_for_metric(metric_key: str | None, override_model: str | None = None) -> str:
+    """Dobiera model LLM do złożoności metryki.
+
+    `override_model` ma pierwszeństwo bezwzględne - korzysta z niego ewaluator, gdy
+    trzeba zmierzyć cały system na jednym modelu, oraz testy.
+    """
+    if override_model:
+        return override_model
+    if not metric_key:
+        return MODEL_PROSTY
+    return MODEL_ZLOZONY if _bazowy_klucz(metric_key) in COMPLEX_METRICS else MODEL_PROSTY
+
+
+def _bazowy_klucz(metric_key: str) -> str:
+    """Odcina prefiks strategii PageSpeed ("mobile_lcp" -> "lcp")."""
+    klucz = metric_key.strip().lower()
+    for prefiks in STRATEGY_PREFIXES:
+        if klucz.startswith(prefiks):
+            return klucz[len(prefiks):]
+    return klucz
+
+
 def _czy_niezgodnosc_wymiaru(exc: Exception) -> bool:
     """Czy błąd ChromaDB wynika z innej długości wektora niż ustalona w kolekcji.
 
@@ -49,6 +102,12 @@ class RAGEngine:
         self._collection = None
         self._embeddings = None
         self._llm = None
+        # Klienci per nazwa modelu - routing sięga po dwa różne modele w obrębie
+        # jednego audytu, a budowanie klienta przy każdej metryce byłoby zbędne.
+        self._llm_by_model: dict[str, object] = {}
+        # Modele, które w tym audycie już zawiodły (np. 403 model_not_found) - nie
+        # ponawiamy ich przy kolejnych metrykach.
+        self._models_unavailable: set[str] = set()
         self.api_key = getattr(settings, "OPENAI_API_KEY", "") or None
         self.embedding_model = getattr(settings, "OPENAI_EMBEDDING_MODEL", "") or self.EMBEDDING_MODEL
         # Gdy embeddingi OpenAI raz zawiodą (np. 403 PermissionDenied / model_not_found),
@@ -77,11 +136,30 @@ class RAGEngine:
 
     @property
     def llm(self):
+        """Klient domyślnego modelu. Zachowany dla zgodności - routing korzysta
+        z `llm_for_model`, ale testy i starszy kod odwołują się do tej właściwości."""
         if self._llm is None and self.api_key:
-            from langchain_openai import ChatOpenAI
-
-            self._llm = ChatOpenAI(model=self.MODEL_NAME, api_key=self.api_key, temperature=0.3)
+            self._llm = self._build_llm(self.MODEL_NAME)
         return self._llm
+
+    def llm_for_model(self, model_name: str):
+        """Klient wskazanego modelu (z pamięcią podręczną per nazwa).
+
+        Gdy `self._llm` podmieniono ręcznie - robią tak testy i `_make_engine` -
+        respektujemy tę podmianę i nie budujemy prawdziwego klienta OpenAI.
+        """
+        if self._llm is not None and model_name == self.MODEL_NAME:
+            return self._llm
+        if not self.api_key:
+            return None
+        if model_name not in self._llm_by_model:
+            self._llm_by_model[model_name] = self._build_llm(model_name)
+        return self._llm_by_model[model_name]
+
+    def _build_llm(self, model_name: str):
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(model=model_name, api_key=self.api_key, temperature=0.3)
 
     # ------------------------------------------------------------------
     # Indeksowanie
@@ -221,27 +299,75 @@ class RAGEngine:
     # Generowanie rekomendacji
     # ------------------------------------------------------------------
     def generate_recommendation(
-        self, issue_description: str, category: str | None = None, current_value: str | None = None
+        self,
+        issue_description: str,
+        category: str | None = None,
+        current_value: str | None = None,
+        metric_key: str | None = None,
+        model_override: str | None = None,
     ) -> str:
         """Generuje rekomendację naprawy problemu SEO w oparciu o wiedzę z bazy (RAG).
 
         `current_value` to zastany fragment/wartość ze strony (np. obecny tekst <title>,
         lista URL-i obrazków bez ALT) - pozwala AI podać bezpośredni przykład poprawki
         zamiast ogólnikowej porady.
+
+        `metric_key` decyduje o doborze modelu (patrz `get_model_for_metric`), a
+        `model_override` wymusza konkretny model niezależnie od metryki.
         """
         context_docs = self.retrieve_knowledge(issue_description, category=category)
         context_text = "\n\n".join(f"- {doc.title}: {doc.content}" for doc in context_docs)
 
-        if self.llm is not None:
+        model_name = get_model_for_metric(metric_key, override_model=model_override)
+
+        for kandydat in self.candidate_models(model_name):
+            llm = self.llm_for_model(kandydat)
+            if llm is None:
+                continue
             try:
-                return self._generate_with_llm(issue_description, context_text, current_value=current_value)
-            except Exception:
-                logger.exception("Błąd generowania rekomendacji przez LLM, używam fallbacku.")
+                return self._generate_with_llm(
+                    issue_description, context_text, current_value=current_value, llm=llm
+                )
+            except Exception as exc:
+                # Model niedostępny na tym koncie (403 model_not_found) albo chwilowo
+                # niesprawny. Zapamiętujemy to na czas audytu, żeby nie powtarzać
+                # nieudanego wywołania przy każdej z kilkunastu metryk.
+                self._models_unavailable.add(kandydat)
+                logger.warning(
+                    "Model %s nie wygenerował rekomendacji (%s: %s).",
+                    kandydat, type(exc).__name__, str(exc)[:200],
+                )
 
         return self._fallback_recommendation(issue_description, context_docs, current_value=current_value)
 
+    @property
+    def unavailable_models(self) -> frozenset[str]:
+        """Modele, które w tym audycie zawiodły (np. 403 model_not_found).
+
+        Publiczne, bo narzędzia diagnostyczne (ewaluator) muszą odróżnić model
+        WYBRANY przez router od modelu, który faktycznie wygenerował odpowiedź.
+        """
+        return frozenset(self._models_unavailable)
+
+    def candidate_models(self, model_name: str) -> list[str]:
+        """Modele do wypróbowania, od wybranego przez router do awaryjnego.
+
+        Gdy model złożony jest niedostępny, degradacja do TAŃSZEGO modelu daje
+        rekomendację o właściwej strukturze. Zejście od razu na `_fallback_recommendation`
+        zwracałoby surowy dokument z bazy wiedzy - z własnymi nagłówkami i definicją
+        powielającą to, co karta testu pokazuje nad boksem rekomendacji.
+        """
+        kolejka = [model_name]
+        if model_name != MODEL_PROSTY:
+            kolejka.append(MODEL_PROSTY)
+        return [m for m in kolejka if m not in self._models_unavailable]
+
     def _generate_with_llm(
-        self, issue_description: str, context_text: str, current_value: str | None = None
+        self,
+        issue_description: str,
+        context_text: str,
+        current_value: str | None = None,
+        llm=None,
     ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -283,7 +409,7 @@ class RAGEngine:
             f"Kontekst z bazy wiedzy:\n{context_text or 'Brak dodatkowego kontekstu.'}"
         )
 
-        response = self.llm.invoke(
+        response = (llm or self.llm).invoke(
             [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
         )
         return response.content.strip()

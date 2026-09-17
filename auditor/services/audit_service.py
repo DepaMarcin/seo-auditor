@@ -2612,8 +2612,14 @@ class AuditService:
         generate_recommendation: bool = True,
     ) -> dict:
         if generate_recommendation and status in ("warning", "error"):
+            # `metric_key` steruje doborem modelu w RAGEngine (patrz COMPLEX_METRICS):
+            # diagnoza LCP czy renderowania JS dostaje model mocniejszy, brak atrybutu
+            # alt - tańszy. Bez przekazania klucza routing nigdy by się nie uruchomił.
             recommendation = self.rag_engine.generate_recommendation(
-                value.get("note", key), category=category, current_value=current_value
+                value.get("note", key),
+                category=category,
+                current_value=current_value,
+                metric_key=key,
             )
             # Pusty wynik zwraca _NullRecommendationEngine przy skanie podstron - nie ma
             # sensu zapisywać pustego klucza "recommendation" w metryce.

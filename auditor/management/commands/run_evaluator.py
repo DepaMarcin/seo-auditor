@@ -74,6 +74,15 @@ class Command(BaseCommand):
         parser.add_argument("--category", help="Ogranicz do jednej kategorii (seo/technical/performance/structure).")
         parser.add_argument("--only", help="Uruchom wyłącznie wskazany test_id.")
         parser.add_argument("--limit", type=int, help="Ogranicz liczbę przypadków (kontrola kosztu API).")
+        parser.add_argument(
+            "--model-override",
+            help=(
+                "Wymuś jeden model generatora dla wszystkich przypadków, z pominięciem "
+                "routingu per metryka (RAGEngine.get_model_for_metric). Przydatne, gdy "
+                "trzeba porównać jakość samego promptu i kontekstu RAG bez mieszania "
+                "dwóch modeli w jednym pomiarze."
+            ),
+        )
         parser.add_argument("--save", help="Zapisz pełny raport JSON pod wskazaną ścieżką.")
         parser.add_argument(
             "--show-answers",
@@ -89,7 +98,9 @@ class Command(BaseCommand):
         for numer, przypadek in enumerate(przypadki, start=1):
             self.stdout.write(f"[{numer}/{len(przypadki)}] {przypadek['test_id']} ... ", ending="")
             self.stdout.flush()
-            wynik = self._ocen_przypadek(przypadek, silnik, sedzia)
+            wynik = self._ocen_przypadek(
+                przypadek, silnik, sedzia, model_override=options["model_override"]
+            )
             wyniki.append(wynik)
             self.stdout.write(f"{wynik['average']:.0f}%")
 
@@ -143,7 +154,7 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------
     # Pojedynczy przypadek
     # ------------------------------------------------------------------
-    def _ocen_przypadek(self, przypadek: dict, silnik, sedzia) -> dict:
+    def _ocen_przypadek(self, przypadek: dict, silnik, sedzia, model_override: str | None = None) -> dict:
         kontekst = przypadek["input_context"]
         opis = self._opis_problemu(kontekst)
 
@@ -152,16 +163,31 @@ class Command(BaseCommand):
         pobrane = silnik.retrieve_knowledge(opis, category=przypadek["category"])
         klucze = [(d.metadata or {}).get("key") for d in pobrane]
 
+        # `metric_key` przekazujemy zawsze - ewaluacja ma mierzyć system w takiej
+        # konfiguracji, w jakiej działa produkcyjnie, łącznie z routingiem modeli.
         odpowiedz = silnik.generate_recommendation(
             opis,
             category=przypadek["category"],
             current_value=kontekst.get("current_value"),
+            metric_key=kontekst.get("metric_key"),
+            model_override=model_override,
         )
         oceny = self._ocena_sedziego(odpowiedz, przypadek["expected_criteria"], sedzia)
+
+        from auditor.services.rag import get_model_for_metric
+
+        # Rozdzielamy model WYBRANY przez router od tego, który faktycznie odpowiedział.
+        # Gdy model złożony jest na koncie niedostępny (403), silnik schodzi na tańszy -
+        # raport zapisujący samą decyzję routera sugerowałby wtedy nieprawdę.
+        model_routed = get_model_for_metric(kontekst.get("metric_key"), override_model=model_override)
+        kandydaci = silnik.candidate_models(model_routed)
+        model_used = kandydaci[0] if kandydaci else "fallback (baza wiedzy)"
 
         return {
             "test_id": przypadek["test_id"],
             "category": przypadek["category"],
+            "model_routed": model_routed,
+            "model_used": model_used,
             "expected_key": przypadek["key"],
             "retrieved_keys": klucze,
             "retrieval_hit": przypadek["key"] in klucze,
@@ -273,6 +299,25 @@ class Command(BaseCommand):
                 f"(struktura {mean(x['structure_score'] for x in grupa):.0f}%, "
                 f"merytoryka {mean(x['content_score'] for x in grupa):.0f}%, "
                 f"kod {mean(x['code_score'] for x in grupa):.0f}%)"
+            )
+
+        uzyte: dict[str, int] = {}
+        rozjazd = []
+        for w in wyniki:
+            uzyte[w["model_used"]] = uzyte.get(w["model_used"], 0) + 1
+            if w["model_routed"] != w["model_used"]:
+                rozjazd.append(w["model_routed"])
+
+        self.stdout.write("\nModel, który wygenerował odpowiedź:")
+        for model in sorted(uzyte):
+            self.stdout.write(f"  {model:<24} {uzyte[model]:>2} przypadk(ów)")
+        if rozjazd:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Router wskazał {sorted(set(rozjazd))}, ale model nie odpowiedział - "
+                    f"{len(rozjazd)} przypadk(ów) zeszło na model zapasowy. Sprawdź dostęp "
+                    "do modelu na koncie OpenAI."
+                )
             )
 
         trafione = sum(1 for w in wyniki if w["retrieval_hit"])

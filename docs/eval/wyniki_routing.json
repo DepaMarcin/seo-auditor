@@ -1,0 +1,69 @@
+{
+  "summary": {
+    "structure_score": 100.0,
+    "content_score": 83.3,
+    "code_score": 100.0,
+    "average": 94.4,
+    "retrieval_hit_rate": 100.0,
+    "cases": 3
+  },
+  "results": [
+    {
+      "test_id": "lcp_hero_image_optimization",
+      "category": "performance",
+      "model": "gpt-4o",
+      "expected_key": "lcp_hero_image_optimization",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "render_blocking_css_and_fonts",
+        "image_next_gen_formats_and_sizing"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka lcp poza normą (wartość: 7.05s). Technologia: Nuxt.js. Zastany element: <img src=\"/_nuxt/hero-baner.jpg\" loading=\"lazy\" class=\"hero__img\">",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z metryką LCP (Largest Contentful Paint), która wynosi 7.05s, co jest znacznie powyżej normy. Głównym powodem tego opóźnienia jest obecność atrybutu `loading=\"lazy\"` w znaczniku `<img>` dla obrazu, który stanowi element LCP. Technologia Nuxt.js, z której korzysta strona, automatycznie dodaje ten atrybut do wszystkich obrazów, co powoduje, że przeglądarka odkłada pobranie obrazu LCP na koniec kolejki, co znacząco wydłuża czas wyświetlania tego kluczowego elementu. Dodatkowo, jeśli obraz jest wstrzykiwany przez JavaScript, może być niewidoczny dla skanera wstępnego przeglądarki, co również wpływa na LCP.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. Usuń atrybut `loading=\"lazy\"` z obrazu stanowiącego element LCP i dodaj do niego `fetchpriority=\"high\"`.\n2. Dodaj znacznik `<link rel=\"preload\" as=\"image\">` w sekcji `<head>` dla obrazu LCP, aby skaner wstępny mógł pobrać go równolegle z CSS.\n3. Zachowaj `loading=\"lazy\"` dla wszystkich obrazów poniżej pierwszego okna i wymuś to regułą w szablonie, aby leniwe ładowanie zaczynało się od N-tego obrazu na liście.\n4. Jeśli obraz LCP jest tłem CSS, przenieś go do znacznika `<img>`, aby zapewnić, że będzie wykrywany przez skaner wstępny.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- HEAD: skaner wstępny pobiera obraz LCP równolegle z CSS -->\n<link rel=\"preload\" as=\"image\"\n      href=\"/media/hero-1280.avif\"\n      imagesrcset=\"/media/hero-640.avif 640w,\n                   /media/hero-1280.avif 1280w,\n                   /media/hero-1920.avif 1920w\"\n      imagesizes=\"100vw\"\n      fetchpriority=\"high\">\n\n<!-- BODY: element LCP - BEZ loading=\"lazy\", z jawnymi wymiarami -->\n<img src=\"/media/hero-1280.avif\"\n     srcset=\"/media/hero-640.avif 640w,\n             /media/hero-1280.avif 1280w,\n             /media/hero-1920.avif 1920w\"\n     sizes=\"100vw\"\n     width=\"1920\" height=\"900\"\n     fetchpriority=\"high\"\n     decoding=\"async\"\n     alt=\"Opis zawartości grafiki z frazą kluczową podstrony\">\n\n<!-- Obrazy PONIŻEJ pierwszego okna - dopiero tutaj leniwe ładowanie -->\n<img src=\"/media/sekcja-2.avif\" width=\"800\" height=\"450\"\n     loading=\"lazy\" decoding=\"async\" alt=\"...\">\n```\nObecnie: `<img src=\"/_nuxt/hero-baner.jpg\" loading=\"lazy\" class=\"hero__img\">` -> Proponowane: `<img src=\"/media/hero-1280.avif\" fetchpriority=\"high\" width=\"1920\" height=\"900\" decoding=\"async\" alt=\"Opis zawartości grafiki z frazą kluczową podstrony\">`",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "render_blocking_css_and_fonts",
+      "category": "performance",
+      "model": "gpt-4o",
+      "expected_key": "render_blocking_css_and_fonts",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "render_blocking_css_and_fonts",
+        "inp_main_thread_blocking"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka fcp poza normą (wartość: 4.8s). Technologia: Nuxt.js. Zastany element: <link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter\">",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z metryką FCP (First Contentful Paint), która wynosi 4.8 sekundy, co jest wartością znacznie przekraczającą normy. Główną przyczyną tego opóźnienia jest zewnętrzny arkusz stylów Google Fonts, który blokuje renderowanie strony. Element `<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?family=Inter\">` powoduje, że przeglądarka musi poczekać na załadowanie czcionek przed wyświetleniem jakiejkolwiek treści. Dodatkowo, architektura Nuxt.js, która dzieli style na wiele plików, może zwiększać czas ładowania, co dodatkowo wpływa na FCP.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Krok 1 (Answer-First)**: Przenieś pliki czcionek na własną domenę i wczytaj je przez `@font-face` z atrybutem `font-display: swap`, aby zredukować czas ładowania i uniknąć blokowania renderowania.\n2. **Krok 2**: Wyodrębnij Critical CSS dla pierwszego okna i osadź go inline w `<style>` w sekcji `<head>`, aby przyspieszyć renderowanie.\n3. **Krok 3**: Wczytaj pozostałe arkusze stylów asynchronicznie, używając wzorca `media=\"print\"` oraz `onload`, aby nie blokować renderowania.\n4. **Krok 4**: Dodaj preload dla najważniejszych krojów czcionek w formacie woff2, aby zminimalizować czas ładowania.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- 1. Font z własnej domeny + preload TYLKO kroju podstawowego -->\n<link rel=\"preload\" href=\"/static/fonts/inter-regular.woff2\" as=\"font\" type=\"font/woff2\" crossorigin>\n<style>\n  @font-face {\n    font-family: \"Inter\";\n    src: url(\"/static/fonts/inter-regular.woff2\") format(\"woff2\");\n    font-weight: 400;\n    font-display: swap; /* tekst widoczny od razu krojem zapasowym */\n  }\n</style>\n\n<!-- 2. Critical CSS pierwszego okna - inline, bez żądania sieciowego -->\n<style>\n  :root { --kolor-tla: #fff; --kolor-tekstu: #111; }\n  body { margin: 0; font-family: \"Inter\", system-ui, sans-serif; background: var(--kolor-tla); }\n  .naglowek { min-height: 64px; }\n  .hero { min-height: 480px; }\n</style>\n\n<!-- 3. Reszta stylów asynchronicznie (nie blokuje wyrysowania) -->\n<link rel=\"preload\" href=\"/static/css/main.css\" as=\"style\" onload=\"this.onload=null;this.rel='stylesheet'\">\n<noscript><link rel=\"stylesheet\" href=\"/static/css/main.css\"></noscript>\n```",
+      "structure_score": 100.0,
+      "content_score": 100.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje, pojęcia oraz fragmenty kodu zostały spełnione w odpowiedzi.",
+      "average": 100.0
+    },
+    {
+      "test_id": "cls_missing_image_dimensions",
+      "category": "performance",
+      "model": "gpt-4o",
+      "expected_key": "cls_missing_image_dimensions",
+      "retrieved_keys": [
+        "lcp_hero_image_optimization",
+        "cls_missing_image_dimensions",
+        "image_next_gen_formats_and_sizing"
+      ],
+      "retrieval_hit": true,
+      "issue_description": "Metryka cls poza normą (wartość: 0.58). Technologia: WordPress. Zastany element: <img src=\"/wp-content/uploads/2026/oferta.jpg\" alt=\"Oferta\">",
+      "answer": "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA\nNa stronie występuje problem z metryką CLS (Cumulative Layout Shift), której wartość wynosi 0.58, co wskazuje na niestabilność wizualną. Główną przyczyną tego problemu jest brak zdefiniowanych atrybutów `width` i `height` w znaczniku `<img>`, co powoduje, że przeglądarka nie rezerwuje odpowiedniej przestrzeni dla obrazu przed jego załadowaniem. W rezultacie, gdy obraz jest wczytywany, jego pojawienie się powoduje przesunięcia innych elementów na stronie, co negatywnie wpływa na doświadczenia użytkowników.\n\n### 2. PLAN DZIAŁANIA (KROK PO KROKU)\n1. **Krok 1 (Answer-First)**: Dodaj atrybuty `width` i `height` do znacznika `<img>` dla obrazu, aby przeglądarka mogła zarezerwować odpowiednią przestrzeń przed jego załadowaniem.\n2. **Krok 2**: Wprowadź atrybut `fetchpriority=\"high\"` do obrazu, aby przeglądarka traktowała go jako priorytetowy podczas ładowania.\n3. **Krok 3**: Dodaj atrybut `loading=\"lazy\"` do wszystkich obrazów poniżej pierwszego okna, aby poprawić wydajność ładowania strony.\n4. **Krok 4**: Rozważ użycie formatu nowej generacji (np. AVIF lub WebP) dla obrazów, aby zmniejszyć ich rozmiar i poprawić czas ładowania.\n\n### 3. GOTOWA RECEPTA KODOWA / KONFIGURACJA\n```html\n<!-- Obecnie: -->\n<img src=\"/wp-content/uploads/2026/oferta.jpg\" alt=\"Oferta\">\n\n<!-- Proponowane: -->\n<img src=\"/wp-content/uploads/2026/oferta.jpg\" \n     alt=\"Oferta\" \n     width=\"800\" height=\"450\" \n     fetchpriority=\"high\" \n     loading=\"lazy\" \n     decoding=\"async\">\n```\nW powyższym kodzie dodano atrybuty `width` i `height`, co pozwoli przeglądarki na rezerwację miejsca dla obrazu, a także `fetchpriority=\"high\"` dla poprawy priorytetu ładowania.",
+      "structure_score": 100.0,
+      "content_score": 50.0,
+      "code_score": 100.0,
+      "justification": "Wszystkie wymagane sekcje i fragmenty kodu są obecne, ale tylko połowa kluczowych pojęć została użyta w kontekście działań naprawczych.",
+      "average": 83.33333333333333
+    }
+  ]
+}

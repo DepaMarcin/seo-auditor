@@ -70,6 +70,9 @@ class EvaluatorTestCase(SimpleTestCase):
         self.silnik = MagicMock()
         self.silnik.retrieve_knowledge.return_value = [_dokument("lcp_key")]
         self.silnik.generate_recommendation.return_value = "Dodaj fetchpriority=\"high\"."
+        # Sprawny silnik odpowiada modelem wskazanym przez router - pierwszy kandydat
+        # to ten sam model. Przypadek degradacji ma własny test niżej.
+        self.silnik.candidate_models.side_effect = lambda model: [model]
 
     def _plik(self, przypadki: list[dict]) -> str:
         sciezka = self.katalog / "golden.json"
@@ -338,3 +341,64 @@ class GoldenDatasetTests(SimpleTestCase):
             for fragment in przypadek["expected_criteria"]["code_snippet_requirements"]:
                 with self.subTest(test_id=przypadek["test_id"], kod=fragment):
                     self.assertIn(fragment.lower(), wpis["code_recipe"].lower())
+
+
+class RaportowanieModeluTests(EvaluatorTestCase):
+    """Raport musi rozróżniać model WYBRANY przez router od tego, który faktycznie
+    odpowiedział - inaczej przy 403 sugerowałby, że rekomendacje powstały modelem,
+    do którego konto nie ma dostępu."""
+
+    def test_model_routed_i_model_used_sa_zapisywane(self):
+        cel = self.katalog / "raport.json"
+        self._uruchom(
+            [_przypadek()],
+            ['{"structure_score": 100, "content_score": 100, "code_score": 100}'],
+            save=str(cel),
+        )
+        wynik = json.loads(cel.read_text(encoding="utf-8"))["results"][0]
+
+        self.assertEqual(wynik["model_routed"], "gpt-4o")
+        self.assertEqual(wynik["model_used"], "gpt-4o")
+
+    def test_degradacja_modelu_jest_widoczna_w_raporcie(self):
+        """Router chciał gpt-4o, ale silnik zszedł na tańszy - raport ma to pokazać."""
+        self.silnik.candidate_models.side_effect = lambda model: ["gpt-4o-mini"]
+
+        wyjscie, _ = self._uruchom(
+            [_przypadek()],
+            ['{"structure_score": 100, "content_score": 100, "code_score": 100}'],
+        )
+
+        self.assertIn("gpt-4o-mini", wyjscie)
+        self.assertIn("zeszło na model zapasowy", wyjscie)
+
+    def test_calkowita_awaria_modeli_raportowana_jako_fallback(self):
+        self.silnik.candidate_models.side_effect = lambda model: []
+
+        wyjscie, _ = self._uruchom(
+            [_przypadek()],
+            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+        )
+
+        self.assertIn("fallback (baza wiedzy)", wyjscie)
+
+    def test_metric_key_trafia_do_generatora(self):
+        """Bez tego routing w ewaluacji mierzyłby konfigurację inną niż produkcyjna."""
+        self._uruchom([_przypadek()], ['{"structure_score": 0, "content_score": 0, "code_score": 0}'])
+
+        self.assertEqual(
+            self.silnik.generate_recommendation.call_args.kwargs["metric_key"], "lcp"
+        )
+
+    def test_model_override_przechodzi_do_generatora_i_raportu(self):
+        wyjscie, _ = self._uruchom(
+            [_przypadek()],
+            ['{"structure_score": 0, "content_score": 0, "code_score": 0}'],
+            model_override="gpt-4o-mini",
+        )
+
+        self.assertEqual(
+            self.silnik.generate_recommendation.call_args.kwargs["model_override"], "gpt-4o-mini"
+        )
+        self.assertIn("gpt-4o-mini", wyjscie)
+
