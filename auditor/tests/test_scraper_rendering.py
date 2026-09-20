@@ -57,9 +57,9 @@ class BrowserHeaderTests(SimpleTestCase):
         self.assertIn(f"Chrome/{CHROME_MAJOR_VERSION}", DEFAULT_USER_AGENT)
 
     def test_client_hints_are_sent_with_browser_user_agent(self):
-        for nagłówek in ("sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"):
-            with self.subTest(nagłówek=nagłówek):
-                self.assertIn(nagłówek, self.scraper.headers)
+        for header in ("sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform"):
+            with self.subTest(header=header):
+                self.assertIn(header, self.scraper.headers)
 
     def test_client_hints_declare_the_same_version_as_user_agent(self):
         """Rozjechanie się wersji w UA i w Client Hints to czytelny sygnał automatu."""
@@ -68,21 +68,21 @@ class BrowserHeaderTests(SimpleTestCase):
 
     def test_client_hints_are_omitted_for_bot_user_agent(self):
         """`sec-ch-ua: "Google Chrome"` obok UA bota to sprzeczność łatwa do wykrycia."""
-        nagłówki = SEOScraper(user_agent=FALLBACK_USER_AGENT).headers
+        headers = SEOScraper(user_agent=FALLBACK_USER_AGENT).headers
 
-        self.assertNotIn("sec-ch-ua", nagłówki)
-        self.assertNotIn("Sec-Fetch-Mode", nagłówki)
+        self.assertNotIn("sec-ch-ua", headers)
+        self.assertNotIn("Sec-Fetch-Mode", headers)
 
     def test_accept_encoding_lists_only_decodable_formats(self):
         """Deklarowanie `br` bez dekodera kończyło pobranie błędem dekodowania."""
         from httpx._decoders import SUPPORTED_DECODERS
 
-        zadeklarowane = {
+        declared = {
             kodowanie.strip() for kodowanie in self.scraper.headers["Accept-Encoding"].split(",")
         }
 
-        self.assertTrue(zadeklarowane)
-        self.assertLessEqual(zadeklarowane, set(SUPPORTED_DECODERS))
+        self.assertTrue(declared)
+        self.assertLessEqual(declared, set(SUPPORTED_DECODERS))
 
 
 class FlexibleMetaParsingTests(SimpleTestCase):
@@ -95,83 +95,83 @@ class FlexibleMetaParsingTests(SimpleTestCase):
         return self.scraper.parse(html, "https://example.com")
 
     def test_plain_title_and_description_are_read_from_their_own_tags(self):
-        dane = self._parse(
+        data = self._parse(
             '<html><head><title>Tytuł strony</title>'
             '<meta name="description" content="Opis strony."></head><body></body></html>'
         )
 
-        self.assertEqual(dane["title"], "Tytuł strony")
-        self.assertEqual(dane["title_source"], "title")
-        self.assertEqual(dane["meta_description"], "Opis strony.")
-        self.assertEqual(dane["meta_description_source"], "description")
+        self.assertEqual(data["title"], "Tytuł strony")
+        self.assertEqual(data["title_source"], "title")
+        self.assertEqual(data["meta_description"], "Opis strony.")
+        self.assertEqual(data["meta_description_source"], "description")
 
     def test_description_is_found_regardless_of_letter_case(self):
-        dane = self._parse('<html><head><meta name="Description" content="Opis."></head></html>')
+        data = self._parse('<html><head><meta name="Description" content="Opis."></head></html>')
 
-        self.assertEqual(dane["meta_description"], "Opis.")
-        self.assertEqual(dane["meta_description_source"], "description")
+        self.assertEqual(data["meta_description"], "Opis.")
+        self.assertEqual(data["meta_description_source"], "description")
 
     def test_open_graph_substitutes_for_missing_title(self):
-        dane = self._parse(
+        data = self._parse(
             '<html><head><meta property="og:title" content="Tytuł z Open Graph"></head></html>'
         )
 
-        self.assertEqual(dane["title"], "Tytuł z Open Graph")
-        self.assertEqual(dane["title_source"], "og:title")
+        self.assertEqual(data["title"], "Tytuł z Open Graph")
+        self.assertEqual(data["title_source"], "og:title")
 
     def test_twitter_card_substitutes_when_open_graph_is_missing(self):
-        dane = self._parse(
+        data = self._parse(
             '<html><head><meta name="twitter:title" content="Tytuł z Twitter Card">'
             '<meta name="twitter:description" content="Opis z Twitter Card"></head></html>'
         )
 
-        self.assertEqual(dane["title_source"], "twitter:title")
-        self.assertEqual(dane["meta_description_source"], "twitter:description")
+        self.assertEqual(data["title_source"], "twitter:title")
+        self.assertEqual(data["meta_description_source"], "twitter:description")
 
     def test_open_graph_wins_over_twitter_card(self):
-        dane = self._parse(
+        data = self._parse(
             '<html><head>'
             '<meta property="og:description" content="Opis OG">'
             '<meta name="twitter:description" content="Opis Twitter">'
             "</head></html>"
         )
 
-        self.assertEqual(dane["meta_description"], "Opis OG")
-        self.assertEqual(dane["meta_description_source"], "og:description")
+        self.assertEqual(data["meta_description"], "Opis OG")
+        self.assertEqual(data["meta_description_source"], "og:description")
 
     def test_real_title_wins_over_substitutes(self):
-        dane = self._parse(
+        data = self._parse(
             '<html><head><title>Prawdziwy tytuł</title>'
             '<meta property="og:title" content="Tytuł OG"></head></html>'
         )
 
-        self.assertEqual(dane["title"], "Prawdziwy tytuł")
-        self.assertEqual(dane["title_source"], "title")
+        self.assertEqual(data["title"], "Prawdziwy tytuł")
+        self.assertEqual(data["title_source"], "title")
 
     def test_empty_title_falls_back_to_substitute(self):
         """`<title>   </title>` istnieje w DOM, ale nie niesie żadnej treści."""
-        dane = self._parse(
+        data = self._parse(
             '<html><head><title>   </title>'
             '<meta property="og:title" content="Tytuł OG"></head></html>'
         )
 
-        self.assertEqual(dane["title"], "Tytuł OG")
-        self.assertEqual(dane["title_source"], "og:title")
+        self.assertEqual(data["title"], "Tytuł OG")
+        self.assertEqual(data["title_source"], "og:title")
 
     def test_missing_everywhere_reports_no_source(self):
-        dane = self._parse("<html><head></head><body></body></html>")
+        data = self._parse("<html><head></head><body></body></html>")
 
-        self.assertIsNone(dane["title"])
-        self.assertIsNone(dane["title_source"])
-        self.assertIsNone(dane["meta_description_source"])
+        self.assertIsNone(data["title"])
+        self.assertIsNone(data["title_source"])
+        self.assertIsNone(data["meta_description_source"])
 
     def test_microdata_description_is_not_treated_as_page_description(self):
         """`<meta itemprop="description">` opisuje produkt, a nie całą stronę."""
-        dane = self._parse(
+        data = self._parse(
             '<html><head><meta itemprop="description" content="Opis produktu."></head></html>'
         )
 
-        self.assertIsNone(dane["meta_description"])
+        self.assertIsNone(data["meta_description"])
 
 
 class RenderFallbackTests(SimpleTestCase):
@@ -207,30 +207,30 @@ class RenderFallbackTests(SimpleTestCase):
         self.mock_client.get.return_value = _fake_response(200, text=CSR_HTML)
         self.mock_render.return_value = RENDERED_HTML
 
-        dane = self.scraper.scrape("https://example.com")
+        data = self.scraper.scrape("https://example.com")
 
         self.mock_render.assert_called_once()
-        self.assertEqual(dane["title"], "Kosmetyki profesjonalne - Sklep")
-        self.assertTrue(dane["meta_description"])
-        self.assertTrue(dane["rendered_with_browser"])
+        self.assertEqual(data["title"], "Kosmetyki profesjonalne - Sklep")
+        self.assertTrue(data["meta_description"])
+        self.assertTrue(data["rendered_with_browser"])
 
     def test_complete_static_page_does_not_start_the_browser(self):
         """Renderowanie kosztuje sekundy i setki MB - nie uruchamiamy go bez powodu."""
         self.mock_client.get.return_value = _fake_response(200, text=RENDERED_HTML)
 
-        dane = self.scraper.scrape("https://example.com")
+        data = self.scraper.scrape("https://example.com")
 
         self.mock_render.assert_not_called()
-        self.assertFalse(dane["rendered_with_browser"])
+        self.assertFalse(data["rendered_with_browser"])
 
     def test_waf_rejection_is_retried_through_the_browser(self):
         self.mock_client.get.return_value = _fake_response(403, text="Forbidden")
         self.mock_render.return_value = RENDERED_HTML
 
-        dane = self.scraper.scrape("https://example.com")
+        data = self.scraper.scrape("https://example.com")
 
         self.mock_render.assert_called_once()
-        self.assertEqual(dane["title"], "Kosmetyki profesjonalne - Sklep")
+        self.assertEqual(data["title"], "Kosmetyki profesjonalne - Sklep")
 
     def test_rate_limit_is_retried_through_the_browser(self):
         self.mock_client.get.return_value = _fake_response(429, text="Too Many Requests")
@@ -260,10 +260,10 @@ class RenderFallbackTests(SimpleTestCase):
         self.mock_client.get.return_value = _fake_response(200, text=CSR_HTML)
         self.mock_render.side_effect = renderer.RendererError("Chromium padł")
 
-        dane = self.scraper.scrape("https://example.com")
+        data = self.scraper.scrape("https://example.com")
 
-        self.assertIsNone(dane["title"])
-        self.assertFalse(dane["rendered_with_browser"])
+        self.assertIsNone(data["title"])
+        self.assertFalse(data["rendered_with_browser"])
 
     def test_failed_rendering_after_waf_rejection_reports_the_http_error(self):
         self.mock_client.get.return_value = _fake_response(403, text="Forbidden")
@@ -289,9 +289,9 @@ class RenderFallbackTests(SimpleTestCase):
         self.scraper.scrape("https://example.com")
 
         self.mock_client.get.return_value = _fake_response(200, text=RENDERED_HTML)
-        dane = self.scraper.scrape("https://example.com/kontakt")
+        data = self.scraper.scrape("https://example.com/kontakt")
 
-        self.assertFalse(dane["rendered_with_browser"])
+        self.assertFalse(data["rendered_with_browser"])
 
 
 class RendererUnavailableTests(SimpleTestCase):
@@ -313,9 +313,9 @@ class RendererUnavailableTests(SimpleTestCase):
         self.mock_client.get.return_value = _fake_response(200, text=CSR_HTML)
 
         with patch("auditor.services.renderer.find_spec", return_value=None):
-            dane = SEOScraper().scrape("https://example.com")
+            data = SEOScraper().scrape("https://example.com")
 
-        self.assertFalse(dane["rendered_with_browser"])
+        self.assertFalse(data["rendered_with_browser"])
 
     def test_render_html_reports_unavailability_instead_of_crashing(self):
         with patch("auditor.services.renderer.find_spec", return_value=None):
@@ -373,7 +373,7 @@ class RendererGuardTests(SimpleTestCase):
     def test_navigation_headers_drop_browser_owned_ones(self):
         """Playwright ustawia UA i Client Hints spójnie z Chromium - nadpisanie ich
         ręcznie tworzy dokładnie tę sprzeczność, przed którą fallback ma chronić."""
-        nagłówki = renderer._navigation_headers(
+        headers = renderer._navigation_headers(
             {
                 "User-Agent": "cokolwiek",
                 "Accept-Encoding": "gzip",
@@ -382,7 +382,7 @@ class RendererGuardTests(SimpleTestCase):
             }
         )
 
-        self.assertEqual(nagłówki, {"Accept-Language": "pl-PL,pl;q=0.9"})
+        self.assertEqual(headers, {"Accept-Language": "pl-PL,pl;q=0.9"})
 
 
 class SubstituteSourceScoringTests(SimpleTestCase):
@@ -402,11 +402,11 @@ class SubstituteSourceScoringTests(SimpleTestCase):
         self.service.rag_engine = MagicMock()
         self.service.rag_engine.generate_recommendation.return_value = ""
 
-    def _title(self, **dane) -> dict:
-        return self.service._evaluate_title(dane)
+    def _title(self, **data) -> dict:
+        return self.service._evaluate_title(data)
 
-    def _description(self, **dane) -> dict:
-        return self.service._evaluate_description(dane)
+    def _description(self, **data) -> dict:
+        return self.service._evaluate_description(data)
 
     def test_real_title_of_correct_length_passes(self):
         metryka = self._title(

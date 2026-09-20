@@ -69,11 +69,11 @@ class EmptyH1ConsistencyTests(SimpleTestCase):
             "H1 z samych spacji": "<html><body><h1>   </h1><h2>S</h2></body></html>",
         }
 
-        for opis, html in scenarios.items():
-            with self.subTest(scenariusz=opis):
+        for description, html in scenarios.items():
+            with self.subTest(scenariusz=description):
                 data = _parse(html)
-                self.assertNotEqual(service._evaluate_h1(data)["status"], "ok", opis)
-                self.assertNotEqual(service._evaluate_heading_order(data)["status"], "ok", opis)
+                self.assertNotEqual(service._evaluate_h1(data)["status"], "ok", description)
+                self.assertNotEqual(service._evaluate_heading_order(data)["status"], "ok", description)
 
     def test_empty_h2_does_not_falsely_flag_the_h1_test(self):
         """Granica kontraktu: pusty H2 to problem hierarchii, a NIE nagłówka H1.
@@ -236,8 +236,8 @@ class MetaRobotsRegistrationTests(SimpleTestCase):
 
         self.assertIn("meta_robots", METRIC_DEFINITIONS)
         self.assertIn("meta_robots", OFFICIAL_TEST_NAMES)
-        wszystkie_klucze = set().union(*(keys for _, _, keys in TECHNICAL_ACCORDIONS))
-        self.assertIn("meta_robots", wszystkie_klucze)
+        all_keys = set().union(*(keys for _, _, keys in TECHNICAL_ACCORDIONS))
+        self.assertIn("meta_robots", all_keys)
 
 
 class SenutoDatabaseTests(SimpleTestCase):
@@ -261,12 +261,12 @@ class SenutoDatabaseTests(SimpleTestCase):
         service = SenutoService()
         service.api_key = "testowy-klucz"
         client = MagicMock()
-        odpowiedz = MagicMock()
-        odpowiedz.json.return_value = {
+        answer = MagicMock()
+        answer.json.return_value = {
             "success": True,
             "data": {"statistics": {k: {"recent_value": 1} for k in ("top3", "top10", "top50")}},
         }
-        client.get.return_value = odpowiedz
+        client.get.return_value = answer
 
         service._fetch_visibility_summary(client, "example.com")
 

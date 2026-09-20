@@ -508,8 +508,8 @@ class SEOScraperRetryTests(SimpleTestCase):
 
         self.scraper.fetch("https://example.com")
 
-        użyte = [call.kwargs["headers"]["User-Agent"] for call in self.mock_client_cls.call_args_list]
-        self.assertEqual(użyte, [DEFAULT_USER_AGENT, FALLBACK_USER_AGENT])
+        used = [call.kwargs["headers"]["User-Agent"] for call in self.mock_client_cls.call_args_list]
+        self.assertEqual(used, [DEFAULT_USER_AGENT, FALLBACK_USER_AGENT])
 
     def test_explicit_user_agent_disables_rotation(self):
         scraper = SEOScraper(user_agent="WlasnyBot/2.0")
@@ -517,8 +517,8 @@ class SEOScraperRetryTests(SimpleTestCase):
 
         scraper.fetch("https://example.com")
 
-        użyte = {call.kwargs["headers"]["User-Agent"] for call in self.mock_client_cls.call_args_list}
-        self.assertEqual(użyte, {"WlasnyBot/2.0"})
+        used = {call.kwargs["headers"]["User-Agent"] for call in self.mock_client_cls.call_args_list}
+        self.assertEqual(used, {"WlasnyBot/2.0"})
 
     def test_read_timeout_grows_with_each_attempt(self):
         """Pomiary pokazały rozrzut 7-39 s dla tej samej strony - ostatnia próba musi
@@ -527,9 +527,9 @@ class SEOScraperRetryTests(SimpleTestCase):
 
         self.scraper.fetch("https://example.com")
 
-        odczyty = [call.kwargs["timeout"].read for call in self.mock_client_cls.call_args_list]
-        self.assertEqual(odczyty, sorted(odczyty))
-        self.assertGreater(odczyty[-1], odczyty[0])
+        read_timeouts = [call.kwargs["timeout"].read for call in self.mock_client_cls.call_args_list]
+        self.assertEqual(read_timeouts, sorted(read_timeouts))
+        self.assertGreater(read_timeouts[-1], read_timeouts[0])
 
     def test_explicit_timeout_is_respected(self):
         scraper = SEOScraper(timeout=5.0)
@@ -537,20 +537,20 @@ class SEOScraperRetryTests(SimpleTestCase):
 
         scraper.fetch("https://example.com")
 
-        odczyty = {call.kwargs["timeout"].read for call in self.mock_client_cls.call_args_list}
-        self.assertEqual(odczyty, {5.0})
+        read_timeouts = {call.kwargs["timeout"].read for call in self.mock_client_cls.call_args_list}
+        self.assertEqual(read_timeouts, {5.0})
 
     def test_backoff_grows_between_attempts(self):
         self.mock_client.get.side_effect = [self._timeout(), self._timeout(), _fake_response(200, text="ok")]
 
         self.scraper.fetch("https://example.com")
 
-        opóźnienia = [call.args[0] for call in self.mock_sleep.call_args_list]
-        self.assertEqual(len(opóźnienia), 2)
-        self.assertLess(opóźnienia[0], opóźnienia[1])
+        delays = [call.args[0] for call in self.mock_sleep.call_args_list]
+        self.assertEqual(len(delays), 2)
+        self.assertLess(delays[0], delays[1])
 
     def test_headers_look_like_a_real_client(self):
         """Sam User-Agent to za mało - systemy antybotowe oceniają spójność zestawu."""
-        for nagłówek in ("Accept", "Accept-Language", "Accept-Encoding"):
-            with self.subTest(nagłówek=nagłówek):
-                self.assertIn(nagłówek, self.scraper.headers)
+        for header in ("Accept", "Accept-Language", "Accept-Encoding"):
+            with self.subTest(header=header):
+                self.assertIn(header, self.scraper.headers)

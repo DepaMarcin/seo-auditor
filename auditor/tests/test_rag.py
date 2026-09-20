@@ -14,8 +14,8 @@ from auditor.models import KnowledgeDocument
 from auditor.services.rag import (
     COLLECTION_NAME,
     COMPLEX_METRICS,
-    MODEL_PROSTY,
-    MODEL_ZLOZONY,
+    SIMPLE_MODEL,
+    COMPLEX_MODEL,
     RAGEngine,
     get_model_for_metric,
 )
@@ -127,11 +127,11 @@ class RAGEngineCollectionRebuildTests(TestCase):
         engine = _make_engine(collection=stara)
 
         with patch.object(RAGEngine, "_recreate_collection") as przebudowa:
-            def podmien():
+            def swap_collection():
                 engine._collection = nowa
                 return nowa
 
-            przebudowa.side_effect = podmien
+            przebudowa.side_effect = swap_collection
             count = engine.index_knowledge_base()
 
         self.assertEqual(count, 2)
@@ -316,7 +316,7 @@ class RAGEngineGenerateRecommendationTests(TestCase):
         self.assertEqual(recommendation, "Zalecana weryfikacja: Jakiś nietypowy problem SEO.")
 
 
-class RoutingWylaczonyTests(TestCase):
+class RoutingDisabledTests(TestCase):
     """Obowiązujący kontrakt: JEDEN model dla wszystkich metryk.
 
     Routing został wycofany po pomiarze (3 przebiegi benchmarku na wariant): przewaga
@@ -325,60 +325,60 @@ class RoutingWylaczonyTests(TestCase):
     po cichu sięgać po droższy model.
     """
 
-    def test_domyslnie_zaden_klucz_nie_kieruje_na_drozszy_model(self):
-        klucze = (
+    def test_by_default_no_key_routes_to_the_expensive_model(self):
+        keys = (
             "title", "meta_description", "images_alt", "h1_structure", "robots_txt",
             "lcp", "mobile_lcp", "desktop_inp", "javascript_rendering",
             "internal_linking", "schema_entity_linking", "eeat_authorship",
         )
-        for klucz in klucze:
-            with self.subTest(metryka=klucz):
-                self.assertEqual(get_model_for_metric(klucz), MODEL_PROSTY)
+        for key in keys:
+            with self.subTest(metryka=key):
+                self.assertEqual(get_model_for_metric(key), SIMPLE_MODEL)
 
-    def test_zbior_metryk_zlozonych_jest_pusty(self):
+    def test_complex_metrics_set_is_empty(self):
         """Pusty zbiór to świadoma decyzja poparta pomiarem, nie przeoczenie."""
         self.assertEqual(COMPLEX_METRICS, set())
 
-    def test_brak_klucza_metryki_wybiera_model_domyslny(self):
-        self.assertEqual(get_model_for_metric(None), MODEL_PROSTY)
-        self.assertEqual(get_model_for_metric(""), MODEL_PROSTY)
+    def test_missing_metric_key_selects_the_default_model(self):
+        self.assertEqual(get_model_for_metric(None), SIMPLE_MODEL)
+        self.assertEqual(get_model_for_metric(""), SIMPLE_MODEL)
 
-    def test_override_dziala_mimo_wylaczonego_routingu(self):
+    def test_override_works_with_routing_disabled(self):
         """Ewaluator porównuje modele przez --model-override - to musi działać
         niezależnie od tego, czy routing jest włączony."""
         self.assertEqual(get_model_for_metric("title", override_model="gpt-4o"), "gpt-4o")
-        self.assertEqual(get_model_for_metric("lcp", override_model="gpt-4o-mini"), MODEL_PROSTY)
+        self.assertEqual(get_model_for_metric("lcp", override_model="gpt-4o-mini"), SIMPLE_MODEL)
 
 
-class MechanizmRoutinguTests(TestCase):
+class RoutingMechanismTests(TestCase):
     """Sam mechanizm zostaje sprawny - przywrócenie routingu to wypełnienie
     COMPLEX_METRICS. Testy działają na podstawionym zbiorze, żeby sprawdzać logikę,
     a nie obowiązującą konfigurację."""
 
-    def test_metryka_ze_zbioru_kieruje_na_drozszy_model(self):
+    def test_metric_in_the_set_routes_to_the_expensive_model(self):
         with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp", "javascript_rendering"}):
-            self.assertEqual(get_model_for_metric("lcp"), MODEL_ZLOZONY)
-            self.assertEqual(get_model_for_metric("javascript_rendering"), MODEL_ZLOZONY)
+            self.assertEqual(get_model_for_metric("lcp"), COMPLEX_MODEL)
+            self.assertEqual(get_model_for_metric("javascript_rendering"), COMPLEX_MODEL)
 
-    def test_metryka_spoza_zbioru_zostaje_na_modelu_domyslnym(self):
+    def test_metric_outside_the_set_stays_on_the_default_model(self):
         with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
-            self.assertEqual(get_model_for_metric("title"), MODEL_PROSTY)
+            self.assertEqual(get_model_for_metric("title"), SIMPLE_MODEL)
 
-    def test_prefiks_strategii_pagespeed_jest_odcinany(self):
+    def test_pagespeed_strategy_prefix_is_stripped(self):
         """AuditService zapisuje "mobile_lcp", nie "lcp" - bez odcięcia prefiksu
         routing pomijałby wszystkie Core Web Vitals."""
         with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp", "cls", "inp", "fcp"}):
-            for klucz in ("mobile_lcp", "desktop_lcp", "mobile_cls", "desktop_inp", "mobile_fcp"):
-                with self.subTest(metryka=klucz):
-                    self.assertEqual(get_model_for_metric(klucz), MODEL_ZLOZONY)
+            for key in ("mobile_lcp", "desktop_lcp", "mobile_cls", "desktop_inp", "mobile_fcp"):
+                with self.subTest(metryka=key):
+                    self.assertEqual(get_model_for_metric(key), COMPLEX_MODEL)
 
-    def test_prefiks_nie_promuje_metryki_spoza_zbioru(self):
+    def test_prefix_does_not_promote_a_metric_outside_the_set(self):
         with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
-            self.assertEqual(get_model_for_metric("mobile_pagespeed"), MODEL_PROSTY)
+            self.assertEqual(get_model_for_metric("mobile_pagespeed"), SIMPLE_MODEL)
 
-    def test_wielkosc_liter_i_biale_znaki_nie_maja_znaczenia(self):
+    def test_letter_case_and_whitespace_are_ignored(self):
         with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
-            self.assertEqual(get_model_for_metric("  LCP  "), MODEL_ZLOZONY)
+            self.assertEqual(get_model_for_metric("  LCP  "), COMPLEX_MODEL)
 
 
 class ModelRoutingIntegrationTests(TestCase):
@@ -388,7 +388,7 @@ class ModelRoutingIntegrationTests(TestCase):
     def setUp(self):
         KnowledgeDocument.objects.create(title="LCP", content="Zasady LCP.", category="performance")
 
-    def _engine_z_atrapa_klienta(self):
+    def _engine_with_mock_client(self):
         """Silnik, który zamiast prawdziwego ChatOpenAI buduje atrapę - `_build_llm`
         jest jedynym miejscem tworzenia klienta, więc to naturalny szew testowy."""
         engine = RAGEngine()
@@ -398,65 +398,65 @@ class ModelRoutingIntegrationTests(TestCase):
         engine._collection.query.return_value = {"ids": [[]]}
         return engine
 
-    def _wywolaj(self, engine, **kwargs) -> str:
-        odpowiedz = MagicMock()
-        odpowiedz.content = "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA"
+    def _invoke(self, engine, **kwargs) -> str:
+        answer = MagicMock()
+        answer.content = "### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA"
         klient = MagicMock()
-        klient.invoke.return_value = odpowiedz
+        klient.invoke.return_value = answer
 
-        with patch.object(RAGEngine, "_build_llm", return_value=klient) as budowniczy:
+        with patch.object(RAGEngine, "_build_llm", return_value=klient) as builder:
             engine.generate_recommendation("Problem z metryką.", **kwargs)
-        return budowniczy
+        return builder
 
-    def test_domyslnie_kazda_metryka_buduje_klienta_modelu_domyslnego(self):
-        for klucz in ("lcp", "images_alt", "javascript_rendering"):
-            with self.subTest(metryka=klucz):
-                budowniczy = self._wywolaj(self._engine_z_atrapa_klienta(), metric_key=klucz)
-                budowniczy.assert_called_once_with(MODEL_PROSTY)
+    def test_by_default_every_metric_builds_the_default_model_client(self):
+        for key in ("lcp", "images_alt", "javascript_rendering"):
+            with self.subTest(metryka=key):
+                builder = self._invoke(self._engine_with_mock_client(), metric_key=key)
+                builder.assert_called_once_with(SIMPLE_MODEL)
 
-    def test_po_wlaczeniu_routingu_metryka_zlozona_siega_po_drozszy_model(self):
+    def test_with_routing_enabled_a_complex_metric_uses_the_expensive_model(self):
         with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}):
-            budowniczy = self._wywolaj(self._engine_z_atrapa_klienta(), metric_key="lcp")
+            builder = self._invoke(self._engine_with_mock_client(), metric_key="lcp")
 
-        budowniczy.assert_called_once_with(MODEL_ZLOZONY)
+        builder.assert_called_once_with(COMPLEX_MODEL)
 
-    def test_model_override_wymusza_model_niezaleznie_od_metryki(self):
-        budowniczy = self._wywolaj(
-            self._engine_z_atrapa_klienta(), metric_key="images_alt", model_override="gpt-4o"
+    def test_model_override_forces_the_model_regardless_of_metric(self):
+        builder = self._invoke(
+            self._engine_with_mock_client(), metric_key="images_alt", model_override="gpt-4o"
         )
 
-        budowniczy.assert_called_once_with("gpt-4o")
+        builder.assert_called_once_with("gpt-4o")
 
-    def test_klient_modelu_jest_budowany_raz_i_cache_owany(self):
+    def test_model_client_is_built_once_and_cached(self):
         """Audyt woła generator kilkanaście razy - budowanie klienta za każdym
         razem byłoby zbędną pracą."""
-        engine = self._engine_z_atrapa_klienta()
-        odpowiedz = MagicMock()
-        odpowiedz.content = "tekst"
+        engine = self._engine_with_mock_client()
+        answer = MagicMock()
+        answer.content = "tekst"
         klient = MagicMock()
-        klient.invoke.return_value = odpowiedz
+        klient.invoke.return_value = answer
 
-        with patch.object(RAGEngine, "_build_llm", return_value=klient) as budowniczy:
+        with patch.object(RAGEngine, "_build_llm", return_value=klient) as builder:
             for _ in range(3):
                 engine.generate_recommendation("Problem.", metric_key="lcp")
 
-        self.assertEqual(budowniczy.call_count, 1)
+        self.assertEqual(builder.call_count, 1)
         self.assertEqual(klient.invoke.call_count, 3)
 
-    def test_brak_klucza_api_nie_probuje_budowac_klienta(self):
+    def test_missing_api_key_does_not_build_a_client(self):
         engine = RAGEngine()
         engine.api_key = None
         engine._collection = MagicMock()
         engine._collection.query.return_value = {"ids": [[]]}
 
-        with patch.object(RAGEngine, "_build_llm") as budowniczy:
-            wynik = engine.generate_recommendation("Problem.", metric_key="lcp")
+        with patch.object(RAGEngine, "_build_llm") as builder:
+            result = engine.generate_recommendation("Problem.", metric_key="lcp")
 
-        budowniczy.assert_not_called()
-        self.assertTrue(wynik)  # fallback z bazy wiedzy, nie wyjątek
+        builder.assert_not_called()
+        self.assertTrue(result)  # fallback z bazy wiedzy, nie wyjątek
 
 
-class RoutingWAuditServiceTests(TestCase):
+class RoutingInAuditServiceTests(TestCase):
     """Punkt integracji: bez przekazania `metric_key` z `_make_metric` routing
     nigdy by się nie uruchomił - każda metryka dostawałaby model domyślny."""
 
@@ -468,7 +468,7 @@ class RoutingWAuditServiceTests(TestCase):
         service.rag_engine.generate_recommendation.return_value = "rekomendacja"
         return service
 
-    def test_make_metric_przekazuje_klucz_metryki_do_generatora(self):
+    def test_make_metric_passes_the_metric_key_to_the_generator(self):
         service = self._service()
 
         service._make_metric("performance", "mobile_lcp", {"note": "LCP za wolne."}, "error")
@@ -478,25 +478,25 @@ class RoutingWAuditServiceTests(TestCase):
             "mobile_lcp",
         )
 
-    def test_przekazany_klucz_domyka_lancuch_do_nazwy_modelu(self):
+    def test_passed_key_completes_the_chain_to_a_model_name(self):
         """Klucz z AuditService -> router -> nazwa modelu. Przy wycofanym routingu
         obie metryki trafiają na ten sam model - łańcuch nadal działa."""
         service = self._service()
 
         service._make_metric("seo", "images_alt", {"note": "Brak atrybutów alt."}, "warning")
-        prosty = service.rag_engine.generate_recommendation.call_args.kwargs["metric_key"]
+        simple_key = service.rag_engine.generate_recommendation.call_args.kwargs["metric_key"]
 
         service._make_metric("technical", "javascript_rendering", {"note": "CSR."}, "error")
-        zlozony = service.rag_engine.generate_recommendation.call_args.kwargs["metric_key"]
+        complex_key = service.rag_engine.generate_recommendation.call_args.kwargs["metric_key"]
 
-        self.assertEqual(get_model_for_metric(prosty), MODEL_PROSTY)
-        self.assertEqual(get_model_for_metric(zlozony), MODEL_PROSTY)
+        self.assertEqual(get_model_for_metric(simple_key), SIMPLE_MODEL)
+        self.assertEqual(get_model_for_metric(complex_key), SIMPLE_MODEL)
 
         with patch("auditor.services.rag.COMPLEX_METRICS", {"javascript_rendering"}):
-            self.assertEqual(get_model_for_metric(zlozony), MODEL_ZLOZONY)
+            self.assertEqual(get_model_for_metric(complex_key), COMPLEX_MODEL)
 
 
-class DegradacjaModeluTests(TestCase):
+class ModelDegradationTests(TestCase):
     """Niedostępny model złożony (403 model_not_found) nie może zrzucać rekomendacji
     do surowego dokumentu z bazy wiedzy - ten ma własne nagłówki i powiela definicję
     pokazywaną już na karcie testu."""
@@ -514,55 +514,55 @@ class DegradacjaModeluTests(TestCase):
         engine._collection.query.return_value = {"ids": [[]]}
         return engine
 
-    def _klient(self, tresc="### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA"):
-        odpowiedz = MagicMock()
-        odpowiedz.content = tresc
+    def _client(self, content="### 1. DIAGNOZA I PRZYCZYNA TECHNICZNA"):
+        answer = MagicMock()
+        answer.content = content
         klient = MagicMock()
-        klient.invoke.return_value = odpowiedz
+        klient.invoke.return_value = answer
         return klient
 
-    def test_brak_dostepu_do_modelu_zlozonego_schodzi_na_tanszy(self):
-        zepsuty, dzialajacy = self._klient(), self._klient("### 1. DIAGNOZA z modelu taniego")
-        zepsuty.invoke.side_effect = OpenAIPermissionDeniedError("403 model_not_found")
+    def test_no_access_to_the_complex_model_degrades_to_the_cheaper_one(self):
+        failing_client, working_client = self._client(), self._client("### 1. DIAGNOZA z modelu taniego")
+        failing_client.invoke.side_effect = OpenAIPermissionDeniedError("403 model_not_found")
 
-        klienci = {MODEL_ZLOZONY: zepsuty, MODEL_PROSTY: dzialajacy}
+        clients = {COMPLEX_MODEL: failing_client, SIMPLE_MODEL: working_client}
         with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}), \
-                patch.object(RAGEngine, "_build_llm", side_effect=lambda m: klienci[m]):
-            wynik = self._engine().generate_recommendation("Problem.", metric_key="lcp")
+                patch.object(RAGEngine, "_build_llm", side_effect=lambda m: clients[m]):
+            result = self._engine().generate_recommendation("Problem.", metric_key="lcp")
 
-        self.assertIn("DIAGNOZA z modelu taniego", wynik)
-        self.assertNotIn("Surowa treść dokumentu.", wynik)
+        self.assertIn("DIAGNOZA z modelu taniego", result)
+        self.assertNotIn("Surowa treść dokumentu.", result)
 
-    def test_niedostepny_model_nie_jest_ponawiany_przy_kolejnych_metrykach(self):
+    def test_unavailable_model_is_not_retried_for_later_metrics(self):
         """Audyt liczy kilkanaście metryk złożonych - jedno 403 wystarczy za wszystkie."""
-        zepsuty, dzialajacy = self._klient(), self._klient()
-        zepsuty.invoke.side_effect = OpenAIPermissionDeniedError("403 model_not_found")
-        klienci = {MODEL_ZLOZONY: zepsuty, MODEL_PROSTY: dzialajacy}
+        failing_client, working_client = self._client(), self._client()
+        failing_client.invoke.side_effect = OpenAIPermissionDeniedError("403 model_not_found")
+        clients = {COMPLEX_MODEL: failing_client, SIMPLE_MODEL: working_client}
 
         engine = self._engine()
         with patch("auditor.services.rag.COMPLEX_METRICS", {"lcp"}), \
-                patch.object(RAGEngine, "_build_llm", side_effect=lambda m: klienci[m]):
+                patch.object(RAGEngine, "_build_llm", side_effect=lambda m: clients[m]):
             for _ in range(4):
                 engine.generate_recommendation("Problem.", metric_key="lcp")
 
-        self.assertEqual(zepsuty.invoke.call_count, 1)
-        self.assertEqual(dzialajacy.invoke.call_count, 4)
+        self.assertEqual(failing_client.invoke.call_count, 1)
+        self.assertEqual(working_client.invoke.call_count, 4)
 
-    def test_awaria_obu_modeli_konczy_sie_fallbackiem_z_bazy_wiedzy(self):
-        zepsuty = self._klient()
-        zepsuty.invoke.side_effect = RuntimeError("API niedostępne")
+    def test_both_models_failing_falls_back_to_the_knowledge_base(self):
+        failing_client = self._client()
+        failing_client.invoke.side_effect = RuntimeError("API niedostępne")
 
-        with patch.object(RAGEngine, "_build_llm", return_value=zepsuty):
-            wynik = self._engine().generate_recommendation("Problem.", metric_key="lcp")
+        with patch.object(RAGEngine, "_build_llm", return_value=failing_client):
+            result = self._engine().generate_recommendation("Problem.", metric_key="lcp")
 
-        self.assertIn("Surowa treść dokumentu.", wynik)
+        self.assertIn("Surowa treść dokumentu.", result)
 
-    def test_awaria_modelu_prostego_nie_probuje_go_dwa_razy(self):
-        zepsuty = self._klient()
-        zepsuty.invoke.side_effect = RuntimeError("API niedostępne")
+    def test_default_model_failure_is_not_retried_twice(self):
+        failing_client = self._client()
+        failing_client.invoke.side_effect = RuntimeError("API niedostępne")
 
-        with patch.object(RAGEngine, "_build_llm", return_value=zepsuty):
+        with patch.object(RAGEngine, "_build_llm", return_value=failing_client):
             self._engine().generate_recommendation("Problem.", metric_key="images_alt")
 
-        self.assertEqual(zepsuty.invoke.call_count, 1)
+        self.assertEqual(failing_client.invoke.call_count, 1)
 

@@ -238,12 +238,12 @@ class GeoMetricRegistrationTests(SimpleTestCase):
             TECHNICAL_ACCORDIONS,
         )
 
-        wszystkie = set().union(*(keys for _, _, keys in TECHNICAL_ACCORDIONS))
+        all_bots = set().union(*(keys for _, _, keys in TECHNICAL_ACCORDIONS))
         for key in ("answer_first", "structured_content"):
             with self.subTest(metryka=key):
                 self.assertIn(key, METRIC_DEFINITIONS)
                 self.assertIn(key, OFFICIAL_TEST_NAMES)
-                self.assertIn(key, wszystkie)
+                self.assertIn(key, all_bots)
 
     def test_metric_shape_matches_other_checks(self):
         data = _parse("<html><body><h2>S</h2><p>" + _paragraph(25) + "</p></body></html>")
@@ -264,11 +264,11 @@ class ScraperThreadStateTests(SimpleTestCase):
         scraper = SEOScraper()
         scraper._last_response_headers = {"X-Robots-Tag": "noindex"}
 
-        def odczyt_z_innego_watku() -> dict:
+        def read_from_other_thread() -> dict:
             return scraper._last_response_headers
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            z_watku = executor.submit(odczyt_z_innego_watku).result()
+            z_watku = executor.submit(read_from_other_thread).result()
 
         self.assertEqual(scraper._last_response_headers, {"X-Robots-Tag": "noindex"})
         self.assertEqual(z_watku, {}, "stan jednego wątku nie może wyciekać do drugiego")

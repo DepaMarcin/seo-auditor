@@ -41,8 +41,8 @@ MAX_UNTRUSTED_CHARS = 2000
 #
 # Mechanizm zostaje, bo działa i jest otestowany: żeby przywrócić routing, wystarczy
 # wypełnić COMPLEX_METRICS kluczami metryk. Zanim to zrobisz - powtórz pomiar.
-MODEL_ZLOZONY = "gpt-4o"
-MODEL_PROSTY = "gpt-4o-mini"
+COMPLEX_MODEL = "gpt-4o"
+SIMPLE_MODEL = "gpt-4o-mini"
 
 # Pusty zbiór = jeden model dla wszystkich metryk. Patrz komentarz wyżej.
 COMPLEX_METRICS: set[str] = set()
@@ -63,28 +63,28 @@ def get_model_for_metric(metric_key: str | None, override_model: str | None = No
     if override_model:
         return override_model
     if not metric_key:
-        return MODEL_PROSTY
-    return MODEL_ZLOZONY if _bazowy_klucz(metric_key) in COMPLEX_METRICS else MODEL_PROSTY
+        return SIMPLE_MODEL
+    return COMPLEX_MODEL if _get_base_key(metric_key) in COMPLEX_METRICS else SIMPLE_MODEL
 
 
-def _bazowy_klucz(metric_key: str) -> str:
+def _get_base_key(metric_key: str) -> str:
     """Odcina prefiks strategii PageSpeed ("mobile_lcp" -> "lcp")."""
-    klucz = metric_key.strip().lower()
-    for prefiks in STRATEGY_PREFIXES:
-        if klucz.startswith(prefiks):
-            return klucz[len(prefiks):]
-    return klucz
+    key = metric_key.strip().lower()
+    for prefix in STRATEGY_PREFIXES:
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return key
 
 
-def _czy_niezgodnosc_wymiaru(exc: Exception) -> bool:
+def _is_dimension_mismatch(exc: Exception) -> bool:
     """Czy błąd ChromaDB wynika z innej długości wektora niż ustalona w kolekcji.
 
     ChromaDB nie ma dla tego przypadku osobnego typu wyjątku - zgłasza go jako
     `InvalidArgumentError` z komunikatem "Collection expecting embedding with
     dimension of 384, got 1536".
     """
-    komunikat = str(exc).lower()
-    return "dimension" in komunikat and "embedding" in komunikat
+    message = str(exc).lower()
+    return "dimension" in message and "embedding" in message
 
 
 class RAGEngine:
@@ -204,7 +204,7 @@ class RAGEngine:
         try:
             self._upsert(ids, texts, metadatas, vectors)
         except Exception as exc:
-            if not _czy_niezgodnosc_wymiaru(exc):
+            if not _is_dimension_mismatch(exc):
                 logger.exception("Nie udało się zaindeksować bazy wiedzy w ChromaDB.")
                 return 0
 
@@ -329,8 +329,8 @@ class RAGEngine:
 
         model_name = get_model_for_metric(metric_key, override_model=model_override)
 
-        for kandydat in self.candidate_models(model_name):
-            llm = self.llm_for_model(kandydat)
+        for candidate in self.candidate_models(model_name):
+            llm = self.llm_for_model(candidate)
             if llm is None:
                 continue
             try:
@@ -341,10 +341,10 @@ class RAGEngine:
                 # Model niedostępny na tym koncie (403 model_not_found) albo chwilowo
                 # niesprawny. Zapamiętujemy to na czas audytu, żeby nie powtarzać
                 # nieudanego wywołania przy każdej z kilkunastu metryk.
-                self._models_unavailable.add(kandydat)
+                self._models_unavailable.add(candidate)
                 logger.warning(
                     "Model %s nie wygenerował rekomendacji (%s: %s).",
-                    kandydat, type(exc).__name__, str(exc)[:200],
+                    candidate, type(exc).__name__, str(exc)[:200],
                 )
 
         return self._fallback_recommendation(issue_description, context_docs, current_value=current_value)
@@ -366,10 +366,10 @@ class RAGEngine:
         zwracałoby surowy dokument z bazy wiedzy - z własnymi nagłówkami i definicją
         powielającą to, co karta testu pokazuje nad boksem rekomendacji.
         """
-        kolejka = [model_name]
-        if model_name != MODEL_PROSTY:
-            kolejka.append(MODEL_PROSTY)
-        return [m for m in kolejka if m not in self._models_unavailable]
+        queue = [model_name]
+        if model_name != SIMPLE_MODEL:
+            queue.append(SIMPLE_MODEL)
+        return [m for m in queue if m not in self._models_unavailable]
 
     def _generate_with_llm(
         self,

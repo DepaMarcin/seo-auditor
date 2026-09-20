@@ -43,16 +43,16 @@ class SchemaEntityLinkingTests(SimpleTestCase):
             {"@type": "WebSite", "@id": "https://sklep.pl/#site"},
         ]})
 
-        typy = [e.get("@type") for e in data["schema"]["entities"]]
-        self.assertIn("Organization", typy)
-        self.assertIn("WebSite", typy)
+        types = [e.get("@type") for e in data["schema"]["entities"]]
+        self.assertIn("Organization", types)
+        self.assertIn("WebSite", types)
 
     def test_nested_entities_are_also_collected(self):
         """Encje zagnieżdżone w właściwościach muszą być widoczne dla walidacji."""
         data = _page({"@type": "Product", "offers": {"@type": "Offer", "price": "10"}})
 
-        typy = [e.get("@type") for e in data["schema"]["entities"]]
-        self.assertIn("Offer", typy)
+        types = [e.get("@type") for e in data["schema"]["entities"]]
+        self.assertIn("Offer", types)
 
     def test_duplicate_organizations_are_a_critical_error(self):
         data = _page({"@graph": [
@@ -462,8 +462,8 @@ class PlaceholderContentTests(SimpleTestCase):
 class StructuredContentThresholdTests(SimpleTestCase):
     """Progi udziału struktur zależne od typu podstrony: produkt 15%, artykuł 10%."""
 
-    def _body(self, listy: int, akapity: int) -> str:
-        return "<ul><li>x</li></ul>" * listy + "<p>Akapit treści.</p>" * akapity
+    def _body(self, listy: int, paragraphs: int) -> str:
+        return "<ul><li>x</li></ul>" * listy + "<p>Akapit treści.</p>" * paragraphs
 
     def test_product_page_uses_higher_threshold(self):
         # 1 lista na 9 akapitów = 10% - wystarczy dla artykułu, za mało dla produktu.
@@ -487,7 +487,7 @@ class StructuredContentThresholdTests(SimpleTestCase):
 
 
 class NewMetricsRegistrationTests(SimpleTestCase):
-    NOWE = (
+    NEW_PAGE = (
         "schema_entity_linking", "price_discrepancy", "schema_data_hygiene",
         "ecommerce_completeness", "authorship_depth", "freshness_decay",
         "external_sources", "hidden_content", "heading_visibility",
@@ -501,12 +501,12 @@ class NewMetricsRegistrationTests(SimpleTestCase):
             TECHNICAL_ACCORDIONS,
         )
 
-        klucze = set().union(*(keys for _, _, keys in TECHNICAL_ACCORDIONS))
-        for key in self.NOWE:
+        keys = set().union(*(keys for _, _, keys in TECHNICAL_ACCORDIONS))
+        for key in self.NEW_PAGE:
             with self.subTest(metryka=key):
                 self.assertIn(key, METRIC_DEFINITIONS)
                 self.assertIn(key, OFFICIAL_TEST_NAMES)
-                self.assertIn(key, klucze)
+                self.assertIn(key, keys)
 
     def test_all_new_metrics_share_the_same_shape(self):
         data = _page({"@type": "Product", "name": "Kosz"}, body='<span class="price">99,00 zł</span>')
