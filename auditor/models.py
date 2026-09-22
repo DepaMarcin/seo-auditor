@@ -86,6 +86,12 @@ class AuditMetric(models.Model):
         # kontekście strony - np. EEAT+ (autor, data aktualizacji) na stronach
         # ofertowych/głównych, gdzie wymóg dotyczy przede wszystkim treści blogowych.
         INFO = "info", "Informacyjne (Opcjonalne)"
+        # Testu NIE DAŁO SIĘ przeprowadzić, bo surowy HTML nie zawierał treści
+        # (CSR albo blokada WAF - patrz auditor.services.accessibility). Status
+        # celowo odrębny od "error": brak H1 w pustym szkielecie aplikacji nie jest
+        # błędem strony, a oznaczanie go jako błąd generuje raport pełen nieprawdy.
+        # Metryki w tym stanie są wyłączone z punktacji (patrz SCORED_STATUSES).
+        SKIPPED = "skipped", "Nie do zbadania"
 
     audit = models.ForeignKey(Audit, on_delete=models.CASCADE, related_name="metrics")
     category = models.CharField(max_length=50)

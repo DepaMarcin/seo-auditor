@@ -99,7 +99,11 @@ class SEOScraperFetchTests(SimpleTestCase):
 
         self.assertEqual(data["url"], "https://example.com")
         self.assertEqual(data["title"], "Test")
-        self.mock_client.get.assert_called_once_with("https://example.com")
+        # Każde żądanie idzie pod znormalizowany adres. Liczba żądań nie jest tu
+        # przedmiotem testu: strona o jednym słowie wygląda jak pusta powłoka, więc
+        # scraper ponawia ją tożsamością Googlebota (patrz _retry_as_googlebot).
+        for call in self.mock_client.get.call_args_list:
+            self.assertEqual(call.args[0], "https://example.com")
 
     def test_fetch_follows_redirect_and_counts_hops(self):
         self.mock_client.get.side_effect = [

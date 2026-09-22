@@ -314,6 +314,7 @@ class RAGEngine:
         current_value: str | None = None,
         metric_key: str | None = None,
         model_override: str | None = None,
+        site_domain: str | None = None,
     ) -> str:
         """Generuje rekomendację naprawy problemu SEO w oparciu o wiedzę z bazy (RAG).
 
@@ -335,7 +336,8 @@ class RAGEngine:
                 continue
             try:
                 return self._generate_with_llm(
-                    issue_description, context_text, current_value=current_value, llm=llm
+                    issue_description, context_text,
+                    current_value=current_value, llm=llm, site_domain=site_domain,
                 )
             except Exception as exc:
                 # Model niedostępny na tym koncie (403 model_not_found) albo chwilowo
@@ -377,6 +379,7 @@ class RAGEngine:
         context_text: str,
         current_value: str | None = None,
         llm=None,
+        site_domain: str | None = None,
     ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -404,6 +407,18 @@ class RAGEngine:
             "definicję pokazuje już karta testu nad Twoją odpowiedzią (sekcja \"Co to jest?\"). "
             "Zacznij od razu od diagnozy TEJ konkretnej strony."
         )
+        if site_domain:
+            # Baza wiedzy jest zanonimizowana (klient-a.pl, Marka A, Metodyk A) - bez
+            # tej instrukcji model przepisuje zaślepki do kodu, a klient dostaje
+            # JSON-LD wskazujący na cudzą, nieistniejącą domenę.
+            system_prompt += (
+                f"\n\nAudytowana witryna to {site_domain}. W KAŻDYM przykładzie kodu, adresie "
+                f"URL, identyfikatorze @id i wartości JSON-LD używaj wyłącznie domeny "
+                f"{site_domain}. Kontekst z bazy wiedzy jest zanonimizowany - nazwy zastępcze "
+                "(klient-a.pl, klient-b.pl, przyklad.pl, Marka A, Firma A, Metodyk A, "
+                "Ekspert SEO 1) są WZORCEM STRUKTURY, nie treścią do przepisania. "
+                "Nie wolno ich przenieść do odpowiedzi."
+            )
         # `current_value` to surowy fragment AUDYTOWANEJ (obcej) strony - dane całkowicie
         # niezaufane. Bez jawnego oznaczenia ich jako danych, strona mogłaby umieścić w
         # <title> polecenie w rodzaju "zignoruj poprzednie instrukcje" i sterować treścią

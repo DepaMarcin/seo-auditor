@@ -44,6 +44,11 @@ BLOCKED_RESOURCE_TYPES = frozenset({"image", "media", "font"})
 # w jakim jest.
 NETWORK_IDLE_TIMEOUT_MS = 5_000
 
+# Limity obsługi nakładki zgody na cookies. Krótkie celowo: baner albo jest od razu,
+# albo go nie ma - czekanie na niego wydłużałoby każde renderowanie bez powodu.
+CONSENT_TIMEOUT_MS = 1_500
+CONSENT_SETTLE_MS = 500
+
 
 class RendererError(RuntimeError):
     """Renderowanie nie powiodło się (błąd nawigacji, timeout przeglądarki)."""
@@ -70,6 +75,7 @@ def render_html(
     timeout_seconds: float | None = None,
     user_agent: str | None = None,
     extra_headers: dict | None = None,
+    dismiss_consent: bool = False,
 ) -> str:
     """Zwraca HTML strony po wykonaniu JavaScriptu przez bezgłownego Chromium.
 
@@ -130,6 +136,8 @@ def render_html(
                     # Strona nigdy nie ucisza sieci (czat, analityka, long-polling) -
                     # DOM i tak jest już zbudowany, więc czytamy go w tym stanie.
                     logger.debug("Strona %s nie osiągnęła stanu networkidle - czytam DOM.", safe_url)
+                if dismiss_consent:
+                    _dismiss_consent(page)
                 return page.content()
             finally:
                 browser.close()
@@ -144,6 +152,42 @@ def render_html(
                 "Brakuje binarki przeglądarki - uruchom: playwright install chromium."
             ) from exc
         raise RendererError(f"Nie udało się wyrenderować {url}: {exc}") from exc
+
+
+def _dismiss_consent(page) -> None:
+    """Zamyka nakładkę zgody na cookies, żeby nie przykrywała mierzonego DOM.
+
+    Najpierw próbujemy kliknąć "akceptuj wszystkie" - część wdrożeń doładowuje treść
+    dopiero po wyrażeniu zgody, więc samo ukrycie banera nie wystarcza. Dopiero potem
+    usuwamy to, co zostało. Żaden błąd nie może przerwać renderowania: nakładki nie
+    ma na większości stron, a brak zgody i tak zwykle nie blokuje treści.
+    """
+    from .accessibility import CONSENT_ACCEPT_SELECTORS, CONSENT_SELECTORS
+
+    for selector in CONSENT_ACCEPT_SELECTORS:
+        try:
+            button = page.locator(selector).first
+            if button.count() and button.is_visible(timeout=CONSENT_TIMEOUT_MS):
+                button.click(timeout=CONSENT_TIMEOUT_MS)
+                page.wait_for_timeout(CONSENT_SETTLE_MS)
+                break
+        except Exception:
+            logger.debug("Nie udało się kliknąć zgody selektorem %s.", selector)
+
+    try:
+        page.evaluate(
+            "selektory => selektory.forEach("
+            "  s => document.querySelectorAll(s).forEach(el => el.remove()))",
+            list(CONSENT_SELECTORS),
+        )
+        # Banery blokują przewijanie przez overflow:hidden na <body> - przywracamy je,
+        # bo część stron doczytuje treść dopiero przy scrollu.
+        page.evaluate(
+            "() => { document.documentElement.style.overflow = 'auto';"
+            " document.body.style.overflow = 'auto'; }"
+        )
+    except Exception:
+        logger.debug("Nie udało się usunąć nakładki zgody ze strony.")
 
 
 def _navigation_headers(extra_headers: dict | None) -> dict:

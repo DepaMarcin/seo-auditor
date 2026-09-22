@@ -86,6 +86,17 @@ BROWSER_CLIENT_HINTS = {
 # Powtórzenie tego samego żądania statycznego nic by nie zmieniło (patrz `fetch`).
 RENDER_FALLBACK_STATUS_CODES = (403, 429)
 
+# User-Agent Googlebota używany przy ponowieniu, gdy serwer odda audytowi pustą
+# powłokę aplikacji. Nie chodzi o obejście zabezpieczeń - snapshot serwowany
+# Googlebotowi jest publicznie dostępny, a audyt ma ocenić dokładnie to, co widzi
+# wyszukiwarka. Tak samo działają komercyjne crawlery SEO.
+GOOGLEBOT_RETRY_USER_AGENT = (
+    "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+)
+
+# Poniżej tylu słów uznajemy odpowiedź za powłokę bez treści, a nie za stronę.
+STUB_WORD_THRESHOLD = 50
+
 # Boty modeli językowych (LLM), których zablokowanie wyklucza witrynę z odpowiedzi
 # generowanych przez AI - kluczowe dla GEO (Generative Engine Optimization).
 #
@@ -334,6 +345,14 @@ class SEOScraper:
         html = self.fetch(normalized_url)
         data = self.parse(html, normalized_url)
 
+        # Zanim sięgniemy po przeglądarkę: może treść jest dostępna od ręki, tylko
+        # pod inną tożsamością. To tańsze i wierniejsze niż renderowanie, bo daje
+        # DOKŁADNIE ten HTML, który indeksuje wyszukiwarka.
+        if self._looks_like_stub(data):
+            richer = self._retry_as_googlebot(normalized_url, data)
+            if richer is not None:
+                return richer
+
         if self._last_render_used or not self._needs_browser_rendering(data):
             return data
 
@@ -351,6 +370,38 @@ class SEOScraper:
             normalized_url, bool(data.get("title")), bool(data.get("meta_description")),
         )
         return rendered
+
+    def _looks_like_stub(self, data: dict) -> bool:
+        """Czy odpowiedź to powłoka aplikacji, a nie strona z treścią."""
+        return data.get("word_count", 0) < STUB_WORD_THRESHOLD
+
+    def _retry_as_googlebot(self, url: str, data: dict) -> dict | None:
+        """Ponawia pobranie tożsamością Googlebota. None, gdy nic to nie zmieniło.
+
+        Wynik przyjmujemy TYLKO wtedy, gdy realnie przybyło treści - inaczej
+        zostawiamy pierwotny wynik i ewentualnie idziemy do renderowania.
+        """
+        if self.user_agent_override:
+            # Ktoś narzucił tożsamość jawnie - podmiana byłaby zaskoczeniem.
+            return None
+
+        try:
+            html = self.fetch_raw(url, user_agent=GOOGLEBOT_RETRY_USER_AGENT)
+        except (ScraperError, httpx.HTTPError) as exc:
+            logger.info("Ponowienie jako Googlebot nie powiodło się dla %s: %s", url, exc)
+            return None
+
+        richer = self.parse(html, url)
+        if richer.get("word_count", 0) <= data.get("word_count", 0):
+            return None
+
+        logger.info(
+            "Serwis %s oddaje treść wyłącznie zadeklarowanym botom (%s -> %s słów) - "
+            "audyt korzysta z wersji serwowanej Googlebotowi.",
+            url, data.get("word_count", 0), richer.get("word_count", 0),
+        )
+        richer["served_to_declared_bots_only"] = True
+        return richer
 
     def _needs_browser_rendering(self, data: dict) -> bool:
         """Czy statyczny HTML wygląda na niekompletny na tyle, by sięgnąć po przeglądarkę.
@@ -437,6 +488,18 @@ class SEOScraper:
         raise ScraperError(
             f"Nie udało się pobrać {url} po {self.max_attempts} próbach: {ostatni_blad}"
         ) from ostatni_blad
+
+    def fetch_raw(self, url: str, user_agent: str | None = None) -> str:
+        """Jedno żądanie, bez ponowień, rotacji UA i fallbacku przeglądarkowego.
+
+        Służy weryfikacji pre-flight (`auditor.services.accessibility`), która musi
+        zobaczyć DOKŁADNIE to, co dostaje wskazany robot. `fetch()` byłby tu mylący:
+        rotuje User-Agenta i przy 403 sięga po przeglądarkę, więc zamaskowałby
+        właśnie tę blokadę, którą pre-flight ma wykryć.
+        """
+        normalized_url = self._normalize_url(url)
+        headers = self._build_headers(user_agent) if user_agent else self.headers
+        return self._fetch_once(normalized_url, headers, self._timeout_for_attempt(0))
 
     def _fetch_once(self, url: str, headers: dict, timeout: httpx.Timeout | None = None) -> str:
         """Pojedyncze podejście do pobrania strony wraz z obsługą przekierowań.

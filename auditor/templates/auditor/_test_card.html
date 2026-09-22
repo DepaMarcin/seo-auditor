@@ -7,7 +7,7 @@
     </div>
     <p class="test-card-summary">{{ metric.value.note }}</p>
 
-    {% if metric.definition or metric.current_value or metric.recommendation_segments %}
+    {% if metric.definition or metric.current_value or metric.recommendation_segments or metric.value.comparison %}
     <details class="test-card-details">
         <summary>Rozwiń rekomendację i kod</summary>
         <div class="test-card-details-body">
@@ -15,6 +15,32 @@
             <div class="metric-card-section metric-definition">
                 <div class="metric-card-label">Co to jest?</div>
                 <p>{{ metric.definition }}</p>
+            </div>
+            {% endif %}
+
+            {% if metric.value.comparison %}
+            <div class="metric-card-section">
+                <div class="metric-card-label">Co widzi prosty robot (surowy HTML) vs użytkownik (po JS)</div>
+                <table class="render-compare">
+                    <thead>
+                        <tr>
+                            <th>Element</th>
+                            <th>Widzi audyt</th>
+                            <th>Widzi Googlebot</th>
+                            <th>Po wykonaniu JS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in metric.value.comparison %}
+                        <tr{% if row.differs %} class="compare-differs"{% endif %}>
+                            <td>{{ row.label }}</td>
+                            <td class="compare-raw">{{ row.raw }}</td>
+                            <td class="compare-bot">{{ row.bot }}</td>
+                            <td class="compare-rendered">{{ row.rendered }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
             {% endif %}
 

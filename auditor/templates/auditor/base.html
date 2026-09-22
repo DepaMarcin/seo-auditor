@@ -870,6 +870,36 @@
         }
         .test-card.status-ok { --card-accent: var(--ok); --card-glow: rgba(16, 185, 129, 0.22); }
         .test-card.status-info { --card-accent: var(--info); --card-glow: rgba(56, 189, 248, 0.22); }
+        .test-card.status-skipped {
+            --card-accent: var(--muted-dim);
+            --card-glow: rgba(148, 163, 184, 0.14);
+            opacity: 0.72;
+        }
+        .test-card.status-skipped:hover { opacity: 1; }
+
+        .render-compare {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 0.4rem;
+            font-size: 0.85rem;
+        }
+        .render-compare th, .render-compare td {
+            padding: 0.45rem 0.6rem;
+            border-bottom: 1px solid var(--border);
+            text-align: left;
+        }
+        .render-compare thead th {
+            font-size: 0.68rem;
+            letter-spacing: 0.07em;
+            text-transform: uppercase;
+            color: var(--muted-dim);
+            font-weight: 650;
+        }
+        .render-compare tbody tr:last-child td { border-bottom: none; }
+        .render-compare .compare-differs td { background: rgba(239, 68, 68, 0.07); }
+        .render-compare .compare-differs .compare-raw { color: #FCA5A5; font-weight: 600; }
+        .render-compare .compare-bot { color: #FCD34D; }
+        .render-compare .compare-rendered { color: #6EE7B7; }
         .test-card.status-warning {
             --card-accent: var(--warning);
             --card-glow: rgba(245, 158, 11, 0.24);
@@ -1313,6 +1343,7 @@
         .status-flag.status-warning { --flag-color: #FBBF24; --flag-tint: rgba(245, 158, 11, 0.12); }
         .status-flag.status-ok { --flag-color: #34D399; --flag-tint: rgba(16, 185, 129, 0.12); }
         .status-flag.status-info { --flag-color: #38BDF8; --flag-tint: rgba(56, 189, 248, 0.12); }
+        .status-flag.status-skipped { --flag-color: var(--muted-dim); --flag-tint: rgba(148, 163, 184, 0.1); }
         .metric-card-section { margin-top: 0.9rem; }
         .metric-card-section:first-of-type { margin-top: 0; }
         .metric-card-label {

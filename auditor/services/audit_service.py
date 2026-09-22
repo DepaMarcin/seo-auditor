@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from django.db import transaction
 
+from .accessibility import check_bot_accessibility
 from .ga4_insights import analyze_channel_trends
 from .ga4_service import GA4OAuthService
 from .gsc_insights import generate_page_commentary, generate_query_commentary
@@ -165,6 +166,45 @@ STRUCTURED_SHARE_BY_PAGE_TYPE = {"product": 0.15, "article": 0.10}
 
 SCORE_WEIGHTS = {"ok": 100, "info": 100, "warning": 50, "error": 0}
 
+# Statusy wliczane do oceny. Metryka pominięta (SKIPPED) NIE MOŻE trafić do średniej
+# ani jako zero, ani jako sto: nie wiemy, jak wypadłaby po poprawnym pobraniu strony.
+# Wliczenie jej jako zera odtworzyłoby dokładnie ten problem, który wyłącznik
+# bezpieczeństwa ma rozwiązać - zaniżony wynik z powodu niedostępności, nie jakości.
+SCORED_STATUSES = frozenset(SCORE_WEIGHTS)
+
+# Testy, których wynik zależy WYŁĄCZNIE od treści w surowym HTML. Gdy pre-flight
+# orzeknie, że surowy HTML jest pusty (CSR) albo niedostępny (WAF), każdy z nich
+# zwróciłby błąd opisujący problem, którego na stronie nie ma - "Brak H1" dla strony
+# z H1, "Thin content - 12 słów" dla strony z tysiącem. Zamiast tego oznaczamy je
+# jako niemożliwe do zbadania i zgłaszamy JEDEN błąd: niedostępność dla robotów.
+#
+# Celowo NIE ma tu `title`, `meta_description`, `canonical` ani `meta_robots`:
+# aplikacje CSR renderują sekcję <head> po stronie serwera, więc te testy pozostają
+# wiarygodne nawet przy pustym <body>. Nie ma tu też metryk PageSpeed - te mierzą
+# stronę w przeglądarce, niezależnie od zawartości surowego HTML.
+UNTESTABLE_WITHOUT_RAW_HTML = frozenset({
+    # Struktura i objętość treści
+    "h1_structure", "heading_order", "heading_noise", "heading_visibility",
+    "thin_content", "answer_first", "structured_content", "hidden_content",
+    "placeholder_content",
+    # Nawigacja i linkowanie
+    "internal_linking", "external_sources",
+    # Dane strukturalne - JSON-LD wstrzykiwany przez JS nie istnieje w surowym HTML
+    "schema_page_type", "schema_breadcrumbs", "schema_faq", "schema_validity",
+    "schema_entity_linking", "schema_data_hygiene", "schema_html_parity",
+    "ecommerce_completeness", "price_discrepancy",
+    # Sygnały E-E-A-T wyczytywane z treści
+    "authorship_depth", "eeat_authorship", "eeat_freshness", "freshness_decay",
+    # Obrazy dorysowywane dopiero przez JS
+    "images_alt", "image_quality",
+})
+
+# Komunikat zapisywany w pominiętych metrykach - jeden, żeby raport był spójny.
+SKIPPED_NOTE = (
+    "Test pominięty: brak treści w surowym kodzie HTML (CSR lub blokada WAF). "
+    'Wynik byłby nieprawdziwy - patrz test "Dostępność dla robotów i renderowanie".'
+)
+
 # Ile szablonów podstron skanujemy równolegle. Każdy wątek to scraping + 2 zapytania do
 # PageSpeed, więc wyższa wartość nie przyspieszy audytu (limity API Google), a zwiększy
 # ryzyko odrzucenia żądań po stronie audytowanego serwera.
@@ -186,6 +226,11 @@ class _NullRecommendationEngine:
 class AuditService:
     """Orkiestrator audytu SEO: SEOScraper + PageSpeedService -> analiza metryk -> RAGEngine -> zapis do bazy."""
 
+    # Domyślna wartość na POZIOMIE KLASY, nie tylko w __init__: audyt szablonów
+    # podstron i testy tworzą instancję z pominięciem __init__, a `_make_metric`
+    # sięga po to pole przy każdej rekomendacji.
+    site_domain: str | None = None
+
     def __init__(
         self,
         scraper: SEOScraper | None = None,
@@ -203,12 +248,16 @@ class AuditService:
         self.ga4_service = ga4_service or GA4OAuthService()
         self.gsc_service = gsc_service or GSCService()
         self.wayback_service = wayback_service or WaybackService()
+        # Domena audytowanej witryny - trafia do promptu generatora rekomendacji,
+        # żeby przykłady kodu wskazywały na NIĄ, a nie na zaślepki z bazy wiedzy.
+        self.site_domain: str | None = None
 
     def run_audit(self, audit: "Audit") -> "Audit":
         from auditor.models import Audit, AuditMetric
 
         audit.status = Audit.Status.PROCESSING
         audit.save(update_fields=["status"])
+        self.site_domain = self._extract_domain(audit.url)
 
         try:
             try:
@@ -217,9 +266,15 @@ class AuditService:
                 logger.warning("Audyt %s nie powiódł się.", audit.pk, exc_info=True)
                 return audit
 
+            # Pre-flight PRZED oceną metryk: jego wynik decyduje, czy testy zależne
+            # od treści w surowym HTML mają w ogóle sens (patrz _apply_circuit_breaker).
+            accessibility = self._check_accessibility(audit.url)
+
             metrics = self._build_metrics(data)
             metrics.extend(self._build_pagespeed_metrics(audit.url))
             metrics.extend(self._build_extra_checks_metrics(audit.url, data))
+            metrics.append(self._evaluate_bot_accessibility(accessibility))
+            metrics = self._apply_circuit_breaker(metrics, accessibility)
 
             # Jedna transakcja + bulk_create zamiast ~30 osobnych INSERT-ów: bez tego
             # wyjątek w połowie pętli zostawiał audyt z niekompletnym zestawem metryk.
@@ -497,6 +552,88 @@ class AuditService:
     # ------------------------------------------------------------------
     # Analiza danych ze scrapera -> metryki
     # ------------------------------------------------------------------
+    @staticmethod
+    def _extract_domain(url: str) -> str | None:
+        """Sama nazwa hosta bez "www." - w tej postaci trafia do przykładów kodu."""
+        from urllib.parse import urlparse
+
+        host = (urlparse(url or "").hostname or "").lower()
+        return host.removeprefix("www.") or None
+
+    def _check_accessibility(self, url: str):
+        """Uruchamia pre-flight. Błąd sprawdzenia nie może przerwać audytu."""
+        from .accessibility import AccessibilityReport
+
+        try:
+            return check_bot_accessibility(url, scraper=self.scraper)
+        except Exception:
+            logger.exception("Weryfikacja dostępności dla robotów nie powiodła się.")
+            return AccessibilityReport(url=url)
+
+    def _evaluate_bot_accessibility(self, report) -> dict:
+        """Metryka zbiorcza: co widzi prosty robot, a co użytkownik po wykonaniu JS."""
+        from .accessibility import (
+            DIAGNOSIS_BLOCKED,
+            DIAGNOSIS_CSR,
+            DIAGNOSIS_OK,
+            DIAGNOSIS_PRERENDER_GATED,
+        )
+
+        value = report.as_dict()
+        value["note"] = report.note or "Nie udało się porównać renderowania."
+
+        if report.diagnosis in (DIAGNOSIS_BLOCKED, DIAGNOSIS_CSR, DIAGNOSIS_PRERENDER_GATED):
+            status = "error"
+        elif report.diagnosis == DIAGNOSIS_OK:
+            status = "ok"
+        else:
+            # Brak rozstrzygnięcia (np. Playwright niezainstalowany) to informacja
+            # o ograniczeniu narzędzia, nie ocena strony.
+            status = "info"
+
+        current_value = " | ".join(
+            f"{row['label']}: surowy HTML {row['raw']} / po renderowaniu {row['rendered']}"
+            for row in report.comparison
+        )
+        return self._make_metric(
+            "technical", "bot_accessibility", value, status,
+            current_value=current_value or "(brak porównania)",
+        )
+
+    def _apply_circuit_breaker(self, metrics: list[dict], report) -> list[dict]:
+        """Wyłącza testy, których nie da się rzetelnie przeprowadzić.
+
+        Zwraca NOWĄ listę o tym samym zestawie kluczy - metryki nie znikają, tylko
+        zmieniają status na SKIPPED. Usuwanie ich rozjechałoby rejestr metryk pilnowany
+        testami i sprawiło, że w interfejsie po cichu zniknęłaby połowa kart.
+        """
+        if report.is_accessible:
+            return metrics
+
+        skipped_count = 0
+        result = []
+        for metric in metrics:
+            if metric["key"] in UNTESTABLE_WITHOUT_RAW_HTML:
+                skipped_count += 1
+                result.append({
+                    **metric,
+                    "status": "skipped",
+                    "value": {
+                        **metric["value"],
+                        "note": SKIPPED_NOTE,
+                        "skipped_reason": report.diagnosis,
+                    },
+                    "current_value": "",
+                })
+            else:
+                result.append(metric)
+
+        logger.info(
+            "Wyłącznik bezpieczeństwa: %s (%s) - pominięto %s test(ów) zależnych od treści.",
+            report.url, report.diagnosis, skipped_count,
+        )
+        return result
+
     def _build_metrics(self, data: dict) -> list[dict]:
         return [
             self._evaluate_title(data),
@@ -2620,6 +2757,7 @@ class AuditService:
                 category=category,
                 current_value=current_value,
                 metric_key=key,
+                site_domain=self.site_domain,
             )
             # Pusty wynik zwraca _NullRecommendationEngine przy skanie podstron - nie ma
             # sensu zapisywać pustego klucza "recommendation" w metryce.
@@ -2634,7 +2772,8 @@ class AuditService:
         }
 
     def _calculate_score(self, metrics: list[dict]) -> int:
-        if not metrics:
+        scored = [m for m in metrics if m["status"] in SCORED_STATUSES]
+        if not scored:
             return 0
-        total = sum(SCORE_WEIGHTS[m["status"]] for m in metrics)
-        return round(total / len(metrics))
+        total = sum(SCORE_WEIGHTS[m["status"]] for m in scored)
+        return round(total / len(scored))

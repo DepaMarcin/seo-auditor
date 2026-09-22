@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 from auditor.models import AuditMetric
-from auditor.services.audit_service import SCORE_WEIGHTS
+from auditor.services.audit_service import SCORE_WEIGHTS, SCORED_STATUSES
 
 STRATEGY_LABELS = {"mobile": "📱 ", "desktop": "🖥️ "}
 
@@ -50,6 +50,7 @@ CATEGORY_ICONS = {
 # Krótkie, biznesowe wyjaśnienia metryk ("Co to jest?") wyświetlane na kartach metryk -
 # tłumaczą nietechnicznemu odbiorcy, czym jest dana metryka i dlaczego ma znaczenie dla SEO.
 METRIC_DEFINITIONS = {
+    "bot_accessibility": "Porównanie tego, co widzi prosty robot (surowy kod HTML, bez wykonywania JavaScriptu), z tym, co widzi użytkownik i pełny Googlebot (DOM po wykonaniu skryptów). Gdy treść powstaje dopiero w przeglądarce albo serwer odrzuca automaty, strona jest niewidoczna dla crawlerów i agentów AI - a wszystkie testy struktury treści zwracają wtedy wyniki nieprawdziwe.",
     "schema_entity_linking": "Encje w grafie JSON-LD powinny wskazywać na siebie referencjami @id zamiast powielać pełne definicje. Modele językowe budują odpowiedzi z relacji między encjami - graf, w którym każda strona opisuje firmę od nowa, jest dla modelu zbiorem luźnych obiektów zamiast spójnego opisu biznesu.",
     "price_discrepancy": "Cena w danych strukturalnych musi odpowiadać cenie widocznej na stronie. Gdy do Schema trafia cena hurtowa pobrana wprost z bazy, wyszukiwarka i modele AI obiecują użytkownikowi kwotę, której na stronie nie znajdzie - poza utratą zaufania grozi to karą za niezgodne dane.",
     "schema_data_hygiene": "Dane strukturalne są generowane maszynowo i nikt ich nie ogląda, więc błędy potrafią żyć miesiącami: adresy środowiska testowego, podwójnie zakodowane encje HTML czy nazwa domeny doklejona do nazwy produktu zanieczyszczają to, co wyszukiwarka wie o firmie.",
@@ -123,6 +124,7 @@ OFFICIAL_TEST_NAMES = {
     "schema_validity": "Poprawność składni JSON-LD i pokrycie typów istotnych dla AI",
     "twitter_cards": "Podgląd linku w mediach społecznościowych (Open Graph i Twitter Card)",
     "favicon": "Ikona witryny (favicon, apple-touch-icon)",
+    "bot_accessibility": "Dostępność dla robotów i renderowanie",
     "thin_content": "Objętość treści (thin content)",
     "heading_order": "Hierarchia nagłówków Hx: kolejność, puste nagłówki i przeskoki poziomów",
     "heading_noise": "Struktura nagłówków Hx i oczyszczenie z szumu nawigacyjnego",
@@ -227,7 +229,8 @@ TECHNICAL_ACCORDIONS = [
         "indexing",
         "🌐 Indeksacja, Renderowanie & Nawigacja",
         {"javascript_rendering", "robots_txt", "robots_ai_bots", "canonical", "redirect_chain",
-         "internal_linking", "http_errors", "favicon", "wayback_domain_age", "meta_robots"},
+         "internal_linking", "http_errors", "favicon", "wayback_domain_age", "meta_robots",
+         "bot_accessibility"},
     ),
     (
         "content",
@@ -263,6 +266,9 @@ STATUS_SORT_PRIORITY = {
     AuditMetric.MetricStatus.WARNING: 1,
     AuditMetric.MetricStatus.OK: 2,
     AuditMetric.MetricStatus.INFO: 2,
+    # Na samym dole: test, którego nie dało się przeprowadzić, nie niesie informacji
+    # o jakości strony - jego miejsce jest pod wynikami, które ją niosą.
+    AuditMetric.MetricStatus.SKIPPED: 3,
 }
 
 
@@ -412,9 +418,10 @@ def compute_category_scores(metrics: list[AuditMetric]) -> list[dict]:
     results = []
     for category, label in OVERVIEW_CATEGORY_ORDER:
         category_metrics = by_category.get(category, [])
-        if category_metrics:
-            total = sum(SCORE_WEIGHTS[m.status] for m in category_metrics)
-            score = round(total / len(category_metrics))
+        scored = [m for m in category_metrics if m.status in SCORED_STATUSES]
+        if scored:
+            total = sum(SCORE_WEIGHTS[m.status] for m in scored)
+            score = round(total / len(scored))
         else:
             score = 0
         statuses = [m.status for m in category_metrics]
