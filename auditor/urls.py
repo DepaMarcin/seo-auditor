@@ -17,6 +17,13 @@ urlpatterns = [
     path("audits/<int:pk>/export/sheets/", views.export_to_google_sheets, name="export_to_google_sheets"),
     # Podpowiedzi adresów szablonów z sitemap.xml (AJAX z formularza nowego audytu).
     path("sitemap-suggestions/", views.sitemap_suggestions, name="sitemap_suggestions"),
+
+    # Widoczność w wyszukiwarkach AI (GEO Tracker) - trzecia sekcja nawigacji.
+    path("geo-visibility/", views.GeoVisibilityDashboardView.as_view(), name="geo_dashboard"),
+    path("geo-visibility/<int:pk>/", views.geo_study_detail, name="geo_detail"),
+    # Odpytywany przez pasek postępu, dopóki badanie wykonuje się w tle.
+    path("geo-visibility/<int:pk>/status/", views.geo_study_status, name="geo_status"),
+    path("geo-visibility/suggest-questions/", views.geo_suggest_questions, name="geo_suggest_questions"),
     path("audits/<int:pk>/ga4/connect/", views.start_ga4_auth, name="start_ga4_auth"),
     path("ga4/callback/", views.ga4_callback, name="ga4_callback"),
     path("audits/<int:pk>/ga4/select-property/", views.select_ga4_property, name="select_ga4_property"),

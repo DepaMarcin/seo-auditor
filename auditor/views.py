@@ -22,6 +22,8 @@ from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
+from django.utils.decorators import method_decorator
+from django.views import View
 from google_auth_oauthlib.flow import Flow
 
 from .models import Audit, AuditedPage, AuditMetric
@@ -817,3 +819,139 @@ def download_pdf_report(request: HttpRequest, audit_id: int) -> HttpResponse:
             ],
         },
     )
+
+
+# ======================================================================
+# Widoczność w wyszukiwarkach AI (GEO Tracker)
+# ======================================================================
+def _owned_geo_study(request: HttpRequest, pk: int):
+    """Badanie należące do zalogowanego użytkownika albo 404.
+
+    Ta sama zasada co przy audytach: badanie zawiera dane konkurencyjne klienta,
+    więc znajomość identyfikatora nie może wystarczać do jego odczytania.
+    """
+    from auditor.models import GeoStudy
+
+    return get_object_or_404(GeoStudy, pk=pk, owner=request.user)
+
+
+@method_decorator(login_required, name="dispatch")
+class GeoVisibilityDashboardView(View):
+    """Lista badań GEO i formularz uruchomienia nowego."""
+
+    template_name = "auditor/geo_dashboard.html"
+
+    def get(self, request: HttpRequest) -> HttpResponse:
+        from auditor.models import GeoStudy
+
+        studies = (
+            GeoStudy.objects.filter(owner=request.user)
+            .select_related("audit")
+            .prefetch_related("queries")[:20]
+        )
+        return render(request, self.template_name, {
+            "nav_section": "geo",
+            "studies": studies,
+            "audits": Audit.objects.filter(owner=request.user)[:20],
+            "default_questions": [],
+        })
+
+    def post(self, request: HttpRequest) -> HttpResponse:
+        from auditor.models import GeoQuery, GeoStudy
+        from auditor.services.geo import DEFAULT_REPETITIONS, normalize_domain
+        from auditor.tasks import enqueue_geo_study
+
+        domain = normalize_domain(request.POST.get("domain", ""))
+        if not domain:
+            messages.error(request, "Podaj domenę albo adres strony do zbadania.")
+            return redirect("auditor:geo_dashboard")
+
+        # Adres walidujemy tą samą ochroną co każdy inny pobierany przez serwer -
+        # badanie GEO nie odpytuje domeny bezpośrednio, ale trafia ona do promptu
+        # i do raportu, więc nie może być adresem z sieci lokalnej ani schematem
+        # innym niż http/https.
+        try:
+            validate_public_url(domain)
+        except UnsafeUrlError as exc:
+            messages.error(request, str(exc))
+            return redirect("auditor:geo_dashboard")
+
+        questions = [q.strip() for q in request.POST.getlist("questions") if q.strip()]
+        if not questions:
+            from auditor.services.geo import generate_questions
+
+            questions = generate_questions(domain)
+
+        audit = None
+        audit_id = request.POST.get("audit")
+        if audit_id:
+            audit = Audit.objects.filter(pk=audit_id, owner=request.user).first()
+
+        study = GeoStudy.objects.create(
+            owner=request.user,
+            audit=audit,
+            domain=domain,
+            repetitions=DEFAULT_REPETITIONS,
+        )
+        GeoQuery.objects.bulk_create([
+            GeoQuery(study=study, text=text, position=index)
+            for index, text in enumerate(questions, start=1)
+        ])
+
+        enqueue_geo_study(study.pk)
+        return redirect("auditor:geo_detail", pk=study.pk)
+
+
+@login_required
+def geo_study_detail(request: HttpRequest, pk: int) -> HttpResponse:
+    """Dashboard pojedynczego badania: wynik zbiorczy, tabela pytań, szczegóły."""
+    study = _owned_geo_study(request, pk)
+    queries = list(
+        study.queries.prefetch_related("runs").all()
+    )
+    return render(request, "auditor/geo_detail.html", {
+        "nav_section": "geo",
+        "study": study,
+        "queries": queries,
+        "in_progress": study.status in ("pending", "processing"),
+    })
+
+
+@login_required
+def geo_study_status(request: HttpRequest, pk: int) -> JsonResponse:
+    """Postęp badania - odpytywane przez pasek postępu w przeglądarce."""
+    study = _owned_geo_study(request, pk)
+    done = study.completed_runs
+    total = study.total_runs
+    query_count = study.queries.count()
+    # "Badanie zapytania 3 z 5" - numer pytania wynika z liczby wykonanych powtórzeń.
+    current_query = min(done // study.repetitions + 1, query_count) if study.repetitions else 0
+
+    return JsonResponse({
+        "status": study.status,
+        "done": done,
+        "total": total,
+        "percent": study.progress_percent,
+        "current_query": current_query if study.status == "processing" else query_count,
+        "query_count": query_count,
+        "overall_score": study.overall_score,
+        "error": study.error,
+    })
+
+
+@login_required
+def geo_suggest_questions(request: HttpRequest) -> JsonResponse:
+    """Podpowiada pytania intencyjne dla domeny (przycisk "Wygeneruj przez AI")."""
+    from auditor.services.geo import generate_questions, normalize_domain
+
+    domain = normalize_domain(request.POST.get("domain", "") or request.GET.get("domain", ""))
+    if not domain:
+        return JsonResponse({"error": "Podaj domenę."}, status=400)
+
+    try:
+        validate_public_url(domain)
+    except UnsafeUrlError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    return JsonResponse({"questions": generate_questions(domain)})
+

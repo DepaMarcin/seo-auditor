@@ -83,3 +83,50 @@ def enqueue_audit(audit_id: int) -> str:
         )
         _run_in_thread(audit_id)
         return "thread"
+
+
+# ----------------------------------------------------------------------
+# Badanie widoczności w wyszukiwarkach AI (GEO)
+# ----------------------------------------------------------------------
+@shared_task(name="auditor.run_geo_study")
+def run_geo_study_task(study_id: int) -> None:
+    _run_geo_study_now(study_id)
+
+
+def _run_geo_study_now(study_id: int) -> None:
+    """Wykonuje badanie GEO. Każde wyjście musi zamknąć rekord statusem końcowym -
+    inaczej pasek postępu w interfejsie kręciłby się w nieskończoność."""
+    from auditor.models import GeoStudy
+    from auditor.services.geo import run_study
+
+    try:
+        study = GeoStudy.objects.get(pk=study_id)
+    except GeoStudy.DoesNotExist:
+        logger.warning("Badanie GEO %s nie istnieje - pomijam.", study_id)
+        return
+
+    try:
+        run_study(study)
+    except Exception:
+        logger.exception("Badanie GEO %s zakończyło się wyjątkiem.", study_id)
+        GeoStudy.objects.filter(pk=study_id, status=GeoStudy.Status.PROCESSING).update(
+            status=GeoStudy.Status.FAILED
+        )
+
+
+def enqueue_geo_study(study_id: int) -> str:
+    """Zleca badanie GEO w tle - tą samą ścieżką co audyt (Celery, wątek, eager)."""
+    if getattr(settings, "CELERY_TASK_ALWAYS_EAGER", False):
+        _run_geo_study_now(study_id)
+        return "eager"
+
+    try:
+        run_geo_study_task.delay(study_id)
+        return "celery"
+    except Exception as exc:
+        logger.warning(
+            "Nie udało się zlecić badania GEO %s do Celery (%s) - wykonuję w wątku tła.",
+            study_id, type(exc).__name__,
+        )
+        threading.Thread(target=_run_geo_study_now, args=(study_id,), daemon=True).start()
+        return "thread"

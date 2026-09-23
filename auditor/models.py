@@ -178,3 +178,148 @@ class KnowledgeDocument(models.Model):
 
     def __str__(self):
         return self.title
+
+
+class GeoStudy(models.Model):
+    """Pojedyncze badanie widoczności marki w odpowiedziach modeli językowych.
+
+    Badanie zadaje kilka pytań intencyjnych po kilka razy każde i liczy, jak często
+    w przypisach odpowiedzi pojawia się domena klienta. Powtórzenia są istotne: modele
+    są niedeterministyczne, więc jednorazowe trafienie nie odróżnia stabilnej obecności
+    od przypadku - i dopiero rozkład wyników pozwala powiedzieć, czy marka jest
+    cytowana regularnie, czy losowo.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Oczekujące"
+        PROCESSING = "processing", "W trakcie"
+        COMPLETED = "completed", "Zakończone"
+        FAILED = "failed", "Błąd"
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="geo_studies",
+        null=True,
+        blank=True,
+    )
+    # Badanie może powstać w oderwaniu od audytu (sama domena), ale gdy powstaje
+    # z poziomu raportu, wiążemy je z nim - dzięki temu historia badań jest widoczna
+    # przy audycie, a nie tylko na osobnej liście.
+    audit = models.ForeignKey(
+        "Audit",
+        on_delete=models.SET_NULL,
+        related_name="geo_studies",
+        null=True,
+        blank=True,
+    )
+    domain = models.CharField(max_length=253)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    # Średnia częstość cytowań ze wszystkich pytań, 0-100.
+    overall_score = models.IntegerField(default=0)
+    repetitions = models.PositiveSmallIntegerField(default=5)
+    error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Badanie GEO"
+        verbose_name_plural = "Badania GEO"
+
+    def __str__(self):
+        return f"GEO {self.domain} ({self.status})"
+
+    @property
+    def score_bucket(self) -> str:
+        """Kolor wskaźnika zbiorczego. Progi jak przy stabilności pojedynczego
+        pytania, żeby karta główna i tabela mówiły tym samym językiem."""
+        if self.overall_score >= 80:
+            return "stable"
+        if self.overall_score > 0:
+            return "volatile"
+        return "absent"
+
+    @property
+    def total_runs(self) -> int:
+        """Ile zapytań obejmuje całe badanie (pytania x powtórzenia)."""
+        return self.queries.count() * self.repetitions
+
+    @property
+    def completed_runs(self) -> int:
+        from auditor.models import GeoRun
+
+        return GeoRun.objects.filter(query__study=self).count()
+
+    @property
+    def progress_percent(self) -> int:
+        total = self.total_runs
+        return round(self.completed_runs / total * 100) if total else 0
+
+
+class GeoQuery(models.Model):
+    """Jedno pytanie intencyjne wraz z podsumowaniem wyników jego powtórzeń."""
+
+    class Stability(models.TextChoices):
+        STABLE = "stable", "STABLE"
+        VOLATILE = "volatile", "VOLATILE"
+        ABSENT = "absent", "ABSENT"
+
+    study = models.ForeignKey(GeoStudy, on_delete=models.CASCADE, related_name="queries")
+    text = models.TextField()
+    position = models.PositiveSmallIntegerField(default=1)
+
+    # Odsetek powtórzeń, w których domena klienta pojawiła się w przypisach (0-100).
+    citation_rate = models.IntegerField(default=0)
+    stability = models.CharField(
+        max_length=20, choices=Stability.choices, default=Stability.ABSENT
+    )
+    # Pozycje domeny klienta na liście przypisów w kolejnych powtórzeniach, np. [1, 3, 2].
+    cited_positions = models.JSONField(default=list, blank=True)
+    # Domeny konkurencji cytowane, gdy zabrakło domeny klienta: [{"domain": ..., "count": ...}].
+    competitors = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        ordering = ["position", "pk"]
+        verbose_name = "Pytanie GEO"
+        verbose_name_plural = "Pytania GEO"
+
+    def __str__(self):
+        return self.text[:80]
+
+    @property
+    def cited_runs(self) -> int:
+        return sum(1 for run in self.runs.all() if run.brand_cited)
+
+    @property
+    def most_common_position(self) -> str:
+        """Najczęstsza pozycja w przypisach - kolumna "Pozycje w źródłach"."""
+        if not self.cited_positions:
+            return "—"
+        from collections import Counter
+
+        position, count = Counter(self.cited_positions).most_common(1)[0]
+        return f"#{position}" + (f" ({count}x)" if count > 1 else "")
+
+
+class GeoRun(models.Model):
+    """Pojedyncze wywołanie modelu - jedno powtórzenie jednego pytania."""
+
+    query = models.ForeignKey(GeoQuery, on_delete=models.CASCADE, related_name="runs")
+    attempt = models.PositiveSmallIntegerField(default=1)
+    answer = models.TextField(blank=True, default="")
+    # Pełna lista przypisów: [{"url": ..., "domain": ..., "title": ..., "position": n}].
+    citations = models.JSONField(default=list, blank=True)
+    brand_cited = models.BooleanField(default=False)
+    brand_position = models.PositiveSmallIntegerField(null=True, blank=True)
+    error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["attempt", "pk"]
+        verbose_name = "Powtórzenie GEO"
+        verbose_name_plural = "Powtórzenia GEO"
+
+    def __str__(self):
+        return f"{self.query_id} / próba {self.attempt}"
+

@@ -1467,12 +1467,77 @@
             tab-size: 2;
         }
         .code-frame pre code { color: inherit; }
+
+        /* ---------- Pasek trzech sekcji aplikacji ---------- */
+        /* Nagłówek jest sticky, ten pasek celowo nie jest: wysokość nagłówka zmienia
+           się przy zawijaniu flexa, więc stałe `top` prędzej czy później zaczęłoby
+           nachodzić na treść. */
+        .main-nav {
+            padding: 0 2rem;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface-inset);
+        }
+        .main-nav-inner {
+            display: flex;
+            align-items: stretch;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 0.7rem 0;
+        }
+        .main-nav-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 0.9rem;
+            border-radius: var(--radius-md);
+            border: 1px solid transparent;
+            color: var(--muted);
+            text-decoration: none;
+            transition: color var(--transition), background var(--transition),
+                        border-color var(--transition);
+        }
+        .main-nav-item:hover {
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.045);
+            border-color: var(--border);
+        }
+        .main-nav-item.active {
+            color: var(--accent);
+            background: rgba(0, 230, 118, 0.12);
+            border-color: rgba(0, 230, 118, 0.32);
+        }
+        .main-nav-icon { font-size: 1.05rem; line-height: 1; flex-shrink: 0; }
+        .main-nav-text { display: flex; flex-direction: column; }
+        .main-nav-label {
+            font-size: 0.9rem;
+            font-weight: 650;
+            letter-spacing: -0.01em;
+            line-height: 1.25;
+        }
+        .main-nav-hint {
+            font-size: 0.72rem;
+            font-weight: 500;
+            line-height: 1.3;
+            color: var(--muted-dim);
+        }
+        .main-nav-item:hover .main-nav-hint { color: var(--muted); }
+        .main-nav-item.active .main-nav-hint { color: rgba(0, 230, 118, 0.72); }
+
+        @media (max-width: 720px) {
+            .main-nav { padding: 0 1rem; }
+            .main-nav-item { padding: 0.45rem 0.7rem; gap: 0.45rem; }
+            /* Na wąskim ekranie trzy podpisy rozbijają pasek na trzy rzędy -
+               zostają same etykiety sekcji. */
+            .main-nav-hint { display: none; }
+        }
     </style>
 </head>
 <body>
 <header>
     <a href="{% url 'auditor:index' %}">SEO Auditor · silnik RAG</a>
-    {% if user.is_authenticated %}
+    {% if user_panel_visible %}
     <div class="header-user">
         <span class="header-username">{{ user.get_username }}</span>
         <form method="post" action="{% url 'logout' %}" class="logout-form">
@@ -1482,6 +1547,7 @@
     </div>
     {% endif %}
 </header>
+{% include "auditor/_nav.html" %}
 <main>
     {% if messages %}
     <ul class="messages">

@@ -1,0 +1,169 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Widoczność w AI (GEO) | SEO Auditor{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <h1>Widoczność w wyszukiwarkach AI</h1>
+    <p class="geo-intro">
+        Badanie zadaje pytania intencyjne wyszukiwarce AI po kilka razy każde i liczy,
+        jak często w przypisach odpowiedzi pojawia się Twoja domena. Powtórzenia są
+        istotne: modele są niedeterministyczne, więc dopiero rozkład wyników odróżnia
+        stabilną obecność od przypadkowej wzmianki.
+    </p>
+
+    <form class="geo-form" id="geo-form" method="post" action="{% url 'auditor:geo_dashboard' %}">
+        {% csrf_token %}
+        <div class="geo-form-row">
+            <input type="text" name="domain" id="geo-domain"
+                   placeholder="przyklad.pl lub https://przyklad.pl"
+                   inputmode="url" autocomplete="url" spellcheck="false" required>
+            <button type="submit" id="geo-submit">Uruchom Symulator GEO</button>
+        </div>
+
+        {% if audits %}
+        <div class="geo-form-row geo-form-secondary">
+            <label for="geo-audit">Powiąż z audytem (opcjonalnie)</label>
+            <select name="audit" id="geo-audit">
+                <option value="">— badanie niezależne —</option>
+                {% for audit in audits %}
+                <option value="{{ audit.pk }}">{{ audit.url }} ({{ audit.created_at|date:"Y-m-d" }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        {% endif %}
+
+        <details class="geo-questions" id="geo-questions">
+            <summary class="geo-questions-summary">
+                Pytania testowe (opcjonalnie — bez nich ułoży je AI)
+            </summary>
+            <div class="geo-questions-body">
+                <p class="geo-questions-intro">
+                    Pytania mają być takie, jakie realny klient wpisze do ChatGPT czy
+                    Perplexity — bez nazwy marki. Chodzi o sprawdzenie, czy zostaniesz
+                    zacytowany, a nie o pytanie wprost o siebie.
+                </p>
+                <div class="geo-questions-actions">
+                    <button type="button" id="geo-suggest">✨ Wygeneruj przez AI</button>
+                    <span class="spinner hidden" id="geo-suggest-spinner"></span>
+                    <span class="geo-questions-status" id="geo-suggest-status"></span>
+                </div>
+                <div class="geo-questions-grid">
+                    {% for slot in "12345" %}
+                    <div class="geo-question-slot">
+                        <label for="geo-question-{{ forloop.counter }}">Pytanie {{ forloop.counter }}</label>
+                        <input type="text" name="questions" id="geo-question-{{ forloop.counter }}"
+                               class="geo-question-input" autocomplete="off" spellcheck="false"
+                               placeholder="np. Jakie firmy oferują karty paliwowe dla flot?">
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </details>
+    </form>
+</div>
+
+<div class="panel">
+    <h2>Historia badań</h2>
+    {% if studies %}
+    <table>
+        <thead>
+            <tr>
+                <th>Domena</th>
+                <th>Wynik GEO</th>
+                <th>Pytania</th>
+                <th>Powiązany audyt</th>
+                <th>Status</th>
+                <th>Data</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for study in studies %}
+            <tr>
+                <td><a class="link" href="{% url 'auditor:geo_detail' study.pk %}">{{ study.domain }}</a></td>
+                <td>
+                    {% if study.status == "completed" %}
+                    <span class="geo-score-pill geo-score-{{ study.score_bucket }}">{{ study.overall_score }}%</span>
+                    {% else %}—{% endif %}
+                </td>
+                <td>{{ study.queries.count }}</td>
+                <td>
+                    {% if study.audit %}
+                    <a class="link" href="{% url 'auditor:detail' study.audit.pk %}">{{ study.audit.url|truncatechars:38 }}</a>
+                    {% else %}—{% endif %}
+                </td>
+                <td><span class="badge badge-{{ study.status }}">{{ study.get_status_display }}</span></td>
+                <td>{{ study.created_at|date:"Y-m-d H:i" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>Brak badań. Podaj domenę powyżej, aby sprawdzić, czy wyszukiwarki AI cytują Twoją stronę.</p>
+    {% endif %}
+</div>
+
+<script>
+(function () {
+    var form = document.getElementById("geo-form");
+    var domain = document.getElementById("geo-domain");
+    var submit = document.getElementById("geo-submit");
+    var suggest = document.getElementById("geo-suggest");
+    var spinner = document.getElementById("geo-suggest-spinner");
+    var status = document.getElementById("geo-suggest-status");
+    var inputs = document.querySelectorAll(".geo-question-input");
+
+    function normalizeDomain() {
+        var value = (domain.value || "").trim();
+        if (value && !/^https?:\/\//i.test(value)) {
+            value = "https://" + value;
+        }
+        return value;
+    }
+
+    if (suggest) {
+        suggest.addEventListener("click", function () {
+            var value = normalizeDomain();
+            if (!value) {
+                status.textContent = "Najpierw podaj domenę.";
+                return;
+            }
+            spinner.classList.remove("hidden");
+            status.textContent = "Układam pytania…";
+            suggest.disabled = true;
+
+            var data = new FormData();
+            data.append("domain", value);
+            data.append("csrfmiddlewaretoken", form.querySelector("[name=csrfmiddlewaretoken]").value);
+
+            fetch("{% url 'auditor:geo_suggest_questions' %}", { method: "POST", body: data })
+                .then(function (response) { return response.json(); })
+                .then(function (payload) {
+                    spinner.classList.add("hidden");
+                    suggest.disabled = false;
+                    if (payload.error) {
+                        status.textContent = payload.error;
+                        return;
+                    }
+                    (payload.questions || []).forEach(function (question, index) {
+                        if (inputs[index]) { inputs[index].value = question; }
+                    });
+                    status.textContent = "Gotowe — możesz je jeszcze poprawić.";
+                })
+                .catch(function () {
+                    spinner.classList.add("hidden");
+                    suggest.disabled = false;
+                    status.textContent = "Nie udało się połączyć. Spróbuj ponownie.";
+                });
+        });
+    }
+
+    form.addEventListener("submit", function () {
+        domain.value = normalizeDomain();
+        submit.textContent = "Uruchamiam…";
+        submit.style.pointerEvents = "none";
+        submit.style.opacity = "0.7";
+    });
+})();
+</script>
+{% endblock %}

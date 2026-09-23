@@ -270,11 +270,22 @@ class AuthorshipDepthTests(SimpleTestCase):
 
         self.assertEqual(_service()._evaluate_authorship_depth(data)["status"], "warning")
 
-    def test_product_page_without_author_is_info_not_warning(self):
-        """Wymóg autorstwa dotyczy treści poradnikowych, nie kart produktu."""
-        data = _page({"@type": "Product", "name": "Kosz"}, url="https://sklep.pl/produkt/kosz")
+    def test_product_page_without_author_is_not_a_warning_about_the_author(self):
+        """Wymóg autorstwa dotyczy treści poradnikowych, nie kart produktu.
 
-        self.assertEqual(_service()._evaluate_authorship_depth(data)["status"], "info")
+        Strona komercyjna bez encji Person nie dostaje ostrzeżenia o autorze - zamiast
+        tego sprawdzana jest reprezentacja podmiotu (patrz `_evaluate_organization_representation`).
+        """
+        data = _page(
+            {"@type": "Product", "name": "Kosz", "brand": {"@id": "https://sklep.pl/#organization"}},
+            url="https://sklep.pl/produkt/kosz",
+        )
+
+        metric = _service()._evaluate_authorship_depth(data)
+
+        self.assertEqual(metric["status"], "info")
+        self.assertNotIn("autor", metric["value"]["note"].lower())
+        self.assertIn("Person nie jest wymagana", metric["value"]["note"])
 
 
 class FreshnessDecayTests(SimpleTestCase):

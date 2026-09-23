@@ -1,0 +1,41 @@
+{% comment %}
+Pasek trzech sekcji aplikacji.
+
+Warunek renderowania siedzi WEWNĄTRZ komponentu, a nie w miejscu dołączenia: dzięki
+temu żadne przyszłe `{% include %}` nie pokaże nawigacji tam, gdzie nie powinna się
+pojawić. `nav_visible` i `nav_section` ustawia procesor kontekstu
+`auditor.context_processors.navigation`; widok może nadpisać samo `nav_section`.
+{% endcomment %}
+{% if nav_visible %}
+<nav class="main-nav" aria-label="Sekcje aplikacji">
+    <div class="main-nav-inner">
+        <a class="main-nav-item{% if nav_section == 'analytics' %} active{% endif %}"
+           {% if nav_section == 'analytics' %}aria-current="page"{% endif %}
+           href="{% url 'auditor:index' %}">
+            <span class="main-nav-icon" aria-hidden="true">📈</span>
+            <span class="main-nav-text">
+                <span class="main-nav-label">Analityka i Ruch</span>
+                <span class="main-nav-hint">GA4 / GSC</span>
+            </span>
+        </a>
+        <a class="main-nav-item{% if nav_section == 'technical' %} active{% endif %}"
+           {% if nav_section == 'technical' %}aria-current="page"{% endif %}
+           href="{% url 'auditor:index' %}#audyty">
+            <span class="main-nav-icon" aria-hidden="true">⚙️</span>
+            <span class="main-nav-text">
+                <span class="main-nav-label">Audyt Techniczny</span>
+                <span class="main-nav-hint">Skaner i RAG</span>
+            </span>
+        </a>
+        <a class="main-nav-item{% if nav_section == 'geo' %} active{% endif %}"
+           {% if nav_section == 'geo' %}aria-current="page"{% endif %}
+           href="{% url 'auditor:geo_dashboard' %}">
+            <span class="main-nav-icon" aria-hidden="true">🤖</span>
+            <span class="main-nav-text">
+                <span class="main-nav-label">Widoczność w AI</span>
+                <span class="main-nav-hint">GEO Tracker</span>
+            </span>
+        </a>
+    </div>
+</nav>
+{% endif %}

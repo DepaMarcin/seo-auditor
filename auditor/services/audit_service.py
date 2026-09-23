@@ -13,7 +13,9 @@ from .gsc_insights import generate_page_commentary, generate_query_commentary
 from .gsc_service import GSCService
 from .pagespeed import PageSpeedService
 from .rag import RAGEngine
-from .scraper import (
+from .scraper import (  # noqa: F401  (PAGE_INTENT_* używane w gatingu E-E-A-T)
+    PAGE_INTENT_COMMERCIAL,
+    PAGE_INTENT_EDITORIAL,
     AI_BOT_USER_AGENTS,
     ANSWER_FIRST_MAX_WORDS,
     ANSWER_FIRST_MIN_WORDS,
@@ -71,6 +73,18 @@ EXPECTED_SCHEMA_BY_PAGE_TYPE = {
 # szkół/placówek i stronach usługowych/ofertowych ich brak jest OPCJONALNY
 # (status INFO), a nie realnym problemem do naprawy (patrz _evaluate_eeat_*).
 EEAT_REQUIRED_PAGE_TYPES = {"article"}
+
+# Właściwości encji Organization sprawdzane na stronach ofertowych zamiast autora.
+# Na stronie komercyjnej podmiotem odpowiedzialnym jest firma - to jej tożsamość
+# musi być kompletna, a nie nazwisko redaktora.
+ORGANIZATION_REQUIRED_PROPERTIES = ("name", "url", "logo")
+ORGANIZATION_TRUST_PROPERTIES = ("contactPoint", "address", "sameAs", "telephone", "email")
+
+# Właściwości, przez które podstrona wskazuje podmiot odpowiedzialny bez powtarzania
+# jego pełnej definicji. Poprawnie zbudowany graf deklaruje Organization RAZ (zwykle
+# na stronie głównej), a karty produktów i usług odwołują się do niej referencją @id -
+# żądanie pełnej encji na każdej podstronie byłoby wymogiem wbrew dobrej praktyce.
+ORGANIZATION_REFERENCE_PROPERTIES = ("publisher", "provider", "brand", "seller", "manufacturer")
 
 # Minimalna liczba linków wewnętrznych, poniżej której zgłaszamy ostrzeżenie.
 INTERNAL_LINKING_MIN = 3
@@ -230,6 +244,9 @@ class AuditService:
     # podstron i testy tworzą instancję z pominięciem __init__, a `_make_metric`
     # sięga po to pole przy każdej rekomendacji.
     site_domain: str | None = None
+    # Intencja audytowanej podstrony (editorial/commercial). Trafia do promptu
+    # generatora, żeby nie proponował imiennego autora dla strony ofertowej.
+    page_intent: str | None = None
 
     def __init__(
         self,
@@ -269,6 +286,8 @@ class AuditService:
             # Pre-flight PRZED oceną metryk: jego wynik decyduje, czy testy zależne
             # od treści w surowym HTML mają w ogóle sens (patrz _apply_circuit_breaker).
             accessibility = self._check_accessibility(audit.url)
+
+            self.page_intent = data.get("page_intent")
 
             metrics = self._build_metrics(data)
             metrics.extend(self._build_pagespeed_metrics(audit.url))
@@ -1175,6 +1194,88 @@ class AuditService:
     # ------------------------------------------------------------------
     # MODUŁ: automatyczna ewaluacja E-E-A-T
     # ------------------------------------------------------------------
+    @staticmethod
+    def _organization_references(entities: list[dict]) -> list[str]:
+        """Właściwości, przez które strona wskazuje podmiot bez pełnej definicji."""
+        found = []
+        for entity in entities:
+            for prop in ORGANIZATION_REFERENCE_PROPERTIES:
+                if entity.get(prop) and prop not in found:
+                    found.append(prop)
+        return found
+
+    def _evaluate_organization_representation(self, entities: list[dict]) -> dict:
+        """Zamiennik testu autorstwa dla stron ofertowych.
+
+        Encja Person na stronie usługowej B2B nie jest wymagana - odpowiedzialność
+        ponosi firma. Test nie znika jednak z raportu: sprawdza, czy podmiot jest
+        w danych strukturalnych opisany kompletnie (nazwa, adres, logo, kontakt,
+        powiązania), bo to ONA buduje wiarygodność takiej podstrony.
+        """
+        organizations = self._entities_of_type(entities, "Organization")
+        wstep = (
+            "Strona o charakterze ofertowym/usługowym - encja Person nie jest wymagana. "
+            "Weryfikowana jest reprezentacja podmiotu (Organization). "
+        )
+
+        if not organizations:
+            references = self._organization_references(entities)
+            if references:
+                return self._make_metric(
+                    "structure", "authorship_depth",
+                    {"persons": 0, "organizations": 0, "page_intent": PAGE_INTENT_COMMERCIAL,
+                     "organization_references": references,
+                     "note": wstep + "Podmiot wskazany referencją w grafie "
+                     f"({', '.join(references)}) - pełna definicja Organization powinna "
+                     "znajdować się na stronie głównej."},
+                    "info",
+                    current_value=f"referencje: {', '.join(references)}",
+                    generate_recommendation=False,
+                )
+            return self._make_metric(
+                "structure", "authorship_depth",
+                {"persons": 0, "organizations": 0, "page_intent": PAGE_INTENT_COMMERCIAL,
+                 "note": wstep + "Brak encji Organization i jakiejkolwiek referencji do "
+                 "podmiotu (publisher/provider/brand) - wyszukiwarka i modele językowe "
+                 "nie mają jak ustalić, kto odpowiada za ofertę."},
+                "warning",
+                current_value="(brak encji Organization w JSON-LD)",
+            )
+
+        organization = organizations[0]
+        missing_required = [p for p in ORGANIZATION_REQUIRED_PROPERTIES if not organization.get(p)]
+        trust_signals = [p for p in ORGANIZATION_TRUST_PROPERTIES if organization.get(p)]
+        name = str(organization.get("name") or "bez nazwy")
+
+        if missing_required:
+            status = "warning"
+            note = (
+                wstep + f"Encja Organization ({name}) jest niekompletna - brakuje: "
+                f"{', '.join(missing_required)}."
+            )
+        elif not trust_signals:
+            status = "warning"
+            note = (
+                wstep + f"Encja Organization ({name}) ma komplet pól podstawowych, ale nie "
+                "zawiera żadnego sygnału wiarygodności (adres, kontakt, sameAs)."
+            )
+        else:
+            status = "ok"
+            note = (
+                wstep + f"Podmiot opisany poprawnie: {name}, sygnały wiarygodności: "
+                f"{', '.join(trust_signals)}."
+            )
+
+        return self._make_metric(
+            "structure", "authorship_depth",
+            {"persons": 0, "organizations": len(organizations),
+             "page_intent": PAGE_INTENT_COMMERCIAL,
+             "missing_properties": missing_required, "trust_signals": trust_signals,
+             "note": note},
+            status,
+            current_value=f"Organization: {name}",
+        )
+
     def _evaluate_authorship_depth(self, data: dict) -> dict:
         """Głębia sygnałów autorstwa: kim jest autor i czym to potwierdza.
 
@@ -1185,20 +1286,14 @@ class AuditService:
         """
         entities = self._schema_entities(data)
         persons = self._entities_of_type(entities, "Person")
-        page_type = data.get("page_type", "generic")
-        wymagane = page_type in EEAT_REQUIRED_PAGE_TYPES
+        page_intent = data.get("page_intent", PAGE_INTENT_COMMERCIAL)
+
+        # Na stronie ofertowej encja Person nie jest wymagana - zamiast niej
+        # weryfikujemy reprezentację podmiotu odpowiedzialnego, czyli firmy.
+        if page_intent == PAGE_INTENT_COMMERCIAL and not persons:
+            return self._evaluate_organization_representation(entities)
 
         if not persons:
-            if not wymagane:
-                return self._make_metric(
-                    "structure", "authorship_depth",
-                    {"persons": 0, "complete": 0, "note":
-                     "Strona nie deklaruje autora w danych strukturalnych - dla tego typu podstrony "
-                     "to dopuszczalne (wymóg dotyczy przede wszystkim treści poradnikowych)."},
-                    "info",
-                    current_value="(brak encji Person w JSON-LD)",
-                    generate_recommendation=False,
-                )
             return self._make_metric(
                 "structure", "authorship_depth",
                 {"persons": 0, "complete": 0, "note":
@@ -2133,12 +2228,16 @@ class AuditService:
         dla treści blogowych/poradnikowych (YMYL), stąd status INFO zamiast WARNING."""
         eeat = data.get("eeat", {})
         page_type = data.get("page_type", "generic")
+        page_intent = data.get("page_intent", PAGE_INTENT_COMMERCIAL)
         has_signal = eeat.get("has_author_signal", False)
 
         if has_signal:
             status, note = "ok", 'Wykryto sygnał autorstwa treści (rel="author" / oznaczenie autora).'
-        elif page_type not in EEAT_REQUIRED_PAGE_TYPES:
-            status, note = "info", "Element wymagany głównie dla artykułów blogowych i treści wiedzy (YMYL)."
+        elif page_intent == PAGE_INTENT_COMMERCIAL:
+            status, note = "info", (
+                "Strona o charakterze ofertowym/usługowym - imienny autor nie jest wymagany. "
+                "Za treść odpowiada firma (Organization)."
+            )
         else:
             status, note = "warning", "Brak wyraźnego sygnału autorstwa treści (E-E-A-T)."
 
@@ -2154,11 +2253,12 @@ class AuditService:
         `_evaluate_eeat_authorship`."""
         eeat = data.get("eeat", {})
         page_type = data.get("page_type", "generic")
+        page_intent = data.get("page_intent", PAGE_INTENT_COMMERCIAL)
         modified_time = eeat.get("modified_time")
 
         if modified_time:
             status, note = "ok", f"Wykryto znacznik aktualizacji treści (article:modified_time: {modified_time})."
-        elif page_type not in EEAT_REQUIRED_PAGE_TYPES:
+        elif page_intent == PAGE_INTENT_COMMERCIAL:
             status, note = "info", "Element wymagany głównie dla artykułów blogowych i treści wiedzy (YMYL)."
         else:
             status, note = "warning", "Brak znacznika article:modified_time - trudno ocenić aktualność treści."
@@ -2758,6 +2858,7 @@ class AuditService:
                 current_value=current_value,
                 metric_key=key,
                 site_domain=self.site_domain,
+                page_intent=self.page_intent,
             )
             # Pusty wynik zwraca _NullRecommendationEngine przy skanie podstron - nie ma
             # sensu zapisywać pustego klucza "recommendation" w metryce.

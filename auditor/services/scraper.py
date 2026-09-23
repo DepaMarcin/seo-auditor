@@ -186,6 +186,44 @@ PAGE_TYPE_ARTICLE = "article"
 PAGE_TYPE_CATEGORY = "category"
 PAGE_TYPE_GENERIC = "generic"
 
+# ------------------------------------------------------------------
+# Intencja podstrony - redakcyjna czy komercyjna
+# ------------------------------------------------------------------
+# Podział prostszy niż `page_type` i służący jednemu celowi: rozstrzygnięciu, czy od
+# strony należy wymagać imiennego autora (encji Person). Na artykule brak autora to
+# realna luka E-E-A-T; na stronie ofertowej B2B podmiotem odpowiedzialnym jest firma,
+# więc żądanie autora to fałszywy alarm - i dokładnie taki zgłaszał audyt dla
+# orlen.pl/pl/dla-biznesu/karty-i-uslugi-flotowe.
+PAGE_INTENT_EDITORIAL = "editorial"
+PAGE_INTENT_COMMERCIAL = "commercial"
+
+# Typy Schema.org jednoznacznie wskazujące treść redakcyjną.
+EDITORIAL_SCHEMA_TYPES = frozenset({
+    "article", "blogposting", "newsarticle", "techarticle",
+    "scholarlyarticle", "liveblogposting", "report", "advertisercontentarticle",
+})
+
+# Typy Schema.org wskazujące ofertę. Świadomie NIE ma tu "WebPage" - to typ domyślny,
+# występujący także na artykułach, więc nie rozstrzyga o niczym.
+COMMERCIAL_SCHEMA_TYPES = frozenset({
+    "product", "service", "offer", "financialproduct", "loanorcredit",
+    "itemlist", "collectionpage", "store", "localbusiness",
+})
+
+# Segmenty ścieżki typowe dla treści redakcyjnej (polskie i angielskie).
+EDITORIAL_PATH_SEGMENTS = (
+    "/blog", "/poradnik", "/poradniki", "/porady", "/artykul", "/artykuly",
+    "/aktualnosci", "/baza-wiedzy", "/wiedza", "/news", "/nowosci", "/magazyn",
+    "/przewodnik", "/case-stud", "/insights", "/publikacje",
+)
+
+# Segmenty ścieżki typowe dla treści ofertowej.
+COMMERCIAL_PATH_SEGMENTS = (
+    "/dla-biznesu", "/dla-firm", "/biznes", "/b2b", "/oferta", "/oferty",
+    "/uslugi", "/usluga", "/produkt", "/produkty", "/cennik", "/cenniki",
+    "/sklep", "/kategoria", "/karty", "/rozwiazania", "/pakiety", "/abonament",
+)
+
 PRODUCT_PATH_SEGMENTS = ("/produkt/", "/p/", "/item/")
 ARTICLE_PATH_SEGMENTS = ("/blog/", "/artykul/")
 CATEGORY_PATH_SEGMENTS = ("/kategoria/", "/category/")
@@ -581,6 +619,7 @@ class SEOScraper:
         images = self._analyze_images(soup.find_all("img"), url)
         schema = self._extract_schema(soup)
         page_type = self._detect_page_type(url, soup)
+        page_intent = self._detect_page_intent(url, soup, schema, page_type)
         faq_detected = self._detect_faq_section(soup)
         heading_noise = self._analyze_heading_noise(soup)
         heading_quality = self._analyze_heading_quality(soup)
@@ -632,6 +671,9 @@ class SEOScraper:
             "images_checkable_srcs": images["checkable_srcs"],
             "schema": schema,
             "page_type": page_type,
+            # "editorial" albo "commercial" - decyduje, czy od strony wymagamy
+            # imiennego autora (Person), czy reprezentacji firmy (Organization).
+            "page_intent": page_intent,
             "faq_detected": faq_detected,
             "heading_noise": heading_noise,
             "heading_quality": heading_quality,
@@ -1321,20 +1363,57 @@ class SEOScraper:
 
         return PAGE_TYPE_GENERIC
 
+    def _detect_page_intent(self, url: str, soup: BeautifulSoup, schema: dict, page_type: str) -> str:
+        """Klasyfikuje podstronę jako redakcyjną albo ofertową.
+
+        Kolejność rozstrzygania odzwierciedla wiarygodność sygnałów: deklaracja
+        wydawcy w Schema.org jest mocniejsza niż ścieżka adresu, a ta - niż
+        heurystyki na treści. Domyślnie strona jest KOMERCYJNA: w razie wątpliwości
+        lepiej nie żądać imiennego autora, bo fałszywy alarm na stronie ofertowej
+        kosztuje więcej niż pominięte ostrzeżenie na nietypowym artykule.
+        """
+        types = {str(t).lower() for t in (schema or {}).get("types") or []}
+
+        if types & EDITORIAL_SCHEMA_TYPES:
+            return PAGE_INTENT_EDITORIAL
+        if types & COMMERCIAL_SCHEMA_TYPES:
+            return PAGE_INTENT_COMMERCIAL
+
+        path = (urlparse(url).path or "/").lower()
+        if any(segment in path for segment in EDITORIAL_PATH_SEGMENTS):
+            return PAGE_INTENT_EDITORIAL
+        if any(segment in path for segment in COMMERCIAL_PATH_SEGMENTS):
+            return PAGE_INTENT_COMMERCIAL
+
+        # Bez rozstrzygnięcia ze Schema i adresu zostaje heurystyka treści - ta sama,
+        # z której korzysta `page_type`.
+        if page_type == PAGE_TYPE_ARTICLE:
+            return PAGE_INTENT_EDITORIAL
+        return PAGE_INTENT_COMMERCIAL
+
     def _has_product_signals(self, soup: BeautifulSoup) -> bool:
         # Przyciski "dodaj do koszyka" lub elementy z klasą ceny.
         return bool(soup.find(attrs={"class": _CART_OR_PRICE_CLASS_RE}))
 
     def _has_article_signals(self, soup: BeautifulSoup) -> bool:
-        if soup.find("article"):
-            return True
+        """Czy strona wygląda na tekst redakcyjny.
+
+        Znacznik <article> sam w sobie NIE wystarcza. CMS-y komponentowe (AEM, Drupal)
+        używają go jako kontenera kafelka, więc strona ofertowa potrafi mieć ich
+        kilkanaście - tak było na orlen.pl/pl/dla-biznesu/karty-i-uslugi-flotowe
+        (8 znaczników), co wpychało ją do typu "article" i włączało wymóg autora.
+        Liczy się więc POJEDYNCZY <article> (strona zbudowana wokół jednego tekstu)
+        albo metadane redakcyjne, które kafelek layoutu nigdy nie niesie.
+        """
         author_meta = soup.find("meta", attrs={"name": "author"}) or soup.find(
             "meta", property="article:author"
         )
         date_meta = soup.find("meta", property="article:published_time") or soup.find(
             "meta", property="article:modified_time"
         )
-        return bool(author_meta or date_meta)
+        if author_meta or date_meta:
+            return True
+        return len(soup.find_all("article")) == 1
 
     def _has_category_signals(self, soup: BeautifulSoup) -> bool:
         # Kilka powtarzalnych elementów listy produktów sugeruje stronę kategorii/sklepu.

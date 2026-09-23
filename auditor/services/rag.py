@@ -315,6 +315,7 @@ class RAGEngine:
         metric_key: str | None = None,
         model_override: str | None = None,
         site_domain: str | None = None,
+        page_intent: str | None = None,
     ) -> str:
         """Generuje rekomendację naprawy problemu SEO w oparciu o wiedzę z bazy (RAG).
 
@@ -338,6 +339,7 @@ class RAGEngine:
                 return self._generate_with_llm(
                     issue_description, context_text,
                     current_value=current_value, llm=llm, site_domain=site_domain,
+                    page_intent=page_intent,
                 )
             except Exception as exc:
                 # Model niedostępny na tym koncie (403 model_not_found) albo chwilowo
@@ -380,6 +382,7 @@ class RAGEngine:
         current_value: str | None = None,
         llm=None,
         site_domain: str | None = None,
+        page_intent: str | None = None,
     ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -418,6 +421,24 @@ class RAGEngine:
                 "(klient-a.pl, klient-b.pl, przyklad.pl, Marka A, Firma A, Metodyk A, "
                 "Ekspert SEO 1) są WZORCEM STRUKTURY, nie treścią do przepisania. "
                 "Nie wolno ich przenieść do odpowiedzi."
+            )
+        if page_intent == "commercial":
+            # Baza wiedzy opisuje E-E-A-T na przykładach redakcyjnych (Hub Ekspertów,
+            # autor z sameAs), więc bez tego zakazu model proponuje imiennego autora
+            # także dla strony ofertowej B2B - czyli radę bezużyteczną i mylącą.
+            system_prompt += (
+                "\n\nTa podstrona ma charakter OFERTOWY/USŁUGOWY (nie redakcyjny). "
+                "KATEGORYCZNIE NIE sugeruj dodawania imiennego autora ani encji Person - "
+                "podmiotem odpowiedzialnym za taką treść jest firma, nie osoba. "
+                "Rekomenduj wyłącznie wzbogacenie danych podmiotu: Organization "
+                "(name, logo, address, contactPoint, sameAs), powiązania publisher/provider "
+                "oraz encje Service/Product opisujące ofertę."
+            )
+        elif page_intent == "editorial":
+            system_prompt += (
+                "\n\nTa podstrona ma charakter REDAKCYJNY (artykuł, poradnik, wpis blogowy). "
+                "Sygnały autorstwa są tu istotne - rekomendacje dotyczące E-E-A-T mogą "
+                "obejmować encję Person z polami jobTitle, knowsAbout i sameAs."
             )
         # `current_value` to surowy fragment AUDYTOWANEJ (obcej) strony - dane całkowicie
         # niezaufane. Bez jawnego oznaczenia ich jako danych, strona mogłaby umieścić w
