@@ -484,3 +484,269 @@ def pagespeed_score_bucket(score: int | None) -> str:
     if score >= 50:
         return "warning"
     return "error"
+
+
+# ----------------------------------------------------------------------
+# Odpowiedzi wyszukiwarki AI (GEO)
+# ----------------------------------------------------------------------
+# Model odpowiada Markdownem: pogrubienia, listy, linki. Wstawiony do szablonu wprost
+# pokazuje użytkownikowi "**[CHEERS]**" i surowe adresy na pół ekranu. Tekst jest przy
+# tym NIEZAUFANY - powstaje z treści cytowanych stron - więc najpierw escapujemy
+# wszystko, a dopiero potem dokładamy własne znaczniki.
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+_BARE_URL_RE = re.compile(r"(?<!href=\")(?<!>)(https?://[^\s<>\"]+)")
+_LIST_ITEM_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.*)$")
+_ANSWER_HEADING_RE = re.compile(r"^\s*#{1,6}\s+(.+?)\s*$")
+
+# Adresy w treści skracamy do samej domeny - pełny URL w zdaniu rozbija akapit i nic
+# nie wnosi, bo i tak jest klikalny.
+_MAX_LABEL_LENGTH = 32
+
+
+def citation_label(url: str) -> str:
+    """Czytelna etykieta źródła: "Orlen.pl" zamiast adresu na pół ekranu."""
+    from urllib.parse import urlparse
+
+    host = (urlparse(url or "").hostname or "").removeprefix("www.")
+    if not host:
+        return (url or "")[:_MAX_LABEL_LENGTH] or "źródło"
+
+    # Pierwsza litera wielka czyta się jak nazwa marki, a nie jak fragment adresu.
+    return host[:1].upper() + host[1:]
+
+
+def _is_safe_url(url: str) -> bool:
+    """Tylko http(s) - inaczej `javascript:` z odpowiedzi modelu trafiłby do href."""
+    return url.lower().startswith(("http://", "https://"))
+
+
+def _render_inline(text: str) -> str:
+    """Pogrubienia i linki wewnątrz akapitu. Wejście musi być już zescapowane."""
+    def link(url: str, label: str) -> str:
+        if not _is_safe_url(url):
+            return label
+        return (
+            f'<a class="geo-source-pill" href="{url}" target="_blank" rel="noopener nofollow">'
+            f"{label} <span aria-hidden=\"true\">↗</span></a>"
+        )
+
+    text = _MD_LINK_RE.sub(lambda m: link(m.group(2), m.group(1)), text)
+    text = _BARE_URL_RE.sub(lambda m: link(m.group(1), citation_label(m.group(1))), text)
+    text = _BOLD_RE.sub(r"<strong>\1</strong>", text)
+    return text
+
+
+def render_ai_answer(answer: str | None) -> str:
+    """Zamienia odpowiedź modelu na bezpieczny HTML gotowy do wstawienia w szablonie."""
+    from django.utils.html import escape
+    from django.utils.safestring import mark_safe
+
+    tekst = (answer or "").strip()
+    if not tekst:
+        return ""
+
+    bloki: list[str] = []
+    punkty: list[str] = []
+    akapit: list[str] = []
+
+    def zamknij_akapit() -> None:
+        if akapit:
+            bloki.append("<p>" + _render_inline(" ".join(akapit)) + "</p>")
+            akapit.clear()
+
+    def zamknij_liste() -> None:
+        if punkty:
+            pozycje = "".join(f"<li>{_render_inline(p)}</li>" for p in punkty)
+            bloki.append(f"<ul class=\"geo-answer-list\">{pozycje}</ul>")
+            punkty.clear()
+
+    for surowa in escape(tekst).splitlines():
+        linia = surowa.strip()
+
+        if not linia:
+            zamknij_akapit()
+            zamknij_liste()
+            continue
+
+        naglowek = _ANSWER_HEADING_RE.match(linia)
+        if naglowek:
+            zamknij_akapit()
+            zamknij_liste()
+            bloki.append(
+                f'<h4 class="geo-answer-heading">{_render_inline(naglowek.group(1))}</h4>'
+            )
+            continue
+
+        punkt = _LIST_ITEM_RE.match(linia)
+        if punkt:
+            zamknij_akapit()
+            punkty.append(punkt.group(1))
+            continue
+
+        zamknij_liste()
+        akapit.append(linia)
+
+    zamknij_akapit()
+    zamknij_liste()
+    return mark_safe("".join(bloki))
+
+
+def build_geo_questions(study, queries) -> list[dict]:
+    """Pytania z gotowymi do wyświetlenia odpowiedziami i przypisami."""
+    pytania = []
+    for numer, query in enumerate(queries, start=1):
+        przebiegi = []
+        for run in query.runs.all():
+            przypisy = [
+                {
+                    "url": c.get("url", ""),
+                    "domain": c.get("domain", ""),
+                    "label": citation_label(c.get("url", "")),
+                    "title": c.get("title", ""),
+                    "is_brand": c.get("domain") == study.domain,
+                    "safe": _is_safe_url(c.get("url", "")),
+                }
+                for c in (run.citations or [])
+            ]
+            przebiegi.append({
+                "attempt": run.attempt,
+                "brand_cited": run.brand_cited,
+                "brand_mentioned": run.brand_mentioned,
+                "brand_position": run.brand_position,
+                "visibility": run.visibility,
+                "visibility_label": run.get_visibility_display(),
+                "error": run.error,
+                "answer_html": render_ai_answer(run.answer),
+                "citations": przypisy,
+            })
+
+        pytania.append({
+            "pk": query.pk,
+            "number": numer,
+            "text": query.text,
+            "cited_runs": query.cited_runs,
+            "citation_rate": query.citation_rate,
+            "stability": query.stability,
+            "stability_label": query.get_stability_display(),
+            "most_common_position": query.most_common_position,
+            "competitors": query.competitors or [],
+            "mention_runs": query.mention_runs,
+            "visible_runs": query.visible_runs,
+            "runs": przebiegi,
+        })
+    return pytania
+
+
+def build_geo_visibility_totals(queries) -> dict:
+    """Ile odpowiedzi zawierało link, samą wzmiankę, a ile nic.
+
+    Rozdzielenie jest istotne: przypis daje ruch, wzmianka bez linku buduje tylko
+    rozpoznawalność. Zsumowane w jedną liczbę zacierałyby różnicę, o której klient
+    musi wiedzieć, bo prowadzi do innych działań.
+    """
+    linked = mentions = total = 0
+    for query in queries:
+        for run in query.runs.all():
+            if run.error:
+                continue
+            total += 1
+            if run.brand_cited:
+                linked += 1
+            elif run.brand_mentioned:
+                mentions += 1
+
+    visible = linked + mentions
+    return {
+        "linked": linked,
+        "mentions": mentions,
+        "visible": visible,
+        "absent": total - visible,
+        "total": total,
+        "visible_percent": round(visible * 100 / total) if total else 0,
+    }
+
+
+def build_geo_executive_summary(study, queries) -> dict:
+    """Dane podsumowania wykonawczego na dole raportu."""
+    totals = build_geo_visibility_totals(queries)
+
+    # Konkurenci zliczani przez wszystkie pytania - pojedyncze pytanie pokazuje
+    # przypadek, dopiero suma pokazuje, kto naprawdę zajmuje miejsce w odpowiedziach.
+    rywale: dict[str, int] = {}
+    for query in queries:
+        for competitor in query.competitors or []:
+            domena = competitor.get("domain")
+            if domena and domena != study.domain:
+                rywale[domena] = rywale.get(domena, 0) + competitor.get("count", 0)
+
+    top = sorted(rywale.items(), key=lambda pozycja: (-pozycja[1], pozycja[0]))[:3]
+
+    return {
+        "domain": study.domain,
+        "brand_name": study.brand_name or study.domain,
+        "overall_score": study.overall_score,
+        "totals": totals,
+        "top_competitors": [{"domain": d, "count": c} for d, c in top],
+        "top_competitors_list": ", ".join(domena for domena, _ in top),
+    }
+
+
+def build_geo_repetition_stats(study, queries) -> list[dict]:
+    """Ile pytań uzyskało cytowanie w kolejnych powtórzeniach.
+
+    Rozbicie po numerze próby pokazuje to, czego nie widać w jednej liczbie: czy
+    obecność marki jest powtarzalna, czy model raz ją cytuje, a raz nie.
+    """
+    if not queries:
+        return []
+
+    licznik: dict[int, int] = {}
+    suma: dict[int, int] = {}
+    for query in queries:
+        for run in query.runs.all():
+            suma[run.attempt] = suma.get(run.attempt, 0) + 1
+            if run.brand_cited:
+                licznik[run.attempt] = licznik.get(run.attempt, 0) + 1
+
+    statystyki = []
+    for attempt in sorted(suma):
+        total = suma[attempt]
+        cited = licznik.get(attempt, 0)
+        statystyki.append({
+            "attempt": attempt,
+            "cited": cited,
+            "total": total,
+            "percent": round(cited * 100 / total) if total else 0,
+        })
+    return statystyki
+
+
+def build_geo_sources(study, queries) -> list[dict]:
+    """Wszystkie zacytowane domeny z licznikami - tabela źródeł i konkurencji."""
+    zebrane: dict[str, dict] = {}
+    for query in queries:
+        for run in query.runs.all():
+            for citation in run.citations or []:
+                domena = citation.get("domain") or ""
+                if not domena:
+                    continue
+                wpis = zebrane.setdefault(domena, {
+                    "domain": domena,
+                    "label": citation_label(citation.get("url", "")),
+                    "url": citation.get("url", ""),
+                    "count": 0,
+                    "question_ids": set(),
+                    "is_brand": domena == study.domain,
+                    "safe": _is_safe_url(citation.get("url", "")),
+                })
+                wpis["count"] += 1
+                wpis["question_ids"].add(query.pk)
+
+    zrodla = sorted(zebrane.values(), key=lambda w: (-w["count"], w["domain"]))
+    for wpis in zrodla:
+        pytania = sorted(wpis.pop("question_ids"))
+        wpis["question_count"] = len(pytania)
+        # Filtr w tabeli porównuje identyfikator pytania z tą listą.
+        wpis["question_filter"] = " ".join(f"q{pk}" for pk in pytania)
+    return zrodla

@@ -24,13 +24,19 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views import View
+from django.views.decorators.http import require_POST
 from google_auth_oauthlib.flow import Flow
 
 from .models import Audit, AuditedPage, AuditMetric
+from .navigation import TOOLS
 from .presentation import (
     MERGED_PAGESPEED_SCORE_KEYS,
     TEAM_BY_CATEGORY,
     annotate_metric_labels,
+    build_geo_executive_summary,
+    build_geo_questions,
+    build_geo_repetition_stats,
+    build_geo_sources,
     build_schema_status_table,
     compute_category_scores,
     extract_pagespeed_summary,
@@ -89,6 +95,46 @@ def _get_owned_audit(request: HttpRequest, pk: int) -> Audit:
     żeby nie dało się przez kod odpowiedzi ustalić, które identyfikatory istnieją.
     """
     return get_object_or_404(Audit, pk=pk, owner=request.user)
+
+
+@method_decorator(login_required, name="dispatch")
+class HubView(View):
+    """Ekran wyboru narzędzia - pierwsze, co użytkownik widzi po zalogowaniu.
+
+    Kafelki są danymi, a nie trzema kopiami tego samego HTML-a: dzięki temu dodanie
+    czwartego narzędzia to jeden wpis, a nie kolejne powielenie znaczników.
+    """
+
+    template_name = "auditor/hub.html"
+
+    def get(self, request: HttpRequest) -> HttpResponse:
+        return render(request, self.template_name, {"tools": TOOLS})
+
+
+@method_decorator(login_required, name="dispatch")
+class AnalyticsPanelView(View):
+    """Panel analityki: wybór audytu, którego dane GA4/GSC chcemy oglądać.
+
+    Dane GA4 i GSC są przypięte do konkretnego audytu (własność `Audit.ga4_property_id`,
+    osobny token OAuth na audyt), więc nie istnieje jeden globalny widok liczb - ten
+    panel jest rozdzielnikiem do sekcji analityki w raporcie.
+    """
+
+    template_name = "auditor/analytics.html"
+
+    def get(self, request: HttpRequest) -> HttpResponse:
+        audits = Audit.objects.filter(owner=request.user).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
+
+        connected, pending = [], []
+        for audit in audits:
+            (connected if audit.ga4_property_id else pending).append(audit)
+
+        return render(request, self.template_name, {
+            "nav_section": "analytics",
+            "connected_audits": connected,
+            "pending_audits": pending,
+            "has_any_audit": bool(audits),
+        })
 
 
 @login_required
@@ -824,6 +870,14 @@ def download_pdf_report(request: HttpRequest, audit_id: int) -> HttpResponse:
 # ======================================================================
 # Widoczność w wyszukiwarkach AI (GEO Tracker)
 # ======================================================================
+# Jeden komunikat dla obu ścieżek (przycisk "Wygeneruj przez AI" i start badania),
+# żeby użytkownik nie dostawał dwóch różnych opisów tej samej sytuacji.
+SITE_CONTEXT_ERROR = (
+    "Nie udało się pobrać treści podanego adresu URL. Upewnij się, że adres jest "
+    "poprawny lub wpisz pytania testowe ręcznie."
+)
+
+
 def _owned_geo_study(request: HttpRequest, pk: int):
     """Badanie należące do zalogowanego użytkownika albo 404.
 
@@ -861,7 +915,10 @@ class GeoVisibilityDashboardView(View):
         from auditor.services.geo import DEFAULT_REPETITIONS, normalize_domain
         from auditor.tasks import enqueue_geo_study
 
-        domain = normalize_domain(request.POST.get("domain", ""))
+        # Zachowujemy to, co wpisał użytkownik: `normalize_domain` obcina ścieżkę,
+        # a kontekst branżowy pobieramy z konkretnej podstrony, jeśli ją podał.
+        wpisany_adres = (request.POST.get("domain", "") or "").strip()
+        domain = normalize_domain(wpisany_adres)
         if not domain:
             messages.error(request, "Podaj domenę albo adres strony do zbadania.")
             return redirect("auditor:geo_dashboard")
@@ -877,20 +934,39 @@ class GeoVisibilityDashboardView(View):
             return redirect("auditor:geo_dashboard")
 
         questions = [q.strip() for q in request.POST.getlist("questions") if q.strip()]
+        context = None
         if not questions:
-            from auditor.services.geo import generate_questions
+            # Użytkownik nie podał pytań - układamy je sami, wcześniej rozpoznając
+            # branżę z treści strony. Bez tego kroku model zgaduje po nazwie domeny.
+            from auditor.services.geo import generate_questions, get_or_fetch_site_context
 
-            questions = generate_questions(domain)
+            context = get_or_fetch_site_context(wpisany_adres or domain)
+            if not context.usable:
+                messages.warning(
+                    request,
+                    SITE_CONTEXT_ERROR + " Badanie ruszy na pytaniach ogólnych.",
+                )
+            questions = generate_questions(domain, context=context)
 
         audit = None
         audit_id = request.POST.get("audit")
         if audit_id:
             audit = Audit.objects.filter(pk=audit_id, owner=request.user).first()
 
+        # Marka jest potrzebna do wykrywania wzmianek w treści odpowiedzi, więc
+        # ustalamy ją także wtedy, gdy użytkownik wpisał pytania sam i kontekstu
+        # strony w ogóle nie pobieraliśmy - wtedy wystarczy nazwa z domeny.
+        from auditor.services.geo import extract_brand_name
+
+        brand_name = context.brand_name if context and context.brand_name else extract_brand_name(
+            wpisany_adres or domain
+        )
+
         study = GeoStudy.objects.create(
             owner=request.user,
             audit=audit,
             domain=domain,
+            brand_name=brand_name,
             repetitions=DEFAULT_REPETITIONS,
         )
         GeoQuery.objects.bulk_create([
@@ -904,17 +980,56 @@ class GeoVisibilityDashboardView(View):
 
 @login_required
 def geo_study_detail(request: HttpRequest, pk: int) -> HttpResponse:
-    """Dashboard pojedynczego badania: wynik zbiorczy, tabela pytań, szczegóły."""
+    """Dashboard pojedynczego badania: wynik zbiorczy, powtarzalność, pytania, źródła."""
     study = _owned_geo_study(request, pk)
-    queries = list(
-        study.queries.prefetch_related("runs").all()
-    )
+    queries = list(study.queries.prefetch_related("runs").all())
+
     return render(request, "auditor/geo_detail.html", {
         "nav_section": "geo",
         "study": study,
         "queries": queries,
+        # Odpowiedzi modelu przechodzą przez parser Markdown: bez tego użytkownik
+        # widzi "**[CHEERS]**" i adresy URL na pół ekranu.
+        "questions": build_geo_questions(study, queries),
+        "repetition_stats": build_geo_repetition_stats(study, queries),
+        "sources": build_geo_sources(study, queries),
+        "summary": build_geo_executive_summary(study, queries),
         "in_progress": study.status in ("pending", "processing"),
     })
+
+
+@login_required
+@require_POST
+def geo_study_rerun(request: HttpRequest, pk: int) -> HttpResponse:
+    """Powtarza badanie na tych samych pytaniach.
+
+    Nowe badanie zamiast nadpisania starego: sens pomiaru GEO polega na porównywaniu
+    kolejnych pomiarów w czasie, więc poprzedni wynik musi zostać.
+    """
+    from auditor.models import GeoQuery, GeoStudy
+    from auditor.tasks import enqueue_geo_study
+
+    study = _owned_geo_study(request, pk)
+
+    if is_rate_limited(request, scope="geo"):
+        messages.error(request, "Przekroczono limit uruchamianych badań. Spróbuj później.")
+        return redirect("auditor:geo_detail", pk=study.pk)
+
+    powtorzone = GeoStudy.objects.create(
+        owner=request.user,
+        audit=study.audit,
+        domain=study.domain,
+        brand_name=study.brand_name,
+        repetitions=study.repetitions,
+    )
+    GeoQuery.objects.bulk_create([
+        GeoQuery(study=powtorzone, text=query.text, position=query.position)
+        for query in study.queries.all()
+    ])
+
+    enqueue_geo_study(powtorzone.pk)
+    messages.success(request, "Badanie uruchomione ponownie na tych samych pytaniach.")
+    return redirect("auditor:geo_detail", pk=powtorzone.pk)
 
 
 @login_required
@@ -941,10 +1056,19 @@ def geo_study_status(request: HttpRequest, pk: int) -> JsonResponse:
 
 @login_required
 def geo_suggest_questions(request: HttpRequest) -> JsonResponse:
-    """Podpowiada pytania intencyjne dla domeny (przycisk "Wygeneruj przez AI")."""
-    from auditor.services.geo import generate_questions, normalize_domain
+    """Podpowiada pytania intencyjne dla domeny (przycisk "Wygeneruj przez AI").
 
-    domain = normalize_domain(request.POST.get("domain", "") or request.GET.get("domain", ""))
+    Pytania powstają z treści wskazanej strony, a nie z samej nazwy domeny - dopiero
+    oferta przed oczami modelu daje pytania z właściwej branży.
+    """
+    from auditor.services.geo import (
+        generate_questions,
+        get_or_fetch_site_context,
+        normalize_domain,
+    )
+
+    wpisany_adres = (request.POST.get("domain", "") or request.GET.get("domain", "")).strip()
+    domain = normalize_domain(wpisany_adres)
     if not domain:
         return JsonResponse({"error": "Podaj domenę."}, status=400)
 
@@ -953,5 +1077,13 @@ def geo_suggest_questions(request: HttpRequest) -> JsonResponse:
     except UnsafeUrlError as exc:
         return JsonResponse({"error": str(exc)}, status=400)
 
-    return JsonResponse({"questions": generate_questions(domain)})
+    context = get_or_fetch_site_context(wpisany_adres or domain)
+    if not context.usable:
+        return JsonResponse({"error": SITE_CONTEXT_ERROR}, status=502)
+
+    return JsonResponse({
+        "questions": generate_questions(domain, context=context),
+        "context_source": context.source,
+        "detected_title": context.title,
+    })
 

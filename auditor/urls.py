@@ -5,7 +5,15 @@ from . import views
 app_name = "auditor"
 
 urlpatterns = [
-    path("", views.index, name="index"),
+    # Hub narzędziowy - ekran wyboru narzędzia zaraz po zalogowaniu.
+    path("", views.HubView.as_view(), name="hub"),
+
+    # Panel analityki: wybór audytu, którego dane GA4/GSC chcemy oglądać.
+    path("analytics/", views.AnalyticsPanelView.as_view(), name="analytics"),
+
+    # Skaner techniczny. Nazwa `index` zostaje, bo wskazuje na nią kilkanaście
+    # miejsc w kodzie i szablonach - zmienia się tylko adres.
+    path("audits/", views.index, name="index"),
     path("audits/<int:pk>/", views.audit_detail, name="detail"),
     # Odpytywany przez stronę szczegółów, dopóki audyt wykonuje się w tle.
     path("audits/<int:pk>/status/", views.audit_status, name="status"),
@@ -23,6 +31,7 @@ urlpatterns = [
     path("geo-visibility/<int:pk>/", views.geo_study_detail, name="geo_detail"),
     # Odpytywany przez pasek postępu, dopóki badanie wykonuje się w tle.
     path("geo-visibility/<int:pk>/status/", views.geo_study_status, name="geo_status"),
+    path("geo-visibility/<int:pk>/rerun/", views.geo_study_rerun, name="geo_rerun"),
     path("geo-visibility/suggest-questions/", views.geo_suggest_questions, name="geo_suggest_questions"),
     path("audits/<int:pk>/ga4/connect/", views.start_ga4_auth, name="start_ga4_auth"),
     path("ga4/callback/", views.ga4_callback, name="ga4_callback"),

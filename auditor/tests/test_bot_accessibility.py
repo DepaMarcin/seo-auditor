@@ -5,10 +5,12 @@ albo chronionego przez WAF parser dostaje pusty szkielet i audyt produkuje seri�
 fałszywych błędów - "Brak H1", "Brak Schema.org", "Thin content - 12 słów" - opisując
 problemy, których na stronie nie ma.
 
-Ani `httpx`, ani Playwright nie są tu prawdziwe: każde pobranie jest podmienione.
+Ani `httpx`, ani Playwright, ani DNS nie są tu prawdziwe: każde pobranie i każde
+rozwiązanie nazwy jest podmienione.
 """
 from __future__ import annotations
 
+import socket
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, TestCase
@@ -24,6 +26,40 @@ from auditor.services.accessibility import (
     check_bot_accessibility,
 )
 from auditor.services.scraper import ScraperError
+
+
+# `validate_public_url` woła `socket.getaddrinfo`, czyli prawdziwy DNS. Przy dłuższym
+# biegu całego zestawu potrafi on chwilowo nie odpowiedzieć - walidacja odrzuca wtedy
+# adres, `check_bot_accessibility` kończy się wcześnie i zwraca pustą tabelę
+# porównawczą. Test przestaje wtedy mierzyć to, co miał mierzyć, i wywala się losowo.
+_dns_patch = None
+
+
+def _fake_getaddrinfo(hostname, *args, **kwargs):
+    """Nazwa hosta rozwiązuje się na stały adres publiczny; adresy IP zostają sobą.
+
+    Dzięki temu sprawdzenie odrzucania loopbacku nadal działa - 127.0.0.1 przechodzi
+    przez tę funkcję bez zmiany i wpada w blokadę adresów prywatnych.
+    """
+    import ipaddress
+
+    try:
+        ipaddress.ip_address(hostname)
+    except ValueError:
+        address = "93.184.216.34"
+    else:
+        address = hostname
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 0))]
+
+
+def setUpModule():
+    global _dns_patch
+    _dns_patch = patch("auditor.services.url_guard.socket.getaddrinfo", _fake_getaddrinfo)
+    _dns_patch.start()
+
+
+def tearDownModule():
+    _dns_patch.stop()
 
 # Szkielet aplikacji CSR: kilkanaście słów nawigacji, treść powstaje dopiero w JS.
 CSR_RAW = """

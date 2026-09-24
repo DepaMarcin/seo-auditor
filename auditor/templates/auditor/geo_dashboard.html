@@ -129,7 +129,8 @@
                 return;
             }
             spinner.classList.remove("hidden");
-            status.textContent = "Układam pytania…";
+            status.classList.remove("geo-status-error");
+            status.textContent = "Analizuję treść strony i generuję pytania dla branży…";
             suggest.disabled = true;
 
             var data = new FormData();
@@ -142,17 +143,23 @@
                     spinner.classList.add("hidden");
                     suggest.disabled = false;
                     if (payload.error) {
+                        status.classList.add("geo-status-error");
                         status.textContent = payload.error;
                         return;
                     }
                     (payload.questions || []).forEach(function (question, index) {
                         if (inputs[index]) { inputs[index].value = question; }
                     });
-                    status.textContent = "Gotowe — możesz je jeszcze poprawić.";
+                    // Pokazujemy, CO zostało rozpoznane - inaczej nie widać,
+                    // czy pytania powstały z treści strony, czy z samej nazwy domeny.
+                    status.textContent = payload.detected_title
+                        ? "Rozpoznano: " + payload.detected_title + " — możesz jeszcze poprawić pytania."
+                        : "Gotowe — możesz je jeszcze poprawić.";
                 })
                 .catch(function () {
                     spinner.classList.add("hidden");
                     suggest.disabled = false;
+                    status.classList.add("geo-status-error");
                     status.textContent = "Nie udało się połączyć. Spróbuj ponownie.";
                 });
         });

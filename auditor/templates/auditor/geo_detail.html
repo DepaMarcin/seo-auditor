@@ -3,11 +3,40 @@
 {% block title %}GEO: {{ study.domain }} | SEO Auditor{% endblock %}
 
 {% block content %}
-<div class="panel">
-    <a class="link" href="{% url 'auditor:geo_dashboard' %}">← Wszystkie badania GEO</a>
-    <h1>Widoczność w AI: {{ study.domain }}</h1>
+{% comment %}
+Szczegóły odpowiedzi siedzą w akordeonie, nie w modalu. Modal zamykał długie odpowiedzi
+modelu w okienku z własnym paskiem przewijania - przy pięciu próbach na pytanie czytanie
+sprowadzało się do przewijania ramki wewnątrz przewijanej strony.
+{% endcomment %}
 
-    {% if in_progress %}
+<div class="panel geo-dashboard-header">
+    <div class="geo-header-text">
+        {% if study.status == "completed" %}
+        <h1 class="geo-header-title">Analiza widoczności w wyszukiwarkach AI ukończona!</h1>
+        {% else %}
+        <h1 class="geo-header-title">Analiza widoczności w wyszukiwarkach AI</h1>
+        {% endif %}
+        <p class="geo-header-subtitle">
+            <strong>{{ study.domain }}</strong>
+            · pomiar z {{ study.created_at|date:"j E Y, H:i" }}
+            {% if study.finished_at %}· zakończony {{ study.finished_at|date:"H:i" }}{% endif %}
+        </p>
+    </div>
+    <div class="geo-header-actions">
+        <a class="geo-button-secondary" href="{% url 'auditor:geo_dashboard' %}">
+            <span aria-hidden="true">←</span> Powrót do GEO Tracker
+        </a>
+        {% if study.status == "completed" or study.status == "failed" %}
+        <form method="post" action="{% url 'auditor:geo_rerun' study.pk %}" class="geo-rerun-form">
+            {% csrf_token %}
+            <button type="submit">Ponów badanie</button>
+        </form>
+        {% endif %}
+    </div>
+</div>
+
+{% if in_progress %}
+<div class="panel">
     <div class="loading-container" id="geo-progress">
         <div class="loading-header">
             <span class="spinner"></span>
@@ -22,134 +51,238 @@
             czy domena jest cytowana regularnie.
         </p>
     </div>
-    {% elif study.status == "failed" %}
-    <div class="range-error">Badanie nie powiodło się: {{ study.error|default:"nieznany błąd" }}</div>
-    {% endif %}
-
-    {% if study.status == "completed" %}
-    <div class="geo-summary">
-        <div class="geo-summary-score geo-score-{{ study.score_bucket }}">
-            <span class="geo-summary-value">{{ study.overall_score }}%</span>
-            <span class="geo-summary-unit">Overall GEO Score</span>
-        </div>
-        <div class="geo-summary-meta">
-            <div class="geo-summary-row">
-                <span class="geo-summary-label">Pytań zbadanych</span>
-                <span class="geo-summary-number">{{ queries|length }}</span>
-            </div>
-            <div class="geo-summary-row">
-                <span class="geo-summary-label">Zapytań wykonanych</span>
-                <span class="geo-summary-number">{{ study.completed_runs }}</span>
-            </div>
-            <div class="geo-summary-row">
-                <span class="geo-summary-label">Powtórzeń na pytanie</span>
-                <span class="geo-summary-number">{{ study.repetitions }}</span>
-            </div>
-            <p class="geo-summary-note">
-                Wskaźnik to średni odsetek powtórzeń, w których wyszukiwarka AI
-                przytoczyła {{ study.domain }} jako źródło.
-            </p>
-        </div>
-    </div>
-    {% endif %}
 </div>
-
-{% if queries %}
+{% elif study.status == "failed" %}
 <div class="panel">
-    <h2>Wyniki wg pytania</h2>
-    <p class="geo-table-hint">Kliknij wiersz, aby zobaczyć pełne odpowiedzi i przypisy.</p>
-    <div class="tabela-przewijana">
-        <table class="geo-table">
-            <thead>
-                <tr>
-                    <th>Pytanie intencyjne</th>
-                    <th>Cytowania</th>
-                    <th>Stabilność</th>
-                    <th>Pozycje w źródłach</th>
-                    <th>Dominujący konkurenci</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for query in queries %}
-                <tr class="geo-row" data-query="{{ query.pk }}" tabindex="0" role="button"
-                    aria-label="Pokaż szczegóły odpowiedzi">
-                    <td class="geo-cell-question">{{ query.text }}</td>
-                    <td class="geo-cell-rate">
-                        <strong>{{ query.cited_runs }}/{{ study.repetitions }}</strong>
-                        <span class="geo-rate-percent">{{ query.citation_rate }}%</span>
-                    </td>
-                    <td>
-                        <span class="status-flag geo-stability geo-stability-{{ query.stability }}">
-                            {{ query.get_stability_display }}
-                        </span>
-                    </td>
-                    <td>{{ query.most_common_position }}</td>
-                    <td class="geo-cell-competitors">
-                        {% for competitor in query.competitors|slice:":3" %}
-                        <span class="geo-competitor">{{ competitor.domain }}<span class="geo-competitor-count">{{ competitor.count }}x</span></span>
-                        {% empty %}
-                        <span class="geo-competitor-none">—</span>
-                        {% endfor %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+    <div class="range-error">Badanie nie powiodło się: {{ study.error|default:"nieznany błąd" }}</div>
 </div>
+{% endif %}
 
-{% for query in queries %}
-<div class="geo-modal" id="geo-modal-{{ query.pk }}" role="dialog" aria-modal="true"
-     aria-labelledby="geo-modal-title-{{ query.pk }}" hidden>
-    <div class="geo-modal-backdrop" data-close></div>
-    <div class="geo-modal-content">
-        <div class="geo-modal-header">
-            <div>
-                <div class="geo-modal-label">Pytanie intencyjne</div>
-                <h3 id="geo-modal-title-{{ query.pk }}">{{ query.text }}</h3>
+{% if study.status == "completed" %}
+<div class="geo-metrics-grid">
+    <div class="panel geo-metric-card">
+        <h2 class="geo-card-heading">Ogólna widoczność</h2>
+        <div class="geo-ring geo-score-{{ study.score_bucket }}"
+             style="--geo-progress: {{ study.overall_score }}">
+            <div class="geo-ring-inner">
+                <span class="geo-ring-value">{{ study.overall_score }}<span class="geo-ring-percent">%</span></span>
+                <span class="geo-ring-label">GEO Score</span>
             </div>
-            <button type="button" class="geo-modal-close" data-close aria-label="Zamknij">✕</button>
         </div>
-        <div class="geo-modal-summary">
-            <span class="status-flag geo-stability geo-stability-{{ query.stability }}">{{ query.get_stability_display }}</span>
-            <span>Cytowania: <strong>{{ query.cited_runs }}/{{ study.repetitions }}</strong> ({{ query.citation_rate }}%)</span>
+        <p class="geo-ring-caption">
+            Średni odsetek powtórzeń, w których wyszukiwarka AI przytoczyła
+            <strong>{{ study.domain }}</strong> jako źródło.
+        </p>
+        <div class="geo-metric-footnotes">
+            <span>{{ questions|length }} pytań</span>
+            <span>{{ study.completed_runs }} wywołań</span>
+            <span>{{ study.repetitions }} powtórzeń na pytanie</span>
         </div>
-        <div class="geo-modal-body">
-            {% for run in query.runs.all %}
-            <div class="geo-run{% if run.brand_cited %} geo-run-cited{% endif %}">
-                <div class="geo-run-header">
-                    <span class="geo-run-number">Próba {{ run.attempt }}</span>
-                    {% if run.error %}
-                    <span class="status-flag status-error">Błąd</span>
-                    {% elif run.brand_cited %}
-                    <span class="status-flag status-ok">Zacytowano (#{{ run.brand_position }})</span>
-                    {% else %}
-                    <span class="status-flag geo-stability-absent">Brak cytowania</span>
-                    {% endif %}
+    </div>
+
+    <div class="panel geo-metric-card">
+        <h2 class="geo-card-heading">Powtarzalność w próbach</h2>
+        <p class="geo-card-hint">
+            Ile pytań uzyskało cytowanie w kolejnych powtórzeniach. Równe słupki znaczą
+            obecność stabilną, poszarpane — przypadkową.
+        </p>
+        <div class="geo-repetitions">
+            {% for stat in repetition_stats %}
+            <div class="geo-repetition">
+                <div class="geo-repetition-head">
+                    <span class="geo-repetition-label">Próba {{ stat.attempt }}</span>
+                    <span class="geo-repetition-value">{{ stat.cited }}/{{ stat.total }} · {{ stat.percent }}%</span>
                 </div>
-                {% if run.error %}
-                <p class="geo-run-error">{{ run.error }}</p>
-                {% else %}
-                <p class="geo-run-answer">{{ run.answer }}</p>
-                {% if run.citations %}
-                <ol class="geo-citations">
-                    {% for citation in run.citations %}
-                    <li class="geo-citation{% if citation.domain == study.domain %} geo-citation-brand{% endif %}">
-                        <a class="link" href="{{ citation.url }}" target="_blank" rel="noopener nofollow">{{ citation.domain }}</a>
-                        {% if citation.title %}<span class="geo-citation-title">{{ citation.title|truncatechars:80 }}</span>{% endif %}
-                    </li>
-                    {% endfor %}
-                </ol>
-                {% else %}
-                <p class="geo-run-error">Odpowiedź bez przypisów — model nie wskazał źródeł.</p>
-                {% endif %}
-                {% endif %}
+                <div class="geo-repetition-track">
+                    <div class="geo-repetition-bar" style="width: {{ stat.percent }}%"></div>
+                </div>
             </div>
+            {% empty %}
+            <p class="geo-empty">Brak danych o powtórzeniach.</p>
             {% endfor %}
         </div>
     </div>
 </div>
-{% endfor %}
+
+<div class="panel">
+    <h2 class="geo-card-heading">Szczegółowe wyniki dla poszczególnych pytań intencyjnych</h2>
+    <p class="geo-card-hint">Rozwiń pytanie, aby zobaczyć wszystkie odpowiedzi i ich źródła.</p>
+
+    <div class="geo-accordion">
+        {% for question in questions %}
+        <details class="geo-question" id="pytanie-{{ question.pk }}">
+            <summary class="geo-question-summary">
+                <span class="geo-question-number">{{ question.number }}</span>
+                <span class="geo-question-text">{{ question.text }}</span>
+                <span class="geo-question-badges">
+                    <span class="geo-score-pill geo-score-{{ question.stability }}">
+                        {{ question.cited_runs }}/{{ study.repetitions }} cytowań · {{ question.citation_rate }}%
+                    </span>
+                    {% if question.mention_runs %}
+                    <span class="status-flag geo-mention-flag">+{{ question.mention_runs }} wzmianek</span>
+                    {% endif %}
+                    <span class="status-flag geo-stability geo-stability-{{ question.stability }}">
+                        {{ question.stability_label }}
+                    </span>
+                </span>
+            </summary>
+
+            <div class="geo-question-body">
+                <div class="geo-question-meta">
+                    <span>Najczęstsza pozycja w źródłach: <strong>{{ question.most_common_position }}</strong></span>
+                    {% if question.competitors %}
+                    <span class="geo-cell-competitors">
+                        Konkurenci:
+                        {% for competitor in question.competitors|slice:":3" %}
+                        <span class="geo-competitor">{{ competitor.domain }}<span class="geo-competitor-count">{{ competitor.count }}x</span></span>
+                        {% endfor %}
+                    </span>
+                    {% endif %}
+                </div>
+
+                {% for run in question.runs %}
+                <div class="geo-run geo-run-{{ run.visibility }}">
+                    <div class="geo-run-header">
+                        <span class="geo-run-number">Próba {{ run.attempt }}</span>
+                        {% if run.error %}
+                        <span class="status-flag status-error">Błąd</span>
+                        {% elif run.brand_cited %}
+                        <span class="status-flag status-ok">Cytowanie z linkiem (#{{ run.brand_position }})</span>
+                        {% elif run.brand_mentioned %}
+                        <span class="status-flag geo-mention-flag">Wzmianka o marce</span>
+                        {% else %}
+                        <span class="status-flag geo-stability-absent">Brak cytowania</span>
+                        {% endif %}
+                    </div>
+
+                    {% if run.error %}
+                    <p class="geo-run-error">{{ run.error }}</p>
+                    {% else %}
+                    <div class="geo-answer">{{ run.answer_html }}</div>
+                    {% if run.citations %}
+                    <div class="geo-run-sources">
+                        <span class="geo-run-sources-label">Źródła</span>
+                        <div class="geo-source-pills">
+                            {% for citation in run.citations %}
+                            {% if citation.safe %}
+                            <a class="geo-source-pill{% if citation.is_brand %} geo-source-pill-brand{% endif %}"
+                               href="{{ citation.url }}" target="_blank" rel="noopener nofollow"
+                               title="{{ citation.title|default:citation.url }}">
+                                {{ citation.label }} <span aria-hidden="true">↗</span>
+                            </a>
+                            {% else %}
+                            <span class="geo-source-pill">{{ citation.label }}</span>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                    {% else %}
+                    <p class="geo-run-error">Odpowiedź bez przypisów — model nie wskazał źródeł.</p>
+                    {% endif %}
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </details>
+        {% empty %}
+        <p class="geo-empty">To badanie nie ma jeszcze wyników.</p>
+        {% endfor %}
+    </div>
+</div>
+
+<div class="panel">
+    <h2 class="geo-card-heading">Przegląd zacytowanych źródeł i konkurencji</h2>
+    <p class="geo-card-hint">
+        Domeny, które wyszukiwarka AI przytaczała najczęściej. Gdy brakuje wśród nich
+        Twojej, ta lista pokazuje, kto zajmuje Twoje miejsce w odpowiedziach.
+    </p>
+
+    <div class="geo-filters">
+        <input type="search" id="geo-source-search" class="geo-filter-input"
+               placeholder="Szukaj domeny…" autocomplete="off" spellcheck="false"
+               aria-label="Szukaj domeny w źródłach">
+        <select id="geo-source-question" class="geo-filter-select" aria-label="Filtruj po pytaniu">
+            <option value="">Wszystkie pytania</option>
+            {% for question in questions %}
+            <option value="q{{ question.pk }}">{{ question.number }}. {{ question.text|truncatechars:70 }}</option>
+            {% endfor %}
+        </select>
+    </div>
+
+    <table class="geo-table geo-sources-table" id="geo-sources">
+        <thead>
+            <tr>
+                <th>Domena</th>
+                <th>Cytowań</th>
+                <th>W pytaniach</th>
+                <th>Rola</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for source in sources %}
+            <tr class="geo-source-row{% if source.is_brand %} geo-source-row-brand{% endif %}"
+                data-domain="{{ source.domain }}" data-questions="{{ source.question_filter }}">
+                <td>
+                    {% if source.safe %}
+                    <a class="link" href="{{ source.url }}" target="_blank" rel="noopener nofollow">{{ source.domain }}</a>
+                    {% else %}
+                    {{ source.domain }}
+                    {% endif %}
+                </td>
+                <td class="geo-cell-rate"><strong>{{ source.count }}</strong></td>
+                <td>{{ source.question_count }}</td>
+                <td>
+                    {% if source.is_brand %}
+                    <span class="status-flag status-ok">Twoja domena</span>
+                    {% else %}
+                    <span class="status-flag geo-stability-absent">Konkurencja</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="4" class="geo-empty">Żadna odpowiedź nie zawierała przypisów.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p class="geo-empty hidden" id="geo-sources-empty">Żadna domena nie pasuje do filtrów.</p>
+</div>
+
+<div class="panel geo-executive">
+    <h2 class="geo-card-heading">Podsumowanie Widoczności AI</h2>
+    <p class="geo-executive-text">
+        Domena <strong>{{ summary.domain }}</strong>
+        (Marka: <strong>{{ summary.brand_name }}</strong>)
+        osiągnęła ogólny wskaźnik widoczności <strong>{{ summary.overall_score }}%</strong>
+        w badaniu AI Engine. Twoja oferta pojawiła się w
+        <strong>{{ summary.totals.visible }} na {{ summary.totals.total }}</strong> odpowiedzi
+        (w tym <strong>{{ summary.totals.linked }}</strong> bezpośrednich odnośników URL
+        oraz <strong>{{ summary.totals.mentions }}</strong> wzmianek o marce bez bezpośredniego linku).
+        {% if summary.top_competitors_list %}
+        Najczęściej cytowanymi konkurentami w Twojej branży były domeny:
+        <strong>{{ summary.top_competitors_list }}</strong>.
+        {% else %}
+        W odpowiedziach bez Twojej domeny model nie przytoczył powtarzalnego zestawu konkurentów.
+        {% endif %}
+    </p>
+
+    <div class="geo-executive-tiles">
+        <div class="geo-executive-tile geo-executive-tile-linked">
+            <span class="geo-executive-number">{{ summary.totals.linked }}</span>
+            <span class="geo-executive-label">Cytowań z linkiem</span>
+            <span class="geo-executive-note">Widoczność, która przynosi ruch</span>
+        </div>
+        <div class="geo-executive-tile geo-executive-tile-mention">
+            <span class="geo-executive-number">{{ summary.totals.mentions }}</span>
+            <span class="geo-executive-label">Wzmianek o marce</span>
+            <span class="geo-executive-note">Model zna markę, ale nie linkuje</span>
+        </div>
+        <div class="geo-executive-tile geo-executive-tile-absent">
+            <span class="geo-executive-number">{{ summary.totals.absent }}</span>
+            <span class="geo-executive-label">Bez obecności</span>
+            <span class="geo-executive-note">Miejsce zajmuje konkurencja</span>
+        </div>
+    </div>
+</div>
 {% endif %}
 
 <script>
@@ -178,31 +311,35 @@
         }, 2000);
     }
 
-    function openModal(id) {
-        var modal = document.getElementById("geo-modal-" + id);
-        if (modal) { modal.hidden = false; document.body.style.overflow = "hidden"; }
-    }
-    function closeModals() {
-        document.querySelectorAll(".geo-modal").forEach(function (modal) { modal.hidden = true; });
-        document.body.style.overflow = "";
-    }
+    var search = document.getElementById("geo-source-search");
+    var questionFilter = document.getElementById("geo-source-question");
+    var table = document.getElementById("geo-sources");
+    if (!search || !questionFilter || !table) { return; }
 
-    document.querySelectorAll(".geo-row").forEach(function (row) {
-        row.addEventListener("click", function () { openModal(row.dataset.query); });
-        row.addEventListener("keydown", function (event) {
-            if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                openModal(row.dataset.query);
-            }
+    var rows = Array.prototype.slice.call(table.querySelectorAll(".geo-source-row"));
+    var empty = document.getElementById("geo-sources-empty");
+
+    function applyFilters() {
+        var fraza = search.value.trim().toLowerCase();
+        var pytanie = questionFilter.value;
+        var widoczne = 0;
+
+        rows.forEach(function (row) {
+            var pasujeFraza = !fraza || row.dataset.domain.toLowerCase().indexOf(fraza) !== -1;
+            // Lista identyfikatorów jest rozdzielona spacjami, więc dokładamy je po
+            // obu stronach - inaczej "q1" pasowałoby także do "q12".
+            var pasujePytanie = !pytanie ||
+                (" " + row.dataset.questions + " ").indexOf(" " + pytanie + " ") !== -1;
+            var pokaz = pasujeFraza && pasujePytanie;
+            row.hidden = !pokaz;
+            if (pokaz) { widoczne += 1; }
         });
-    });
 
-    document.addEventListener("click", function (event) {
-        if (event.target.closest("[data-close]")) { closeModals(); }
-    });
-    document.addEventListener("keydown", function (event) {
-        if (event.key === "Escape") { closeModals(); }
-    });
+        if (empty) { empty.classList.toggle("hidden", widoczne !== 0); }
+    }
+
+    search.addEventListener("input", applyFilters);
+    questionFilter.addEventListener("change", applyFilters);
 })();
 </script>
 {% endblock %}

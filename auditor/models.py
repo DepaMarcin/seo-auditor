@@ -214,6 +214,10 @@ class GeoStudy(models.Model):
         blank=True,
     )
     domain = models.CharField(max_length=253)
+    # Nazwa marki odczytana ze strony (tytuł, og:site_name albo domena). Domena nie
+    # wystarcza: model pisze "Early Stage", a nie "earlystage.pl", więc bez tej nazwy
+    # wzmianki w treści odpowiedzi byłyby niewidoczne dla pomiaru.
+    brand_name = models.CharField(max_length=120, blank=True, default="")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     # Średnia częstość cytowań ze wszystkich pytań, 0-100.
     overall_score = models.IntegerField(default=0)
@@ -292,6 +296,19 @@ class GeoQuery(models.Model):
         return sum(1 for run in self.runs.all() if run.brand_cited)
 
     @property
+    def mention_runs(self) -> int:
+        """Powtórzenia ze wzmianką o marce, ale BEZ odnośnika - rozłączne z `cited_runs`."""
+        return sum(
+            1 for run in self.runs.all()
+            if run.brand_mentioned and not run.brand_cited
+        )
+
+    @property
+    def visible_runs(self) -> int:
+        """Powtórzenia, w których marka pojawiła się w jakiejkolwiek formie."""
+        return sum(1 for run in self.runs.all() if run.brand_cited or run.brand_mentioned)
+
+    @property
     def most_common_position(self) -> str:
         """Najczęstsza pozycja w przypisach - kolumna "Pozycje w źródłach"."""
         if not self.cited_positions:
@@ -305,13 +322,28 @@ class GeoQuery(models.Model):
 class GeoRun(models.Model):
     """Pojedyncze wywołanie modelu - jedno powtórzenie jednego pytania."""
 
+    class Visibility(models.TextChoices):
+        # Domena w przypisach z pełnym odnośnikiem - widoczność, która przynosi ruch.
+        LINKED_CITATION = "linked_citation", "Cytowanie z linkiem"
+        # Marka wymieniona w treści odpowiedzi, ale bez odnośnika. Ruchu nie daje,
+        # ale buduje rozpoznawalność i jest sygnałem, że model o firmie wie.
+        BRAND_MENTION = "brand_mention", "Wzmianka o marce"
+        ABSENT = "absent", "Brak"
+
     query = models.ForeignKey(GeoQuery, on_delete=models.CASCADE, related_name="runs")
     attempt = models.PositiveSmallIntegerField(default=1)
     answer = models.TextField(blank=True, default="")
     # Pełna lista przypisów: [{"url": ..., "domain": ..., "title": ..., "position": n}].
     citations = models.JSONField(default=list, blank=True)
+    # `brand_cited` to nadal WYŁĄCZNIE cytowanie z linkiem - na nim opiera się
+    # punktacja i dotychczasowe wskaźniki, więc jego znaczenie nie może się zmienić.
     brand_cited = models.BooleanField(default=False)
     brand_position = models.PositiveSmallIntegerField(null=True, blank=True)
+    # Wzmianka nazwy marki w treści odpowiedzi, niezależnie od przypisów.
+    brand_mentioned = models.BooleanField(default=False)
+    visibility = models.CharField(
+        max_length=20, choices=Visibility.choices, default=Visibility.ABSENT
+    )
     error = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
 

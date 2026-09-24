@@ -215,16 +215,31 @@ class GeoDetailViewTests(TestCase):
         response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "72%")
-        self.assertContains(response, "Overall GEO Score")
+        # Wynik siedzi w pierścieniu postępu: liczba i znak procentu w osobnych
+        # elementach, żeby dało się je wyskalować niezależnie.
+        self.assertContains(response, "geo-ring-value")
+        self.assertContains(response, "72")
+        self.assertContains(response, "GEO Score")
 
-    def test_table_shows_all_five_columns(self):
+    def test_dashboard_shows_the_main_sections(self):
         response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
 
-        for header in ("Pytanie intencyjne", "Cytowania", "Stabilność",
-                       "Pozycje w źródłach", "Dominujący konkurenci"):
-            with self.subTest(kolumna=header):
-                self.assertContains(response, header)
+        for naglowek in (
+            "Analiza widoczności w wyszukiwarkach AI ukończona!",
+            "Ogólna widoczność",
+            "Powtarzalność w próbach",
+            "Szczegółowe wyniki dla poszczególnych pytań intencyjnych",
+            "Przegląd zacytowanych źródeł i konkurencji",
+        ):
+            with self.subTest(sekcja=naglowek):
+                self.assertContains(response, naglowek)
+
+    def test_header_shows_domain_and_actions(self):
+        response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
+
+        self.assertContains(response, "orlen.pl")
+        self.assertContains(response, "Powrót do GEO Tracker")
+        self.assertContains(response, "Ponów badanie")
 
     def test_row_shows_rate_stability_position_and_competitors(self):
         response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
@@ -234,12 +249,29 @@ class GeoDetailViewTests(TestCase):
         self.assertContains(response, "#1")      # najczęstsza pozycja w przypisach
         self.assertContains(response, "shell.pl")
 
-    def test_modal_holds_the_full_answer_and_citations(self):
+    def test_accordion_holds_the_full_answer_and_citations(self):
         response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
 
-        self.assertContains(response, f'id="geo-modal-{self.query.pk}"')
+        # Odpowiedzi są rozwijane na miejscu - modal z własnym przewijaniem odszedł.
+        self.assertContains(response, f'id="pytanie-{self.query.pk}"')
+        self.assertContains(response, "<details class=\"geo-question\"")
         self.assertContains(response, "Odpowiedź z cytowaniem.")
         self.assertContains(response, "https://orlen.pl/a")
+
+    def test_citations_are_shown_as_domain_pills(self):
+        response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
+
+        # Zamiast pełnego adresu użytkownik widzi czytelną etykietę domeny.
+        self.assertContains(response, "geo-source-pill")
+        self.assertContains(response, "Orlen.pl")
+
+    def test_sources_table_lists_cited_domains_with_filters(self):
+        response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
+
+        self.assertContains(response, 'id="geo-source-search"')
+        self.assertContains(response, 'id="geo-source-question"')
+        self.assertContains(response, 'data-domain="orlen.pl"')
+        self.assertContains(response, "Twoja domena")
 
     def test_foreign_study_returns_404(self):
         obcy = User.objects.create_user(username="obcy", password="haslo-testowe-2")

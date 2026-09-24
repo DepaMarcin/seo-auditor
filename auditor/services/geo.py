@@ -18,6 +18,7 @@ nie powiedziałaby nic o widoczności w wyszukiwarce AI.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from urllib.parse import urlparse
 
@@ -42,6 +43,20 @@ ABSENT_THRESHOLD = 0    # ani razu
 # Ile domen konkurencji pokazujemy w zestawieniu.
 TOP_COMPETITORS = 5
 
+# Jak stary audyt wciąż nadaje się na źródło kontekstu. Oferta firmy zmienia się
+# rzadko, więc dwa tygodnie oszczędzają pobranie bez ryzyka opisania nieaktualnej
+# branży.
+CONTEXT_MAX_AGE_DAYS = 14
+
+# Ile słów treści trafia do promptu. Tyle wystarcza, by rozpoznać branżę, a nie
+# rozdmuchuje kosztu zapytania.
+CONTEXT_SNIPPET_WORDS = 300
+
+# Ile nagłówków bierzemy pod uwagę - nagłówki niosą ofertę gęściej niż tekst ciągły.
+CONTEXT_MAX_HEADINGS = 15
+
+# Prompt bez kontekstu strony: model zna wyłącznie nazwę domeny i musi zgadywać
+# branżę. Zostaje jako ostatnia deska ratunku, gdy strony nie da się pobrać.
 QUESTION_PROMPT = """Jesteś strategiem widoczności w wyszukiwarkach AI (GEO).
 
 Ułóż {count} pytań, które realny klient wpisałby do ChatGPT lub Perplexity, szukając
@@ -54,6 +69,95 @@ Zasady:
 - każde pytanie dotyczy innej intencji (porównanie, wybór, cena, sposób użycia, problem),
 - jedno pytanie w linii, bez numeracji i bez komentarza."""
 
+# Separatory, którymi strony oddzielają nazwę marki od reszty tytułu:
+# "Early Stage | Szkoła językowa dla dzieci".
+BRAND_SEPARATORS = ("|", "—", "–", "-", "·", "»", ":")
+
+# Najkrótsza sensowna nazwa marki. Jednoliterowe fragmenty tytułu to zwykle śmieci
+# po podziale, a nie nazwa firmy.
+MIN_BRAND_LENGTH = 2
+
+# Prompt z kontekstem pobranym ze strony. Różnica jest zasadnicza: bez treści model
+# zgaduje po nazwie domeny i regularnie trafia w pytania o SEO i marketing, bo tak
+# wygląda większość stron, które zna. Z ofertą przed oczami opisuje właściwą branżę.
+CONTEXT_QUESTION_PROMPT = """Jesteś ekspertem ds. analizy intencji zakupowych i wyszukiwań B2B/B2C.
+Oto dane pobrane bezpośrednio ze strony internetowej pod podanym adresem:
+
+URL: {url}
+TYTUŁ: {title}
+OPIS META: {meta_description}
+NAGŁÓWKI: {headers_text}
+FRAGMENT TREŚCI: {body_snippet}
+
+ZADANIE:
+1. Na podstawie powyższych danych zidentyfikuj DOKŁADNĄ branżę, produkty lub usługi
+   oferowane pod tym adresem.
+2. Wygeneruj {count} realistycznych zapytań intencyjnych (porównawczych lub problemowych),
+   jakie potencjalny klient TEJ KONKRETNEJ FIRMY wpisałby do ChatGPT lub Perplexity,
+   szukając takich produktów/usług.
+3. BEZWZGLĘDNY ZAKAZ: Nie używaj nazwy marki ani nazwy własnej firmy w pytaniach.
+4. BEZWZGLĘDNY ZAKAZ: Nie generuj pytań o pozycjonowanie, SEO ani marketing, CHYBA ŻE
+   podany URL to strona agencji marketingowej/SEO.
+5. Zwróć wynik wyłącznie jako tablicę JSON z {count} pytaniami w języku strony."""
+
+# Prompt nastawiony wyłącznie na intencję zakupową. Powód rozdzielenia: pytania
+# poradnikowe ("Jak nauczyć dziecko angielskiego?") model odpowiada artykułami z
+# blogów i poradników, więc firma nie ma szansy zostać zacytowana - pomiar mierzy
+# wtedy widoczność treści eksperckich, a nie widoczność oferty.
+COMMERCIAL_QUESTION_PROMPT = """Jesteś analitykiem intencji zakupowych w wyszukiwarkach AI (ChatGPT, Perplexity).
+Przeanalizuj ofertę strony: {url} (Marka: {brand_name}, Tytuł: {title}, Opis: {meta_description}).
+
+NAGŁÓWKI: {headers_text}
+FRAGMENT TREŚCI: {body_snippet}
+
+ZADANIE:
+Wygeneruj dokładnie {count} pytań, jakie potencjalny KLIENT wpisuje do AI, gdy szuka
+KONKRETNEJ USŁUGI, SZKOŁY LUB PRODUKTU z tej oferty.
+
+KATEGORYCZNE ZASADY:
+1. Pytania MUSZĄ wymuszać na AI rekomendację konkretnych firm lub ofert (używaj:
+   "Jaka szkoła/firma...", "Gdzie zapisać/kupić...", "Które oferty są polecane dla...",
+   "Ranking najlepszych...").
+2. BEZWZGLĘDNY ZAKAZ pytań poradnikowych i teoretycznych ("Jak nauczyć...",
+   "Czy istnieją różnice...", "Jakie są metody...").
+3. BEZWZGLĘDNY ZAKAZ używania nazwy marki ({brand_name}) w pytaniach.
+4. BEZWZGLĘDNY ZAKAZ pytań o pozycjonowanie, SEO ani marketing, CHYBA ŻE podany URL
+   to strona agencji marketingowej/SEO.
+5. Zwróć wynik wyłącznie jako tablicę JSON z {count} stringami w języku strony."""
+
+
+@dataclass
+class SiteContext:
+    """Kontekst branżowy strony: to, co pozwala modelowi rozpoznać ofertę."""
+
+    url: str
+    title: str = ""
+    meta_description: str = ""
+    headings: list[str] = field(default_factory=list)
+    body_snippet: str = ""
+    brand_name: str = ""
+    # "audit" - odczytane z gotowego audytu w bazie, "scan" - pobrane na żywo.
+    source: str = ""
+    error: str = ""
+
+    @property
+    def usable(self) -> bool:
+        """Czy zebrało się cokolwiek, co niesie informację o branży."""
+        return bool(self.title or self.meta_description or self.headings or self.body_snippet)
+
+    def headers_text(self) -> str:
+        return " | ".join(self.headings) if self.headings else "(brak nagłówków)"
+
+    def as_prompt_fields(self) -> dict:
+        return {
+            "url": self.url,
+            "brand_name": self.brand_name or extract_brand_name(self.url) or "(nieznana)",
+            "title": self.title or "(brak tytułu)",
+            "meta_description": self.meta_description or "(brak opisu meta)",
+            "headers_text": self.headers_text(),
+            "body_snippet": self.body_snippet or "(brak treści)",
+        }
+
 
 @dataclass
 class RunResult:
@@ -63,7 +167,22 @@ class RunResult:
     citations: list[dict] = field(default_factory=list)
     brand_cited: bool = False
     brand_position: int | None = None
+    brand_mentioned: bool = False
     error: str = ""
+
+    @property
+    def visibility(self) -> str:
+        """Poziom widoczności marki w tej odpowiedzi.
+
+        Cytowanie z linkiem ma pierwszeństwo: przynosi ruch, a sama wzmianka nie.
+        """
+        from auditor.models import GeoRun
+
+        if self.brand_cited:
+            return GeoRun.Visibility.LINKED_CITATION
+        if self.brand_mentioned:
+            return GeoRun.Visibility.BRAND_MENTION
+        return GeoRun.Visibility.ABSENT
 
 
 class GeoSimulatorError(RuntimeError):
@@ -88,18 +207,230 @@ def _client():
 # ----------------------------------------------------------------------
 # Pytania
 # ----------------------------------------------------------------------
-def generate_questions(domain: str, count: int = DEFAULT_QUESTION_COUNT) -> list[str]:
-    """Układa pytania intencyjne dla domeny. Przy błędzie zwraca pytania zapasowe."""
-    try:
-        response = _client().responses.create(
-            model=QUESTION_MODEL,
-            input=QUESTION_PROMPT.format(count=count, domain=domain),
+def extract_brand_name(url: str, title: str = "", site_name: str = "") -> str:
+    """Odgaduje nazwę marki ze strony.
+
+    Kolejność źródeł od najpewniejszego: `og:site_name` jest deklaracją właściciela,
+    tytuł bywa nazwą sklejoną z opisem oferty, a domena zostaje jako ostatnia deska
+    ratunku. Nazwa jest potrzebna, bo model pisze "Early Stage", nie "earlystage.pl" -
+    bez niej wzmianki w treści odpowiedzi byłyby dla pomiaru niewidoczne.
+    """
+    kandydat = (site_name or "").strip()
+
+    if not kandydat and title:
+        czesci = [title]
+        for separator in BRAND_SEPARATORS:
+            if separator in title:
+                czesci = [fragment.strip() for fragment in title.split(separator)]
+                break
+        czesci = [fragment for fragment in czesci if len(fragment) >= MIN_BRAND_LENGTH]
+        if czesci:
+            # Marka stoi zwykle na skraju tytułu; krótszy skraj to prawie zawsze
+            # nazwa, dłuższy - opis oferty.
+            kandydat = min((czesci[0], czesci[-1]), key=len)
+
+    if not kandydat:
+        kandydat = _brand_from_domain(url)
+
+    return kandydat[:120].strip()
+
+
+def _brand_from_domain(url: str) -> str:
+    """Nazwa z samej domeny: "earlystage.pl" -> "Earlystage"."""
+    domena = normalize_domain(url)
+    if not domena:
+        return ""
+    rdzen = domena.split(".")[0].replace("-", " ")
+    return rdzen[:1].upper() + rdzen[1:]
+
+
+def brand_mention_pattern(brand_name: str) -> re.Pattern | None:
+    """Wzorzec szukający nazwy marki w treści odpowiedzi.
+
+    Dopasowanie na granicach słów, żeby "Early Stage" nie trafiało w środek innego
+    wyrazu, i z elastyczną spacją - model bywa pisze "EarlyStage" łącznie.
+    """
+    nazwa = (brand_name or "").strip()
+    if len(nazwa) < MIN_BRAND_LENGTH:
+        return None
+
+    czesci = [re.escape(fragment) for fragment in nazwa.split() if fragment]
+    if not czesci:
+        return None
+
+    return re.compile(r"\b" + r"[\s\-]*".join(czesci) + r"\b", re.IGNORECASE)
+
+
+def detect_brand_mention(answer: str, brand_name: str) -> bool:
+    """Czy odpowiedź wymienia markę z nazwy."""
+    wzorzec = brand_mention_pattern(brand_name)
+    return bool(wzorzec and answer and wzorzec.search(answer))
+
+
+def get_or_fetch_site_context(url: str, max_age_days: int = CONTEXT_MAX_AGE_DAYS) -> SiteContext:
+    """Zbiera kontekst branżowy strony: najpierw z bazy, potem pobraniem na żywo.
+
+    Kolejność nie jest optymalizacją kosztu, tylko jakości: audyt w bazie przeszedł
+    pełny tor pobierania (rotacja User-Agenta, fallback przeglądarkowy dla stron CSR),
+    więc jego dane bywają bogatsze niż to, co zwróci pojedyncze żądanie.
+    """
+    context = _context_from_recent_audit(url, max_age_days)
+    if context is not None and context.usable:
+        return context
+    return _scan_site(url)
+
+
+def _context_from_recent_audit(url: str, max_age_days: int) -> SiteContext | None:
+    """Kontekst z zakończonego audytu tej samej domeny, o ile jest dostatecznie świeży."""
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from auditor.models import Audit
+
+    domain = normalize_domain(url)
+    if not domain:
+        return None
+
+    cutoff = timezone.now() - timedelta(days=max_age_days)
+    audit = (
+        Audit.objects.filter(
+            url__icontains=domain,
+            status=Audit.Status.COMPLETED,
+            created_at__gte=cutoff,
         )
-        questions = [
-            line.strip(" -•\t")
-            for line in (response.output_text or "").splitlines()
-            if line.strip(" -•\t")
-        ]
+        .order_by("-created_at")
+        .first()
+    )
+    if audit is None:
+        return None
+
+    context = SiteContext(url=url, source="audit")
+    for metric in audit.metrics.filter(key__in=("title", "meta_description", "h1_structure")):
+        payload = metric.value if isinstance(metric.value, dict) else {}
+        if metric.key == "title":
+            context.title = (payload.get("value") or "").strip()
+        elif metric.key == "meta_description":
+            context.meta_description = (payload.get("value") or "").strip()
+        elif metric.key == "h1_structure":
+            context.headings = [h for h in (payload.get("headings") or []) if h][:CONTEXT_MAX_HEADINGS]
+
+    if not context.usable:
+        return None
+
+    context.brand_name = extract_brand_name(url, title=context.title)
+    logger.info("Kontekst GEO dla %s odczytany z audytu #%s.", domain, audit.pk)
+    return context
+
+
+def _scan_site(url: str) -> SiteContext:
+    """Szybkie pobranie strony wyłącznie po to, by rozpoznać branżę.
+
+    Korzystamy ze `SEOScraper`, a nie z gołego `httpx`/`requests`: każdy adres (łącznie
+    z każdym przekierowaniem) musi przejść walidację chroniącą przed SSRF, a strony
+    renderowane po stronie klienta wymagają fallbacku przeglądarkowego - inaczej
+    dostalibyśmy pusty szkielet i znowu zgadywanie branży.
+    """
+    from bs4 import BeautifulSoup
+
+    from .scraper import SEOScraper, ScraperError
+
+    context = SiteContext(url=url, source="scan")
+    try:
+        html = SEOScraper().fetch(url)
+    except ScraperError as exc:
+        logger.warning("Nie udało się pobrać treści %s: %s", url, exc)
+        context.error = str(exc)
+        return context
+    except Exception as exc:  # noqa: BLE001 - awaria pobrania nie może wywrócić panelu
+        logger.warning("Nieoczekiwany błąd pobrania %s: %s", url, exc)
+        context.error = str(exc)
+        return context
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    if soup.title and soup.title.string:
+        context.title = soup.title.string.strip()
+
+    for nazwa in ("description", "og:description", "twitter:description"):
+        tag = soup.find("meta", attrs={"name": nazwa}) or soup.find("meta", attrs={"property": nazwa})
+        if tag and tag.get("content", "").strip():
+            context.meta_description = tag["content"].strip()
+            break
+
+    naglowki = []
+    for poziom in ("h1", "h2", "h3"):
+        for element in soup.find_all(poziom):
+            tekst = element.get_text(" ", strip=True)
+            if tekst:
+                naglowki.append(tekst)
+    context.headings = naglowki[:CONTEXT_MAX_HEADINGS]
+
+    # Skrypty i style trafiłyby do treści jako bełkot i zajęły limit słów.
+    for element in soup(["script", "style", "noscript"]):
+        element.decompose()
+    body = soup.body or soup
+    context.body_snippet = " ".join(body.get_text(" ", strip=True).split()[:CONTEXT_SNIPPET_WORDS])
+
+    site_name_tag = soup.find("meta", attrs={"property": "og:site_name"})
+    site_name = site_name_tag.get("content", "").strip() if site_name_tag else ""
+    context.brand_name = extract_brand_name(url, title=context.title, site_name=site_name)
+
+    if not context.usable:
+        context.error = "Strona nie zawiera treści, z której dałoby się odczytać branżę."
+
+    return context
+
+
+def _parse_question_list(raw: str) -> list[str]:
+    """Wyciąga pytania z odpowiedzi modelu - tablica JSON albo lista w liniach.
+
+    Prosimy o JSON, ale model bywa opakuje go w blok ```json albo zwróci zwykłą listę.
+    Oba warianty są poprawnymi pytaniami, więc nie ma powodu ich odrzucać.
+    """
+    import json
+    import re
+
+    tekst = (raw or "").strip()
+    if not tekst:
+        return []
+
+    blok = re.search(r"\[.*\]", tekst, re.DOTALL)
+    if blok:
+        try:
+            dane = json.loads(blok.group(0))
+        except json.JSONDecodeError:
+            dane = None
+        if isinstance(dane, list):
+            pytania = [str(p).strip() for p in dane if str(p).strip()]
+            if pytania:
+                return pytania
+
+    return [
+        linia.strip(' -•\t"')
+        for linia in tekst.splitlines()
+        if linia.strip(' -•\t"') and not linia.strip().startswith("```")
+    ]
+
+
+def generate_questions(
+    domain: str,
+    count: int = DEFAULT_QUESTION_COUNT,
+    context: SiteContext | None = None,
+) -> list[str]:
+    """Układa pytania intencyjne dla domeny. Przy błędzie zwraca pytania zapasowe.
+
+    `context` pozwala podać gotowy kontekst strony (np. pobrany raz dla całego
+    przepływu). Bez niego pytania powstają na podstawie samej nazwy domeny.
+    """
+    if context is not None and context.usable:
+        prompt = COMMERCIAL_QUESTION_PROMPT.format(count=count, **context.as_prompt_fields())
+    else:
+        prompt = QUESTION_PROMPT.format(count=count, domain=domain)
+
+    try:
+        response = _client().responses.create(model=QUESTION_MODEL, input=prompt)
+        questions = _parse_question_list(response.output_text)
         if questions:
             return questions[:count]
         logger.warning("Model nie zwrócił pytań dla %s - używam zapasowych.", domain)
@@ -125,8 +456,13 @@ def _fallback_questions(domain: str, count: int) -> list[str]:
 # ----------------------------------------------------------------------
 # Pojedyncze zapytanie
 # ----------------------------------------------------------------------
-def ask_once(question: str, domain: str, client=None) -> RunResult:
-    """Zadaje jedno pytanie wyszukiwarce AI i sprawdza, czy domena jest w przypisach."""
+def ask_once(question: str, domain: str, client=None, brand_name: str = "") -> RunResult:
+    """Zadaje jedno pytanie wyszukiwarce AI i mierzy widoczność marki na dwóch poziomach.
+
+    Sam przypis to za mało: model regularnie poleca firmę z nazwy, nie podlinkowując
+    jej. Taka odpowiedź nie daje ruchu, ale znaczy, że marka jest w ogóle obecna w
+    odpowiedziach - i to inna sytuacja niż całkowita nieobecność.
+    """
     try:
         client = client or _client()
         response = client.responses.create(
@@ -143,11 +479,13 @@ def ask_once(question: str, domain: str, client=None) -> RunResult:
 
     citations = _extract_citations(response)
     brand_position = _find_brand_position(citations, domain)
+    answer = (response.output_text or "").strip()
     return RunResult(
-        answer=(response.output_text or "").strip(),
+        answer=answer,
         citations=citations,
         brand_cited=brand_position is not None,
         brand_position=brand_position,
+        brand_mentioned=detect_brand_mention(answer, brand_name),
     )
 
 
@@ -229,7 +567,9 @@ def run_study(study, client=None, on_progress=None) -> None:
             # zostaje częściowy, ale prawdziwy wynik zamiast pustki.
             GeoRun.objects.filter(query=query).delete()
             for attempt in range(1, study.repetitions + 1):
-                result = ask_once(query.text, study.domain, client=client)
+                result = ask_once(
+                    query.text, study.domain, client=client, brand_name=study.brand_name
+                )
                 GeoRun.objects.create(
                     query=query,
                     attempt=attempt,
@@ -237,6 +577,8 @@ def run_study(study, client=None, on_progress=None) -> None:
                     citations=result.citations,
                     brand_cited=result.brand_cited,
                     brand_position=result.brand_position,
+                    brand_mentioned=result.brand_mentioned,
+                    visibility=result.visibility,
                     error=result.error,
                 )
                 done += 1

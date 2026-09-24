@@ -281,7 +281,7 @@ SCRAPER_RENDER_TIMEOUT_SECONDS = float(os.environ.get('SCRAPER_RENDER_TIMEOUT_SE
 # Logowanie użytkowników (django.contrib.auth) - audyty są prywatne, każdy widok
 # wymaga zalogowania (patrz auditor.views).
 LOGIN_URL = 'login'
-LOGIN_REDIRECT_URL = 'auditor:index'
+LOGIN_REDIRECT_URL = 'auditor:hub'
 LOGOUT_REDIRECT_URL = 'login'
 
 

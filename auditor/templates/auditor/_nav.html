@@ -1,41 +1,26 @@
 {% comment %}
-Pasek trzech sekcji aplikacji.
+Pasek narzędziowy dedykowanych paneli: powrót do hubu + skok do pozostałych narzędzi.
 
 Warunek renderowania siedzi WEWNĄTRZ komponentu, a nie w miejscu dołączenia: dzięki
-temu żadne przyszłe `{% include %}` nie pokaże nawigacji tam, gdzie nie powinna się
-pojawić. `nav_visible` i `nav_section` ustawia procesor kontekstu
-`auditor.context_processors.navigation`; widok może nadpisać samo `nav_section`.
+temu żadne przyszłe `{% include %}` nie pokaże paska tam, gdzie nie powinien się
+pojawić - na ekranie logowania ani na samym hubie. `nav_visible` i `nav_other_tools`
+ustawia procesor kontekstu `auditor.context_processors.navigation`.
 {% endcomment %}
 {% if nav_visible %}
-<nav class="main-nav" aria-label="Sekcje aplikacji">
-    <div class="main-nav-inner">
-        <a class="main-nav-item{% if nav_section == 'analytics' %} active{% endif %}"
-           {% if nav_section == 'analytics' %}aria-current="page"{% endif %}
-           href="{% url 'auditor:index' %}">
-            <span class="main-nav-icon" aria-hidden="true">📈</span>
-            <span class="main-nav-text">
-                <span class="main-nav-label">Analityka i Ruch</span>
-                <span class="main-nav-hint">GA4 / GSC</span>
-            </span>
+<nav class="tool-bar" aria-label="Nawigacja narzędzi">
+    <div class="tool-bar-inner">
+        <a class="tool-bar-back" href="{% url 'auditor:hub' %}">
+            <span aria-hidden="true">←</span> Powrót do Hubu narzędzi
         </a>
-        <a class="main-nav-item{% if nav_section == 'technical' %} active{% endif %}"
-           {% if nav_section == 'technical' %}aria-current="page"{% endif %}
-           href="{% url 'auditor:index' %}#audyty">
-            <span class="main-nav-icon" aria-hidden="true">⚙️</span>
-            <span class="main-nav-text">
-                <span class="main-nav-label">Audyt Techniczny</span>
-                <span class="main-nav-hint">Skaner i RAG</span>
-            </span>
-        </a>
-        <a class="main-nav-item{% if nav_section == 'geo' %} active{% endif %}"
-           {% if nav_section == 'geo' %}aria-current="page"{% endif %}
-           href="{% url 'auditor:geo_dashboard' %}">
-            <span class="main-nav-icon" aria-hidden="true">🤖</span>
-            <span class="main-nav-text">
-                <span class="main-nav-label">Widoczność w AI</span>
-                <span class="main-nav-hint">GEO Tracker</span>
-            </span>
-        </a>
+        <div class="tool-bar-switch">
+            <span class="tool-bar-switch-label">Przełącz na:</span>
+            {% for tool in nav_other_tools %}
+            <a class="tool-bar-switch-item" href="{% url tool.url_name %}">
+                <span class="tool-bar-switch-icon" aria-hidden="true">{{ tool.icon }}</span>
+                {{ tool.title }}
+            </a>
+            {% endfor %}
+        </div>
     </div>
 </nav>
 {% endif %}

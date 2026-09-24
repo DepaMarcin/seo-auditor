@@ -1,0 +1,60 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Analityka i Ruch · GA4 / GSC{% endblock %}
+
+{% block content %}
+<div class="panel">
+    <h1>Analityka i Ruch</h1>
+    <p class="tool-panel-intro">
+        Sesje, kliknięcia, CTR i konwersje z Google Analytics 4 oraz Search Console.
+        Dane są przypięte do konkretnego audytu - wybierz, który raport otworzyć.
+    </p>
+
+    {% if connected_audits %}
+    <h2 class="section-heading">Podłączone do GA4</h2>
+    <div class="analytics-list">
+        {% for audit in connected_audits %}
+        <a class="analytics-item analytics-item-connected" href="{% url 'auditor:detail' audit.pk %}#analityka">
+            <span class="analytics-item-main">
+                <span class="analytics-item-url">{{ audit.url }}</span>
+                <span class="analytics-item-meta">
+                    Usługa GA4: {{ audit.ga4_property_id }} · audyt z {{ audit.created_at|date:"j E Y" }}
+                </span>
+            </span>
+            <span class="analytics-item-numbers">
+                <span class="analytics-item-number">{{ audit.ga4_organic_sessions }}</span>
+                <span class="analytics-item-number-label">sesji organicznych</span>
+            </span>
+            <span class="analytics-item-arrow" aria-hidden="true">→</span>
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if pending_audits %}
+    <h2 class="section-heading">Bez podłączonej usługi GA4</h2>
+    <p class="tool-panel-hint">
+        Otwórz raport i połącz konto Google w sekcji GA4, żeby zobaczyć tu dane o ruchu.
+    </p>
+    <div class="analytics-list">
+        {% for audit in pending_audits %}
+        <a class="analytics-item" href="{% url 'auditor:detail' audit.pk %}#analityka">
+            <span class="analytics-item-main">
+                <span class="analytics-item-url">{{ audit.url }}</span>
+                <span class="analytics-item-meta">audyt z {{ audit.created_at|date:"j E Y" }}</span>
+            </span>
+            <span class="analytics-item-badge">Połącz GA4</span>
+            <span class="analytics-item-arrow" aria-hidden="true">→</span>
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {% if not has_any_audit %}
+    <p class="priority-empty">
+        Nie masz jeszcze żadnego audytu. Analityka podpina się do konkretnego raportu,
+        więc zacznij od <a href="{% url 'auditor:index' %}">uruchomienia skanera</a>.
+    </p>
+    {% endif %}
+</div>
+{% endblock %}

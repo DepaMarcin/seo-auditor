@@ -1,0 +1,31 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}SEO Auditor · wybierz narzędzie{% endblock %}
+
+{% block content %}
+{% comment %}
+Cała karta jest jednym linkiem, a "przycisk" to element wizualny wewnątrz niego.
+Zagnieżdżanie <button> lub drugiego <a> w linku dałoby nieprawidłowy HTML i dwa
+przystanki tabulatora na ten sam cel.
+{% endcomment %}
+<div class="hub">
+    <div class="hub-intro">
+        <h1 class="hub-heading">Wybierz narzędzie</h1>
+        <p class="hub-subheading">
+            Trzy niezależne panele. Każdy otwiera się na pełnym ekranie, z powrotem do tego widoku.
+        </p>
+    </div>
+
+    <div class="hub-grid">
+        {% for tool in tools %}
+        <a class="hub-card hub-card-{{ tool.key }}" href="{% url tool.url_name %}">
+            <span class="hub-card-icon" aria-hidden="true">{{ tool.icon }}</span>
+            <span class="hub-card-subtitle">{{ tool.subtitle }}</span>
+            <span class="hub-card-title">{{ tool.title }}</span>
+            <span class="hub-card-description">{{ tool.description }}</span>
+            <span class="hub-card-cta">{{ tool.cta }} <span aria-hidden="true">→</span></span>
+        </a>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
