@@ -77,6 +77,11 @@ BRAND_SEPARATORS = ("|", "—", "–", "-", "·", "»", ":")
 # po podziale, a nie nazwa firmy.
 MIN_BRAND_LENGTH = 2
 
+# Od tej długości nazwa jednoczłonowa może być w treści rozdzielona spacją
+# ("Helendoron" z domeny vs "Helen Doron" w odpowiedzi). Krótsze nazwy zostawiamy
+# sztywne - przy 3-4 literach rozdzielanie dawałoby przypadkowe trafienia.
+MIN_SPLITTABLE_BRAND_LENGTH = 7
+
 # Prompt z kontekstem pobranym ze strony. Różnica jest zasadnicza: bez treści model
 # zgaduje po nazwie domeny i regularnie trafia w pytania o SEO i marketing, bo tak
 # wygląda większość stron, które zna. Z ofertą przed oczami opisuje właściwą branżę.
@@ -249,6 +254,11 @@ def brand_mention_pattern(brand_name: str) -> re.Pattern | None:
 
     Dopasowanie na granicach słów, żeby "Early Stage" nie trafiało w środek innego
     wyrazu, i z elastyczną spacją - model bywa pisze "EarlyStage" łącznie.
+
+    Odwrotny przypadek dotyczy nazw wyprowadzonych z domeny: z "helendoron.pl" wychodzi
+    jednoczłonowe "Helendoron", a model pisze "Helen Doron". Dla dostatecznie długich
+    nazw jednoczłonowych dopuszczamy więc separator między literami - przy tej długości
+    przypadkowe trafienie wymagałoby dokładnie tej samej sekwencji liter.
     """
     nazwa = (brand_name or "").strip()
     if len(nazwa) < MIN_BRAND_LENGTH:
@@ -258,6 +268,9 @@ def brand_mention_pattern(brand_name: str) -> re.Pattern | None:
     if not czesci:
         return None
 
+    if len(czesci) == 1 and len(nazwa) >= MIN_SPLITTABLE_BRAND_LENGTH:
+        czesci = [re.escape(litera) for litera in nazwa]
+
     return re.compile(r"\b" + r"[\s\-]*".join(czesci) + r"\b", re.IGNORECASE)
 
 
@@ -265,6 +278,37 @@ def detect_brand_mention(answer: str, brand_name: str) -> bool:
     """Czy odpowiedź wymienia markę z nazwy."""
     wzorzec = brand_mention_pattern(brand_name)
     return bool(wzorzec and answer and wzorzec.search(answer))
+
+
+# Ilu konkurentów ma sens porównywać. Powyżej tej liczby tabela przestaje być
+# zestawieniem, a staje się listą wszystkich cytowanych domen - od tego jest
+# osobna sekcja źródeł.
+MAX_COMPETITORS = 5
+
+# Ilu rywali typujemy sami, gdy użytkownik nie wskazał nikogo.
+AUTO_COMPETITORS = 3
+
+
+def parse_competitors_input(raw: str | list | None, exclude: str = "") -> list[str]:
+    """Zamienia wpisane domeny konkurentów na znormalizowaną listę.
+
+    Przyjmuje tekst rozdzielony przecinkami, średnikami lub nowymi liniami - użytkownik
+    wkleja te domeny skądkolwiek i nie ma powodu wymagać jednego formatu.
+    """
+    if isinstance(raw, list):
+        surowe = raw
+    else:
+        surowe = re.split(r"[,;\n]+", raw or "")
+
+    wlasna = normalize_domain(exclude)
+    domeny: list[str] = []
+    for fragment in surowe:
+        domena = normalize_domain(str(fragment).strip())
+        # Własna domena na liście rywali dawałaby porównanie z samym sobą.
+        if domena and domena != wlasna and domena not in domeny:
+            domeny.append(domena)
+
+    return domeny[:MAX_COMPETITORS]
 
 
 def get_or_fetch_site_context(url: str, max_age_days: int = CONTEXT_MAX_AGE_DAYS) -> SiteContext:
@@ -607,8 +651,12 @@ def _summarize_query(query, domain: str) -> None:
     runs = list(query.runs.all())
     usable = [run for run in runs if not run.error]
     cited = [run for run in usable if run.brand_cited]
+    # Jedna próba = jeden punkt za OBECNOŚĆ marki: link i sama nazwa liczą się tak
+    # samo, a próba z obojgiem nadal jako jeden punkt. Rozbicie na linki i wzmianki
+    # zostaje informacją szczegółową, nie osobnym procentem.
+    visible = [run for run in usable if run.brand_cited or run.brand_mentioned]
 
-    rate = round(len(cited) / len(usable) * 100) if usable else 0
+    rate = round(len(visible) / len(usable) * 100) if usable else 0
     query.citation_rate = rate
     query.cited_positions = [run.brand_position for run in cited if run.brand_position]
     query.stability = _classify_stability(rate)
@@ -643,5 +691,19 @@ def _classify_stability(rate: int) -> str:
 
 
 def _overall_score(queries) -> int:
-    rates = [q.citation_rate for q in queries]
-    return round(sum(rates) / len(rates)) if rates else 0
+    """Odsetek WSZYSTKICH prób, w których marka była obecna.
+
+    Liczymy globalnie (13 obecności na 25 prób = 52%), a nie jako średnią ze średnich
+    per pytanie: gdy w którymś pytaniu część wywołań padnie, ma ono mniej prób i średnia
+    z procentów dałaby mu tę samą wagę co pytaniu z pełnym kompletem.
+    """
+    visible = total = 0
+    for query in queries:
+        for run in query.runs.all():
+            if run.error:
+                continue
+            total += 1
+            if run.brand_cited or run.brand_mentioned:
+                visible += 1
+
+    return round(visible * 100 / total) if total else 0

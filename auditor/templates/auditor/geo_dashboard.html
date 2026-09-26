@@ -21,6 +21,18 @@
             <button type="submit" id="geo-submit">Uruchom Symulator GEO</button>
         </div>
 
+        <div class="geo-competitors">
+            <label for="geo-competitors">Konkurenci do porównania (opcjonalnie)</label>
+            <input type="text" name="competitors" id="geo-competitors"
+                   class="geo-competitors-input" autocomplete="off" spellcheck="false"
+                   placeholder="np. autos.com.pl, opoltrans.com.pl">
+            <p class="geo-competitors-hint">
+                Podaj 1-5 domen konkurentów, z którymi chcesz porównać swoją widoczność.
+                Jeśli pozostawisz puste, AI automatycznie wytypuje TOP 3 najczęstszych
+                rywali z wyników.
+            </p>
+        </div>
+
         {% if audits %}
         <div class="geo-form-row geo-form-secondary">
             <label for="geo-audit">Powiąż z audytem (opcjonalnie)</label>

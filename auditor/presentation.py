@@ -657,13 +657,142 @@ def build_geo_visibility_totals(queries) -> dict:
                 mentions += 1
 
     visible = linked + mentions
+    # Jedna próba = jeden punkt za obecność, niezależnie od formy. `score` jest TĄ
+    # SAMĄ liczbą, którą pokazuje karta KPI, wiersz w tabeli porównawczej i
+    # podsumowanie - dlatego wyliczamy ją raz, w jednym miejscu.
+    score = round(visible * 100 / total) if total else 0
     return {
         "linked": linked,
         "mentions": mentions,
         "visible": visible,
         "absent": total - visible,
         "total": total,
-        "visible_percent": round(visible * 100 / total) if total else 0,
+        "score": score,
+        "visible_percent": score,
+        "bucket": _geo_score_bucket(score),
+    }
+
+
+def _geo_score_bucket(score: int) -> str:
+    """Kubełek koloru wskaźnika - te same progi co w silniku badania."""
+    from auditor.services.geo import ABSENT_THRESHOLD, STABLE_THRESHOLD
+
+    if score >= STABLE_THRESHOLD:
+        return "stable"
+    if score > ABSENT_THRESHOLD:
+        return "volatile"
+    return "absent"
+
+
+def _usable_runs(queries) -> list:
+    """Wszystkie udane próby badania - podstawa każdego wskaźnika procentowego."""
+    return [run for query in queries for run in query.runs.all() if not run.error]
+
+
+def _score_for_domain(runs: list, domain: str, brand_name: str) -> dict:
+    """Widoczność jednej domeny w zebranych odpowiedziach.
+
+    Liczymy z danych JUŻ zapisanych w bazie, a nie przez ponowne odpytanie modelu:
+    dzięki temu benchmark działa także dla badań wykonanych, zanim ta funkcja
+    powstała, i nie kosztuje ani jednego wywołania API.
+    """
+    from auditor.services.geo import detect_brand_mention
+
+    linked = mentions = 0
+    for run in runs:
+        w_przypisach = any(
+            (citation.get("domain") or "") == domain for citation in run.citations or []
+        )
+        if w_przypisach:
+            linked += 1
+        elif detect_brand_mention(run.answer, brand_name):
+            mentions += 1
+
+    total = len(runs)
+    visible = linked + mentions
+    return {
+        "domain": domain,
+        "brand_name": brand_name,
+        "linked": linked,
+        "mentions": mentions,
+        "visible": visible,
+        "total": total,
+        "score": round(visible * 100 / total) if total else 0,
+    }
+
+
+def _own_score(runs: list, study) -> dict:
+    """Widoczność badanej domeny - z flag zapisanych przez silnik badania.
+
+    Nie przeliczamy jej ponownie z treści odpowiedzi: silnik wykrywał wzmianki znając
+    prawdziwą nazwę marki ze strony, a tutaj mielibyśmy tylko nazwę odgadniętą z domeny.
+    Ta sama liczba musi wyjść w karcie KPI i w tabeli porównawczej.
+    """
+    linked = sum(1 for run in runs if run.brand_cited)
+    mentions = sum(1 for run in runs if run.brand_mentioned and not run.brand_cited)
+    total = len(runs)
+    visible = linked + mentions
+
+    return {
+        "domain": study.domain,
+        "brand_name": study.brand_name or study.domain,
+        "linked": linked,
+        "mentions": mentions,
+        "visible": visible,
+        "total": total,
+        "score": round(visible * 100 / total) if total else 0,
+        "is_brand": True,
+    }
+
+
+def _auto_competitors(runs: list, own_domain: str, limit: int) -> list[str]:
+    """Najczęściej cytowane obce domeny - gdy użytkownik nikogo nie wskazał."""
+    licznik: dict[str, int] = {}
+    for run in runs:
+        # Licząc raz na próbę, a nie raz na przypis, nie premiujemy odpowiedzi,
+        # w których model podlinkował kilka podstron tego samego serwisu.
+        for domena in {c.get("domain") for c in run.citations or [] if c.get("domain")}:
+            if domena != own_domain:
+                licznik[domena] = licznik.get(domena, 0) + 1
+
+    kolejnosc = sorted(licznik.items(), key=lambda pozycja: (-pozycja[1], pozycja[0]))
+    return [domena for domena, _ in kolejnosc[:limit]]
+
+
+def build_geo_benchmark(study, queries) -> dict:
+    """Zestawienie widoczności badanej domeny z konkurencją."""
+    from auditor.services.geo import AUTO_COMPETITORS, extract_brand_name
+
+    runs = _usable_runs(queries)
+    own_domain = study.domain
+
+    wskazani = list(study.competitors_input or [])
+    automatyczni = not wskazani
+    if automatyczni:
+        wskazani = _auto_competitors(runs, own_domain, AUTO_COMPETITORS)
+
+    # Nazwa marki rywala pozwala policzyć wzmianki bez linku - tak samo jak dla
+    # domeny badanej. Bez niej porównanie byłoby nieuczciwe: nam liczylibyśmy
+    # wzmianki, konkurencji już nie.
+    wlasny = _own_score(runs, study)
+
+    rywale = []
+    for domena in wskazani:
+        wiersz = _score_for_domain(runs, domena, extract_brand_name(domena))
+        wiersz["is_brand"] = False
+        rywale.append(wiersz)
+
+    srednia = round(sum(r["score"] for r in rywale) / len(rywale)) if rywale else 0
+
+    return {
+        "own": wlasny,
+        "competitors": rywale,
+        # Badana domena zawsze na górze - to jej dotyczy raport.
+        "rows": [wlasny] + sorted(rywale, key=lambda r: -r["score"]),
+        "average_competitor_score": srednia,
+        "score_delta": wlasny["score"] - srednia if rywale else 0,
+        "auto_selected": automatyczni,
+        "has_competitors": bool(rywale),
     }
 
 
@@ -685,7 +814,10 @@ def build_geo_executive_summary(study, queries) -> dict:
     return {
         "domain": study.domain,
         "brand_name": study.brand_name or study.domain,
-        "overall_score": study.overall_score,
+        # Wynik liczony z prób, nie odczytany z `study.overall_score`: badania
+        # wykonane przed ujednoliceniem punktacji mają tam zapisaną starą wartość
+        # (tylko linki), a raport ma pokazywać jedną, spójną liczbę.
+        "overall_score": totals["score"] if totals["total"] else study.overall_score,
         "totals": totals,
         "top_competitors": [{"domain": d, "count": c} for d, c in top],
         "top_competitors_list": ", ".join(domena for domena, _ in top),

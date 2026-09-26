@@ -33,10 +33,12 @@ from .presentation import (
     MERGED_PAGESPEED_SCORE_KEYS,
     TEAM_BY_CATEGORY,
     annotate_metric_labels,
+    build_geo_benchmark,
     build_geo_executive_summary,
     build_geo_questions,
     build_geo_repetition_stats,
     build_geo_sources,
+    build_geo_visibility_totals,
     build_schema_status_table,
     compute_category_scores,
     extract_pagespeed_summary,
@@ -956,10 +958,13 @@ class GeoVisibilityDashboardView(View):
         # Marka jest potrzebna do wykrywania wzmianek w treści odpowiedzi, więc
         # ustalamy ją także wtedy, gdy użytkownik wpisał pytania sam i kontekstu
         # strony w ogóle nie pobieraliśmy - wtedy wystarczy nazwa z domeny.
-        from auditor.services.geo import extract_brand_name
+        from auditor.services.geo import extract_brand_name, parse_competitors_input
 
         brand_name = context.brand_name if context and context.brand_name else extract_brand_name(
             wpisany_adres or domain
+        )
+        competitors = parse_competitors_input(
+            request.POST.get("competitors", ""), exclude=domain
         )
 
         study = GeoStudy.objects.create(
@@ -967,6 +972,7 @@ class GeoVisibilityDashboardView(View):
             audit=audit,
             domain=domain,
             brand_name=brand_name,
+            competitors_input=competitors,
             repetitions=DEFAULT_REPETITIONS,
         )
         GeoQuery.objects.bulk_create([
@@ -993,7 +999,10 @@ def geo_study_detail(request: HttpRequest, pk: int) -> HttpResponse:
         "questions": build_geo_questions(study, queries),
         "repetition_stats": build_geo_repetition_stats(study, queries),
         "sources": build_geo_sources(study, queries),
+        "benchmark": build_geo_benchmark(study, queries),
         "summary": build_geo_executive_summary(study, queries),
+        # Jedna liczba dla karty KPI, tabeli porównawczej i podsumowania.
+        "visibility": build_geo_visibility_totals(queries),
         "in_progress": study.status in ("pending", "processing"),
     })
 
@@ -1020,6 +1029,7 @@ def geo_study_rerun(request: HttpRequest, pk: int) -> HttpResponse:
         audit=study.audit,
         domain=study.domain,
         brand_name=study.brand_name,
+        competitors_input=study.competitors_input,
         repetitions=study.repetitions,
     )
     GeoQuery.objects.bulk_create([

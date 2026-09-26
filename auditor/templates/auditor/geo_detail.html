@@ -18,6 +18,7 @@ sprowadzało się do przewijania ramki wewnątrz przewijanej strony.
         {% endif %}
         <p class="geo-header-subtitle">
             <strong>{{ study.domain }}</strong>
+            {% if study.brand_name %}· marka <strong>{{ study.brand_name }}</strong>{% endif %}
             · pomiar z {{ study.created_at|date:"j E Y, H:i" }}
             {% if study.finished_at %}· zakończony {{ study.finished_at|date:"H:i" }}{% endif %}
         </p>
@@ -62,20 +63,19 @@ sprowadzało się do przewijania ramki wewnątrz przewijanej strony.
 <div class="geo-metrics-grid">
     <div class="panel geo-metric-card">
         <h2 class="geo-card-heading">Ogólna widoczność</h2>
-        <div class="geo-ring geo-score-{{ study.score_bucket }}"
-             style="--geo-progress: {{ study.overall_score }}">
+        <div class="geo-ring geo-score-{{ visibility.bucket }}"
+             style="--geo-progress: {{ visibility.score }}">
             <div class="geo-ring-inner">
-                <span class="geo-ring-value">{{ study.overall_score }}<span class="geo-ring-percent">%</span></span>
+                <span class="geo-ring-value">{{ visibility.score }}<span class="geo-ring-percent">%</span></span>
                 <span class="geo-ring-label">GEO Score</span>
             </div>
         </div>
         <p class="geo-ring-caption">
-            Średni odsetek powtórzeń, w których wyszukiwarka AI przytoczyła
-            <strong>{{ study.domain }}</strong> jako źródło.
+            Obecna w <strong>{{ visibility.visible }}/{{ visibility.total }}</strong> prób
+            ({{ visibility.linked }} z linkiem · {{ visibility.mentions }} wzmianek bez linku).
         </p>
         <div class="geo-metric-footnotes">
             <span>{{ questions|length }} pytań</span>
-            <span>{{ study.completed_runs }} wywołań</span>
             <span>{{ study.repetitions }} powtórzeń na pytanie</span>
         </div>
     </div>
@@ -102,7 +102,100 @@ sprowadzało się do przewijania ramki wewnątrz przewijanej strony.
             {% endfor %}
         </div>
     </div>
+
+    <div class="panel geo-metric-card">
+        <h2 class="geo-card-heading">Widoczność Konkurencji</h2>
+        {% if benchmark.has_competitors %}
+        <div class="geo-competitor-score">
+            <span class="geo-competitor-value">{{ benchmark.average_competitor_score }}<span class="geo-ring-percent">%</span></span>
+            <span class="geo-ring-label">Średni GEO Score konkurencji</span>
+        </div>
+        <div class="geo-delta-row">
+            {% if benchmark.score_delta > 0 %}
+            <span class="geo-delta geo-delta-up">▲ +{{ benchmark.score_delta }}% wyższa od średniej konkurencji</span>
+            {% elif benchmark.score_delta < 0 %}
+            <span class="geo-delta geo-delta-down">▼ {{ benchmark.score_delta }}% poniżej średniej konkurencji</span>
+            {% else %}
+            <span class="geo-delta geo-delta-even">= wynik równy średniej konkurencji</span>
+            {% endif %}
+        </div>
+        <p class="geo-card-hint geo-competitor-source">
+            {% if benchmark.auto_selected %}
+            Rywale wytypowani automatycznie: najczęściej cytowane obce domeny w tym badaniu.
+            {% else %}
+            Porównanie z domenami wskazanymi przy uruchomieniu badania.
+            {% endif %}
+        </p>
+        <ul class="geo-competitor-list">
+            {% for rywal in benchmark.competitors %}
+            <li class="geo-competitor-item">
+                <span class="geo-competitor-domain">{{ rywal.domain }}</span>
+                <span class="geo-competitor-percent">{{ rywal.score }}%</span>
+            </li>
+            {% endfor %}
+        </ul>
+        <div class="geo-metric-footnotes">
+            <span>Twój wynik: {{ benchmark.own.score }}%</span>
+        </div>
+        {% else %}
+        <p class="geo-empty">
+            Żadna obca domena nie pojawiła się w przypisach, więc nie ma z czym porównać
+            wyniku. Możesz wskazać konkurentów ręcznie przy kolejnym badaniu.
+        </p>
+        {% endif %}
+    </div>
 </div>
+
+{% if benchmark.has_competitors %}
+<div class="panel">
+    <h2 class="geo-card-heading">Porównanie bezpośrednie z konkurencją</h2>
+    <p class="geo-card-hint">
+        Widoczność liczona z tych samych {{ benchmark.own.total }} odpowiedzi dla każdej
+        domeny: osobno odnośniki, osobno wzmianki o marce bez linku.
+    </p>
+
+    <div class="table-scroll">
+        <table class="geo-table geo-benchmark-table">
+            <thead>
+                <tr>
+                    <th>Domena</th>
+                    <th>Status widoczności</th>
+                    <th>Cytowania z linkiem</th>
+                    <th>Wzmianki bez linku</th>
+                    <th>GEO Score %</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in benchmark.rows %}
+                <tr class="geo-benchmark-row{% if row.is_brand %} geo-benchmark-row-brand{% endif %}">
+                    <td>
+                        <strong>{{ row.domain }}</strong>
+                        {% if row.is_brand %}<span class="geo-benchmark-you">Twoja domena</span>{% endif %}
+                    </td>
+                    <td>
+                        {% if row.visible %}
+                        <span class="status-flag status-ok">Obecna w {{ row.visible }}/{{ row.total }}</span>
+                        {% else %}
+                        <span class="status-flag geo-stability-absent">Nieobecna</span>
+                        {% endif %}
+                    </td>
+                    <td class="geo-cell-rate"><strong>{{ row.linked }}</strong></td>
+                    <td class="geo-cell-rate"><strong>{{ row.mentions }}</strong></td>
+                    <td>
+                        <div class="geo-benchmark-score">
+                            <div class="geo-benchmark-track">
+                                <div class="geo-benchmark-bar" style="width: {{ row.score }}%"></div>
+                            </div>
+                            <span class="geo-benchmark-percent">{{ row.score }}%</span>
+                        </div>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
 
 <div class="panel">
     <h2 class="geo-card-heading">Szczegółowe wyniki dla poszczególnych pytań intencyjnych</h2>
@@ -116,11 +209,12 @@ sprowadzało się do przewijania ramki wewnątrz przewijanej strony.
                 <span class="geo-question-text">{{ question.text }}</span>
                 <span class="geo-question-badges">
                     <span class="geo-score-pill geo-score-{{ question.stability }}">
-                        {{ question.cited_runs }}/{{ study.repetitions }} cytowań · {{ question.citation_rate }}%
+                        obecna w {{ question.visible_runs }}/{{ study.repetitions }} · {{ question.citation_rate }}%
                     </span>
-                    {% if question.mention_runs %}
-                    <span class="status-flag geo-mention-flag">+{{ question.mention_runs }} wzmianek</span>
-                    {% endif %}
+                    <span class="geo-question-split">
+                        {{ question.cited_runs }} z linkiem
+                        {% if question.mention_runs %}· {{ question.mention_runs }} bez linku{% endif %}
+                    </span>
                     <span class="status-flag geo-stability geo-stability-{{ question.stability }}">
                         {{ question.stability_label }}
                     </span>

@@ -1862,10 +1862,11 @@
 
         .geo-metrics-grid {
             display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: repeat(3, minmax(0, 1fr));
             gap: 1.25rem;
         }
-        @media (max-width: 900px) { .geo-metrics-grid { grid-template-columns: 1fr; } }
+        @media (max-width: 1100px) { .geo-metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+        @media (max-width: 760px) { .geo-metrics-grid { grid-template-columns: 1fr; } }
         .geo-metric-card { display: flex; flex-direction: column; margin-bottom: 1.25rem; }
         .geo-card-heading { font-size: 1.05rem; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 0.4rem; }
         .geo-card-hint { color: var(--muted); font-size: 0.85rem; margin: 0 0 1.1rem; }
@@ -2130,6 +2131,138 @@
         }
         .geo-executive-label { font-size: 0.86rem; font-weight: 650; color: var(--text); }
         .geo-executive-note { font-size: 0.76rem; color: var(--muted-dim); }
+
+        /* ---------- Benchmark konkurencji ---------- */
+        .geo-competitor-score {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.2rem;
+            padding: 1.6rem 0 1.1rem;
+        }
+        .geo-competitor-value {
+            font-size: 2.9rem;
+            font-weight: 700;
+            line-height: 1;
+            letter-spacing: -0.04em;
+            font-variant-numeric: tabular-nums;
+            color: var(--muted);
+        }
+        .geo-delta-row { display: flex; justify-content: center; margin-bottom: 0.9rem; }
+        .geo-delta {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.3rem 0.8rem;
+            border-radius: 999px;
+            font-size: 0.82rem;
+            font-weight: 650;
+            text-align: center;
+        }
+        .geo-delta-up {
+            color: #34D399;
+            background: rgba(16, 185, 129, 0.13);
+            border: 1px solid rgba(16, 185, 129, 0.33);
+        }
+        .geo-delta-down {
+            color: #F87171;
+            background: rgba(239, 68, 68, 0.13);
+            border: 1px solid rgba(239, 68, 68, 0.33);
+        }
+        .geo-delta-even {
+            color: var(--muted);
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border);
+        }
+        .geo-competitor-source { text-align: center; margin-bottom: 0.9rem; }
+
+        /* Mini-lista rywali w karcie KPI - od razu widac, z kim porownujemy. */
+        .geo-competitor-list {
+            list-style: none;
+            margin: 0 0 0.9rem;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
+        }
+        .geo-competitor-item {
+            display: flex;
+            justify-content: space-between;
+            gap: 0.75rem;
+            padding: 0.3rem 0.6rem;
+            border-radius: var(--radius-sm);
+            background: rgba(255, 255, 255, 0.035);
+            font-size: 0.82rem;
+        }
+        .geo-competitor-domain { color: var(--muted); overflow-wrap: anywhere; }
+        .geo-competitor-percent { font-variant-numeric: tabular-nums; font-weight: 650; flex-shrink: 0; }
+
+        /* Rozbicie obecnosci na linki i wzmianki - informacja szczegolowa,
+           nie osobny procent. */
+        .geo-question-split { font-size: 0.72rem; color: var(--muted-dim); white-space: nowrap; }
+
+        .geo-benchmark-table td, .geo-benchmark-table th { vertical-align: middle; }
+        /* Wiersz badanej domeny musi byc rozpoznawalny bez czytania nazwy. */
+        .geo-benchmark-row-brand {
+            background: rgba(16, 185, 129, 0.08);
+            box-shadow: inset 3px 0 0 #34D399;
+        }
+        .geo-benchmark-you {
+            display: inline-block;
+            margin-left: 0.5rem;
+            padding: 0.08rem 0.5rem;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: #6EE7B7;
+            background: rgba(16, 185, 129, 0.14);
+            border: 1px solid rgba(16, 185, 129, 0.33);
+        }
+        .geo-benchmark-score { display: flex; align-items: center; gap: 0.6rem; min-width: 150px; }
+        .geo-benchmark-track {
+            flex: 1;
+            height: 7px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.07);
+            overflow: hidden;
+        }
+        .geo-benchmark-bar { height: 100%; border-radius: 999px; background: var(--muted); }
+        .geo-benchmark-row-brand .geo-benchmark-bar {
+            background: linear-gradient(90deg, #10B981, #34D399);
+        }
+        .geo-benchmark-percent {
+            font-variant-numeric: tabular-nums;
+            font-weight: 700;
+            font-size: 0.85rem;
+            min-width: 42px;
+            text-align: right;
+        }
+
+        /* Pole konkurentow w formularzu startowym */
+        .geo-competitors { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.3rem; }
+        .geo-competitors label { font-size: 0.85rem; font-weight: 600; color: var(--muted); }
+        .geo-competitors-input {
+            padding: 0.65rem 0.9rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            background: var(--surface-inset);
+            color: var(--text);
+            font: inherit;
+            font-size: 0.9rem;
+            max-width: 560px;
+        }
+        .geo-competitors-input::placeholder { color: var(--muted-dim); }
+        .geo-competitors-input:focus {
+            outline: none;
+            border-color: rgba(0, 230, 118, 0.5);
+            box-shadow: 0 0 0 3px rgba(0, 230, 118, 0.12);
+        }
+        .geo-competitors-hint {
+            margin: 0.15rem 0 0;
+            font-size: 0.8rem;
+            color: var(--muted-dim);
+            max-width: 620px;
+        }
     </style>
 </head>
 <body>

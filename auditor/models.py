@@ -218,6 +218,9 @@ class GeoStudy(models.Model):
     # wystarcza: model pisze "Early Stage", a nie "earlystage.pl", więc bez tej nazwy
     # wzmianki w treści odpowiedzi byłyby niewidoczne dla pomiaru.
     brand_name = models.CharField(max_length=120, blank=True, default="")
+    # Domeny konkurentów wskazane przez użytkownika, np. ["autos.com.pl"]. Pusta lista
+    # znaczy "wytypuj sam" - benchmark bierze wtedy najczęściej cytowane obce domeny.
+    competitors_input = models.JSONField(default=list, blank=True)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     # Średnia częstość cytowań ze wszystkich pytań, 0-100.
     overall_score = models.IntegerField(default=0)
