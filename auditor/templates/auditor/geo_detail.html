@@ -241,11 +241,13 @@ sprowadzało się do przewijania ramki wewnątrz przewijanej strony.
                         {% if run.error %}
                         <span class="status-flag status-error">Błąd</span>
                         {% elif run.brand_cited %}
-                        <span class="status-flag status-ok">Cytowanie z linkiem (#{{ run.brand_position }})</span>
+                        <span class="status-flag status-ok">
+                            {{ run.visibility_label }}{% if run.brand_position %} (#{{ run.brand_position }}){% endif %}
+                        </span>
                         {% elif run.brand_mentioned %}
-                        <span class="status-flag geo-mention-flag">Wzmianka o marce</span>
+                        <span class="status-flag geo-mention-flag">{{ run.visibility_label }}</span>
                         {% else %}
-                        <span class="status-flag geo-stability-absent">Brak cytowania</span>
+                        <span class="status-flag geo-stability-absent">{{ run.visibility_label }}</span>
                         {% endif %}
                     </div>
 

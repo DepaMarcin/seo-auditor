@@ -268,9 +268,11 @@ class GeoQuery(models.Model):
     """Jedno pytanie intencyjne wraz z podsumowaniem wyników jego powtórzeń."""
 
     class Stability(models.TextChoices):
-        STABLE = "stable", "STABLE"
-        VOLATILE = "volatile", "VOLATILE"
-        ABSENT = "absent", "ABSENT"
+        # Progi w auditor.services.geo: STABILNA od 80% (4 z 5 prób), NIERÓWNOMIERNA
+        # dla czegokolwiek powyżej zera, BRAK CYTOWANIA przy zerowej obecności.
+        STABLE = "stable", "Stabilna"
+        VOLATILE = "volatile", "Nierównomierna"
+        ABSENT = "absent", "Brak cytowania"
 
     study = models.ForeignKey(GeoStudy, on_delete=models.CASCADE, related_name="queries")
     text = models.TextField()
@@ -331,7 +333,7 @@ class GeoRun(models.Model):
         # Marka wymieniona w treści odpowiedzi, ale bez odnośnika. Ruchu nie daje,
         # ale buduje rozpoznawalność i jest sygnałem, że model o firmie wie.
         BRAND_MENTION = "brand_mention", "Wzmianka o marce"
-        ABSENT = "absent", "Brak"
+        ABSENT = "absent", "Brak cytowania"
 
     query = models.ForeignKey(GeoQuery, on_delete=models.CASCADE, related_name="runs")
     attempt = models.PositiveSmallIntegerField(default=1)

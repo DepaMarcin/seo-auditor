@@ -245,7 +245,8 @@ class GeoDetailViewTests(TestCase):
         response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
 
         self.assertContains(response, "Jakie firmy oferują karty paliwowe?")
-        self.assertContains(response, "STABLE")
+        # Etykieta jest po polsku; kapitaliki daje CSS (`status-flag`).
+        self.assertContains(response, "Stabilna")
         self.assertContains(response, "#1")      # najczęstsza pozycja w przypisach
         self.assertContains(response, "shell.pl")
 

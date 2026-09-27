@@ -8,6 +8,7 @@ bo prowadzą do innych działań.
 from __future__ import annotations
 
 import json
+import re
 import socket
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -25,6 +26,9 @@ from auditor.presentation import (
 )
 from auditor.services.geo import (
     COMMERCIAL_QUESTION_PROMPT,
+    MARKET_INSTRUCTION,
+    STABLE_THRESHOLD,
+    _classify_stability,
     SiteContext,
     ask_once,
     detect_brand_mention,
@@ -946,3 +950,167 @@ class ScoreConsistencyRenderingTests(TestCase):
         naglowek = html.split('class="geo-header-subtitle"', 1)[1][:300]
         self.assertIn("earlystage.pl", naglowek)
         self.assertIn("Early Stage", naglowek)
+
+
+class StabilityLabelTests(SimpleTestCase):
+    """Statusy pytania po polsku, z progami zgodnymi z opisem w raporcie."""
+
+    def test_stable_label(self):
+        self.assertEqual(
+            GeoQuery.Stability.STABLE.label, "Stabilna"
+        )
+
+    def test_volatile_label(self):
+        self.assertEqual(
+            GeoQuery.Stability.VOLATILE.label, "Nierównomierna"
+        )
+
+    def test_absent_label(self):
+        self.assertEqual(
+            GeoQuery.Stability.ABSENT.label, "Brak cytowania"
+        )
+
+    def test_no_english_labels_are_left(self):
+        etykiety = [wybor.label for wybor in GeoQuery.Stability]
+
+        for angielska in ("STABLE", "VOLATILE", "ABSENT"):
+            self.assertNotIn(angielska, etykiety)
+
+    def test_four_out_of_five_is_stable(self):
+        # 4/5 = 80%, czyli dokładnie próg stabilności.
+        self.assertEqual(STABLE_THRESHOLD, 80)
+        self.assertEqual(_classify_stability(80), GeoQuery.Stability.STABLE)
+        self.assertEqual(_classify_stability(100), GeoQuery.Stability.STABLE)
+
+    def test_one_to_three_out_of_five_is_volatile(self):
+        for rate in (20, 40, 60):
+            with self.subTest(rate=rate):
+                self.assertEqual(_classify_stability(rate), GeoQuery.Stability.VOLATILE)
+
+    def test_zero_is_absent(self):
+        self.assertEqual(_classify_stability(0), GeoQuery.Stability.ABSENT)
+
+
+class VisibilityLabelTests(SimpleTestCase):
+    """Etykiety pojedynczej próby w akordeonie."""
+
+    def test_all_three_labels_are_polish(self):
+        self.assertEqual(
+            GeoRun.Visibility.LINKED_CITATION.label, "Cytowanie z linkiem"
+        )
+        self.assertEqual(GeoRun.Visibility.BRAND_MENTION.label, "Wzmianka o marce")
+        self.assertEqual(GeoRun.Visibility.ABSENT.label, "Brak cytowania")
+
+
+class LabelRenderingTests(TestCase):
+    """Etykiety wyrenderowane na dashboardzie pochodzą z modelu."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = get_user_model().objects.create_user(
+            username="geo-etykiety",
+            password="haslo-kontrolne-1",
+        )
+        cls.study = GeoStudy.objects.create(
+            owner=cls.user, domain="earlystage.pl", brand_name="Early Stage",
+            status=GeoStudy.Status.COMPLETED, repetitions=3,
+        )
+        query = GeoQuery.objects.create(
+            study=cls.study, text="Jaka szkoła językowa?", position=1,
+            citation_rate=67, stability=GeoQuery.Stability.VOLATILE,
+        )
+        GeoRun.objects.create(
+            query=query, attempt=1, answer="Polecam Early Stage.",
+            citations=[{"url": "https://earlystage.pl/", "domain": "earlystage.pl", "position": 1}],
+            brand_cited=True, brand_mentioned=True, brand_position=1,
+            visibility=GeoRun.Visibility.LINKED_CITATION,
+        )
+        GeoRun.objects.create(
+            query=query, attempt=2, answer="Warto rozważyć Early Stage.",
+            citations=[{"url": "https://helendoron.pl/", "domain": "helendoron.pl", "position": 1}],
+            brand_cited=False, brand_mentioned=True,
+            visibility=GeoRun.Visibility.BRAND_MENTION,
+        )
+        GeoRun.objects.create(
+            query=query, attempt=3, answer="Polecam Helen Doron.",
+            citations=[{"url": "https://helendoron.pl/", "domain": "helendoron.pl", "position": 1}],
+            brand_cited=False, brand_mentioned=False,
+            visibility=GeoRun.Visibility.ABSENT,
+        )
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+    def test_question_status_is_polish(self):
+        response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
+
+        self.assertContains(response, "Nierównomierna")
+        self.assertNotContains(response, "VOLATILE")
+
+    def test_run_statuses_are_polish(self):
+        response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
+
+        self.assertContains(response, "Cytowanie z linkiem")
+        self.assertContains(response, "Wzmianka o marce")
+        self.assertContains(response, "Brak cytowania")
+
+    def test_linked_run_keeps_its_position(self):
+        response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
+
+        self.assertContains(response, "(#1)")
+
+    def test_page_has_no_english_status_names(self):
+        html = self.client.get(
+            reverse("auditor:geo_detail", args=[self.study.pk])
+        ).content.decode()
+
+        # Klucze techniczne zostają w klasach CSS, ale nie w treści widocznej
+        # dla użytkownika.
+        widoczny = re.sub(r"<style.*?</style>", "", html, flags=re.DOTALL)
+        widoczny = re.sub(r"<[^>]+>", " ", widoczny)
+        for angielska in ("STABLE", "VOLATILE", "ABSENT"):
+            with self.subTest(etykieta=angielska):
+                self.assertNotIn(angielska, widoczny)
+
+
+class PolishMarketPromptTests(SimpleTestCase):
+    """Badanie pyta o rynek polski, nie o globalny."""
+
+    def _client(self) -> MagicMock:
+        client = MagicMock()
+        client.responses.create.return_value = SimpleNamespace(
+            output_text="Polecam Early Stage.", output=[]
+        )
+        return client
+
+    def test_instruction_names_poland_and_forbids_foreign_companies(self):
+        self.assertIn("RYNKU POLSKIEGO", MARKET_INSTRUCTION)
+        self.assertIn("działających w Polsce", MARKET_INSTRUCTION)
+        self.assertIn("Nigdy nie podawaj firm ani usług z USA", MARKET_INSTRUCTION)
+
+    def test_every_query_carries_the_market_instruction(self):
+        client = self._client()
+
+        ask_once("Jaka szkoła językowa dla dzieci?", "earlystage.pl", client=client)
+
+        self.assertEqual(
+            client.responses.create.call_args.kwargs["instructions"], MARKET_INSTRUCTION
+        )
+
+    def test_question_text_is_sent_unchanged(self):
+        # Pytanie jest tym, co mierzymy - instrukcja rynkowa nie może go przerabiać.
+        client = self._client()
+        pytanie = "Gdzie zapisać sześciolatka na angielski?"
+
+        ask_once(pytanie, "earlystage.pl", client=client)
+
+        self.assertEqual(client.responses.create.call_args.kwargs["input"], pytanie)
+
+    def test_web_search_stays_required(self):
+        client = self._client()
+
+        ask_once("Jaka szkoła?", "earlystage.pl", client=client)
+
+        kwargs = client.responses.create.call_args.kwargs
+        self.assertEqual(kwargs["tool_choice"], "required")
+        self.assertEqual(kwargs["tools"], [{"type": "web_search"}])

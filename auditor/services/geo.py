@@ -36,6 +36,18 @@ QUESTION_MODEL = "gpt-4o-mini"
 DEFAULT_QUESTION_COUNT = 5
 DEFAULT_REPETITIONS = 5
 
+# Instrukcja rynkowa dla modelu odpytywanego w badaniu. Bez niej `web_search` zwraca
+# w odpowiedzi na polskie pytanie mieszankę firm polskich i zagranicznych, a wtedy
+# pomiar jest bezwartościowy: marka konkuruje o przypis z serwisami, które i tak nie
+# obsługują polskiego klienta, a lista "konkurentów" wypełnia się obcymi domenami.
+MARKET_INSTRUCTION = (
+    "Jesteś asystentem odpowiadającym na pytania w kontekście RYNKU POLSKIEGO (Polska). "
+    "Wszystkie rekomendowane firmy, usługi, produkty, adresy stron i źródła MUSZĄ "
+    "dotyczyć wyłącznie firm działających w Polsce i oferty na rynek polski. "
+    "Nigdy nie podawaj firm ani usług z USA ani innych krajów, chyba że użytkownik "
+    "wprost w pytaniu poprosi o inny kraj."
+)
+
 # Progi klasyfikacji stabilności obecności w odpowiedziach.
 STABLE_THRESHOLD = 80   # cytowana w co najmniej 80% powtórzeń
 ABSENT_THRESHOLD = 0    # ani razu
@@ -515,6 +527,9 @@ def ask_once(question: str, domain: str, client=None, brand_name: str = "") -> R
             # Wymuszamy wyszukiwanie: bez tego model bywa odpowiada z pamięci i nie
             # zwraca żadnych przypisów, a wtedy pomiar widoczności nie ma podstaw.
             tool_choice="required",
+            # Rynek zawężamy instrukcją, a nie dopiskiem w treści pytania: pytanie ma
+            # brzmieć dokładnie tak, jak wpisałby je klient, bo to ono jest mierzone.
+            instructions=MARKET_INSTRUCTION,
             input=question,
         )
     except Exception as exc:
