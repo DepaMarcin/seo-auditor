@@ -1,0 +1,17 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Zbyt wiele prób logowania — SEO Auditor{% endblock %}
+
+{% block content %}
+<div class="panel login-panel">
+    <h1>Zbyt wiele prób logowania</h1>
+    <p class="login-error">
+        Z tego adresu wykonano zbyt wiele nieudanych prób. Odczekaj kilkanaście minut
+        i spróbuj ponownie.
+    </p>
+    <p class="priority-empty">
+        Jeśli nie pamiętasz hasła, poproś administratora o jego zresetowanie —
+        aplikacja nie wysyła wiadomości e-mail.
+    </p>
+</div>
+{% endblock %}

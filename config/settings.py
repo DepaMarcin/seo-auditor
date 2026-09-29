@@ -65,6 +65,56 @@ if not DEBUG:
             'nie mogą być przechowywane w bazie jawnym tekstem. Wygeneruj klucz:\n'
             '  python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"'
         )
+elif not TOKEN_ENCRYPTION_KEY:
+    # Lokalnie brak klucza nie przerywa pracy, ale od razu podajemy gotowy do wklejenia.
+    # Świadomie NIE używamy go do szyfrowania: klucz wygenerowany przy starcie zniknąłby
+    # przy restarcie, a razem z nim dostęp do wszystkiego, co nim zaszyfrowano.
+    from cryptography.fernet import Fernet as _Fernet
+
+    print(
+        '\n[SEO Auditor] Brak TOKEN_ENCRYPTION_KEY - tokeny OAuth będą zapisywane jawnie.\n'
+        'Dopisz do pliku .env:\n'
+        f'  TOKEN_ENCRYPTION_KEY={_Fernet.generate_key().decode()}\n'
+        'a następnie zaszyfruj istniejące tokeny: python manage.py encrypt_tokens\n'
+    )
+
+
+# ----------------------------------------------------------------------
+# Sesje i ciasteczka - niezależnie od środowiska
+# ----------------------------------------------------------------------
+# HttpOnly odcina ciasteczka od JavaScriptu: skrypt wstrzyknięty przez XSS nie odczyta
+# ani identyfikatora sesji, ani tokenu CSRF. Na token CSRF możemy sobie na to pozwolić,
+# bo żaden skrypt w tej aplikacji go z ciasteczka nie czyta - wszystkie żądania AJAX
+# biorą go z ukrytego pola formularza.
+SESSION_COOKIE_HTTPONLY = True
+CSRF_COOKIE_HTTPONLY = True
+
+# Ciasteczko sesji ginie przy zamknięciu przeglądarki. Raporty zawierają dane
+# analityczne klientów, więc porzucona sesja na współdzielonym komputerze nie powinna
+# przetrwać do następnego uruchomienia.
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+
+# Górna granica życia sesji po stronie serwera: nawet nieprzerwanie otwarta przeglądarka
+# wymusi ponowne logowanie po dobie.
+SESSION_COOKIE_AGE = 86_400
+
+# Ciasteczka nie wychodzą przy żądaniach z innych witryn - dodatkowa warstwa nad CSRF.
+SESSION_COOKIE_SAMESITE = 'Lax'
+CSRF_COOKIE_SAMESITE = 'Lax'
+
+# Nagłówki ochronne działają tak samo lokalnie i na produkcji - nie ma powodu
+# testować aplikacji w słabszej konfiguracji, niż będzie działać.
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+
+# Limit rozmiaru formularza: bez niego pojedyncze żądanie z ogromnym polem tekstowym
+# potrafi wypełnić pamięć procesu.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 5 * 1024 * 1024
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 200
+
+# Limit prób logowania (auditor.ratelimit) - patrz `LoginRateLimitMixin` w config.urls.
+LOGIN_RATE_LIMIT_COUNT = int(os.environ.get('LOGIN_RATE_LIMIT_COUNT', '10'))
+LOGIN_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get('LOGIN_RATE_LIMIT_WINDOW_SECONDS', '900'))
 
 
 # Application definition
@@ -95,7 +145,10 @@ ROOT_URLCONF = 'config.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        # Katalog projektowy ma pierwszeństwo przed szablonami aplikacji - to
+        # jedyny sposób, żeby nadpisać szablon panelu admina, skoro
+        # `django.contrib.admin` stoi w INSTALLED_APPS przed `auditor`.
+        'DIRS': [BASE_DIR / 'templates'],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -280,6 +333,14 @@ SCRAPER_RENDER_TIMEOUT_SECONDS = float(os.environ.get('SCRAPER_RENDER_TIMEOUT_SE
 
 # Logowanie użytkowników (django.contrib.auth) - audyty są prywatne, każdy widok
 # wymaga zalogowania (patrz auditor.views).
+# Logowanie adresem e-mail. `ModelBackend` zostaje jako drugi w kolejności - bez
+# niego przestałyby działać konta techniczne zakładane przez `createsuperuser`
+# z nazwą użytkownika inną niż adres.
+AUTHENTICATION_BACKENDS = [
+    'auditor.auth_backends.EmailBackend',
+    'django.contrib.auth.backends.ModelBackend',
+]
+
 LOGIN_URL = 'login'
 LOGIN_REDIRECT_URL = 'auditor:hub'
 LOGOUT_REDIRECT_URL = 'login'

@@ -16,13 +16,33 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.contrib.auth import views as auth_views
-from django.urls import include, path
+from django.urls import include, path, reverse_lazy
+
+from auditor.auth_views import ThrottledLoginView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     # Wbudowane widoki uwierzytelniania - audyty są prywatne (patrz Audit.owner),
     # więc każdy widok aplikacji wymaga zalogowania.
-    path('login/', auth_views.LoginView.as_view(), name='login'),
+    path('login/', ThrottledLoginView.as_view(), name='login'),
     path('logout/', auth_views.LogoutView.as_view(), name='logout'),
+    # Zmiana własnego hasła. Reset hasła innym użytkownikom robi administrator
+    # w panelu /admin/ - aplikacja nie wysyła maili, więc wariant "zapomniałem
+    # hasła" nie miałby jak zadziałać.
+    path(
+        'change-password/',
+        auth_views.PasswordChangeView.as_view(
+            template_name='registration/change_password.html',
+            success_url=reverse_lazy('password_change_done'),
+        ),
+        name='password_change',
+    ),
+    path(
+        'change-password/done/',
+        auth_views.PasswordChangeDoneView.as_view(
+            template_name='registration/change_password_done.html',
+        ),
+        name='password_change_done',
+    ),
     path('', include('auditor.urls')),
 ]

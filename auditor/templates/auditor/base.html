@@ -78,6 +78,24 @@
             cursor: pointer;
         }
         .logout-button:hover { color: var(--text); border-color: var(--muted); }
+        .header-link {
+            color: var(--muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 600;
+            padding: 0.35rem 0.6rem;
+            border-radius: var(--radius-sm);
+            transition: color var(--transition), background var(--transition);
+        }
+        .header-link:hover { color: var(--text); background: rgba(255, 255, 255, 0.05); }
+        /* Konto administratora ma inne uprawnienia niż reszta - link to sygnalizuje. */
+        .header-link-admin { color: #C4B5FD; }
+        .header-link-admin:hover { color: #DDD6FE; background: rgba(139, 92, 246, 0.12); }
+
+        .password-errors { margin: 0; padding-left: 1.1rem; }
+        .password-help { color: var(--muted-dim); font-size: 0.78rem; line-height: 1.5; }
+        .password-help ul { margin: 0.2rem 0 0; padding-left: 1.1rem; }
+        .password-back { margin: 1.25rem 0 0; font-size: 0.85rem; }
 
         .login-panel { max-width: 420px; margin: 3rem auto; }
         .login-form { display: flex; flex-direction: column; gap: 0.4rem; margin-top: 1.25rem; }
@@ -2271,6 +2289,10 @@
     {% if user_panel_visible %}
     <div class="header-user">
         <span class="header-username">{{ user.get_username }}</span>
+        {% if user.is_superuser %}
+        <a class="header-link header-link-admin" href="{% url 'admin:index' %}">Panel Admina</a>
+        {% endif %}
+        <a class="header-link" href="{% url 'password_change' %}">Zmień hasło</a>
         <form method="post" action="{% url 'logout' %}" class="logout-form">
             {% csrf_token %}
             <button type="submit" class="logout-button">Wyloguj</button>

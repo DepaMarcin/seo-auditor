@@ -90,13 +90,35 @@ TEMPLATE_SLOTS = [
 ]
 
 
+def _visible_audits(request: HttpRequest):
+    """Audyty widoczne dla tego użytkownika.
+
+    Superużytkownik widzi wszystkie - to konto administracyjne, które i tak ma dostęp
+    do każdego rekordu przez panel /admin/. Zwykły użytkownik wyłącznie swoje.
+    """
+    queryset = Audit.objects.all()
+    if not request.user.is_superuser:
+        queryset = queryset.filter(owner=request.user)
+    return queryset
+
+
+def _visible_geo_studies(request: HttpRequest):
+    """Badania GEO widoczne dla tego użytkownika - ta sama zasada co przy audytach."""
+    from auditor.models import GeoStudy
+
+    queryset = GeoStudy.objects.all()
+    if not request.user.is_superuser:
+        queryset = queryset.filter(owner=request.user)
+    return queryset
+
+
 def _get_owned_audit(request: HttpRequest, pk: int) -> Audit:
-    """Pobiera audyt należący do zalogowanego użytkownika albo zwraca 404.
+    """Pobiera audyt widoczny dla zalogowanego użytkownika albo zwraca 404.
 
     Świadomie 404, a nie 403: brak audytu i brak uprawnień muszą wyglądać identycznie,
     żeby nie dało się przez kod odpowiedzi ustalić, które identyfikatory istnieją.
     """
-    return get_object_or_404(Audit, pk=pk, owner=request.user)
+    return get_object_or_404(_visible_audits(request), pk=pk)
 
 
 @method_decorator(login_required, name="dispatch")
@@ -125,7 +147,7 @@ class AnalyticsPanelView(View):
     template_name = "auditor/analytics.html"
 
     def get(self, request: HttpRequest) -> HttpResponse:
-        audits = Audit.objects.filter(owner=request.user).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
+        audits = _visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
 
         connected, pending = [], []
         for audit in audits:
@@ -172,7 +194,7 @@ def index(request: HttpRequest) -> HttpResponse:
         enqueue_audit(audit.pk)
         return redirect("auditor:detail", pk=audit.pk)
 
-    audits = Audit.objects.filter(owner=request.user).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
+    audits = _visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
     return render(
         request,
         "auditor/index.html",
@@ -886,9 +908,7 @@ def _owned_geo_study(request: HttpRequest, pk: int):
     Ta sama zasada co przy audytach: badanie zawiera dane konkurencyjne klienta,
     więc znajomość identyfikatora nie może wystarczać do jego odczytania.
     """
-    from auditor.models import GeoStudy
-
-    return get_object_or_404(GeoStudy, pk=pk, owner=request.user)
+    return get_object_or_404(_visible_geo_studies(request), pk=pk)
 
 
 @method_decorator(login_required, name="dispatch")
@@ -901,14 +921,14 @@ class GeoVisibilityDashboardView(View):
         from auditor.models import GeoStudy
 
         studies = (
-            GeoStudy.objects.filter(owner=request.user)
+            _visible_geo_studies(request)
             .select_related("audit")
             .prefetch_related("queries")[:20]
         )
         return render(request, self.template_name, {
             "nav_section": "geo",
             "studies": studies,
-            "audits": Audit.objects.filter(owner=request.user)[:20],
+            "audits": _visible_audits(request)[:20],
             "default_questions": [],
         })
 

@@ -30,16 +30,26 @@ def _bucket_key(request: HttpRequest, scope: str) -> str:
     return f"ratelimit:{scope}:ip:{_client_ip(request)}"
 
 
-def is_rate_limited(request: HttpRequest, scope: str = "audit") -> bool:
+def is_rate_limited(
+    request: HttpRequest,
+    scope: str = "audit",
+    limit: int | None = None,
+    window: int | None = None,
+) -> bool:
     """Rejestruje próbę i zwraca True, gdy limit został przekroczony.
 
     Licznik działa w oknie kroczącym o stałym początku: pierwsze żądanie zakłada klucz z
     TTL równym długości okna, kolejne go inkrementują. Po wygaśnięciu klucza limit
     zaczyna się od nowa - to celowe uproszczenie, w zupełności wystarczające do ochrony
     budżetu API (nie jest to mechanizm bezpieczeństwa przed atakiem rozproszonym).
+
+    `limit` i `window` pozwalają zawęzić okno dla konkretnego zastosowania - próby
+    logowania wymagają ostrzejszego progu niż uruchamianie audytów.
     """
-    limit = getattr(settings, "AUDIT_RATE_LIMIT_COUNT", 10)
-    window = getattr(settings, "AUDIT_RATE_LIMIT_WINDOW_SECONDS", 3600)
+    if limit is None:
+        limit = getattr(settings, "AUDIT_RATE_LIMIT_COUNT", 10)
+    if window is None:
+        window = getattr(settings, "AUDIT_RATE_LIMIT_WINDOW_SECONDS", 3600)
     if limit <= 0:
         return False
 
@@ -52,6 +62,32 @@ def is_rate_limited(request: HttpRequest, scope: str = "audit") -> bool:
         current = cache.incr(key)
     except ValueError:
         # Klucz wygasł pomiędzy add() a incr() - traktujemy jako początek nowego okna.
+        cache.set(key, 1, window)
+        return False
+
+    return current > limit
+
+
+def is_login_rate_limited(request: HttpRequest) -> bool:
+    """Czy adres przekroczył limit prób logowania.
+
+    Bez tego widok logowania przyjmuje dowolną liczbę haseł na minutę, a jedyną
+    przeszkodą dla zgadywania jest siła hasła. Liczymy wyłącznie po adresie IP -
+    przy nieudanej próbie nie wiadomo jeszcze, czyje konto jest atakowane, a licznik
+    per konto pozwalałby zablokować cudzy dostęp samym zgadywaniem.
+    """
+    limit = getattr(settings, "LOGIN_RATE_LIMIT_COUNT", 10)
+    window = getattr(settings, "LOGIN_RATE_LIMIT_WINDOW_SECONDS", 900)
+    if limit <= 0:
+        return False
+
+    key = f"ratelimit:login:ip:{_client_ip(request)}"
+    if cache.add(key, 1, window):
+        return False
+
+    try:
+        current = cache.incr(key)
+    except ValueError:
         cache.set(key, 1, window)
         return False
 
