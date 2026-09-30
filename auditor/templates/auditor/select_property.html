@@ -5,15 +5,26 @@
 {% block content %}
 <div class="panel">
     <p><a class="link" href="{% url 'auditor:detail' audit.pk %}">&larr; Wróć do audytu</a></p>
-    <h1>Wybierz usługę Google Analytics 4</h1>
+    <h1>Konfiguracja Google Analytics dla: {{ audit.url }}</h1>
     <p class="priority-empty">
-        To konto Google ma dostęp do kilku usług GA4. Wybierz tę, która odpowiada domenie
-        <strong>{{ audit.url }}</strong>, żeby pobrać dane o ruchu organicznym.
+        To konto Google ma dostęp do kilku usług GA4. Wybierz tę, która odpowiada
+        tej domenie, żeby pobrać dane o ruchu organicznym.
     </p>
 
-    <form method="post" class="ga4-select-form" id="ga4-select-property-form">
+    {% comment %}
+    Jawne `action` z numerem audytu, a nie POST na bieżący adres: strona wyboru bywa
+    otwarta pod adresem innego audytu (przycisk wstecz, dwie karty), a wtedy formularz
+    bez `action` przypisałby wybraną usługę nie temu audytowi, który widać w nagłówku.
+    {% endcomment %}
+    <form method="post" action="{% url 'auditor:assign_google_services' audit.pk %}"
+          class="ga4-select-form" id="ga4-select-property-form">
         {% csrf_token %}
-        <select name="property_id" required>
+        {# Po autoryzacji wracamy do raportu audytu, nie do listy - stamtąd przyszedł. #}
+        <input type="hidden" name="next" value="detail">
+        {# Witryna Search Console zostaje dopasowana po domenie; ekran po OAuth pyta
+           wyłącznie o usługę GA4, żeby nie mnożyć decyzji w jednym kroku. #}
+        <input type="hidden" name="gsc_site_url" value="{{ audit.gsc_site_url }}">
+        <select name="ga4_property_id" required>
             <option value="" disabled {% if not has_auto_selected %}selected{% endif %}>-- wybierz usługę --</option>
             {% for prop in properties %}
             <option value="{{ prop.property_id }}" {% if prop.auto_selected %}selected{% endif %}>

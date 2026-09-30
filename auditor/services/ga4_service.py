@@ -552,6 +552,9 @@ class GA4OAuthService:
                     properties.append({
                         "property_id": property_id,
                         "display_name": property_summary.display_name,
+                        # Nazwa konta rozróżnia usługi o tej samej nazwie na
+                        # kilku kontach - przy agencji to codzienność.
+                        "account_name": account_summary.display_name,
                     })
             return properties
         except Exception:

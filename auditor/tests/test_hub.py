@@ -128,15 +128,18 @@ class AnalyticsPanelTests(TestCase):
     def test_connected_audit_is_listed_with_its_property(self):
         response = self.client.get(reverse("auditor:analytics"))
 
-        self.assertEqual(list(response.context["connected_audits"]), [self.connected])
+        # Kontekst niesie teraz wiersze z listami wyboru usług, nie same audyty.
+        audyty = [row["audit"] for row in response.context["connected_audits"]]
+        self.assertEqual(audyty, [self.connected])
         self.assertContains(response, "123456789")
         self.assertContains(response, "4321")
 
     def test_pending_audit_is_listed_separately(self):
         response = self.client.get(reverse("auditor:analytics"))
 
-        self.assertEqual(list(response.context["pending_audits"]), [self.pending])
-        self.assertContains(response, "Połącz GA4")
+        audyty = [row["audit"] for row in response.context["pending_audits"]]
+        self.assertEqual(audyty, [self.pending])
+        self.assertContains(response, "Wskaż usługę")
 
     def test_items_link_into_the_report_analytics_section(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()

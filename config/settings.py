@@ -247,6 +247,10 @@ GA4_SCOPES = [
     'https://www.googleapis.com/auth/webmasters.readonly',
     # Tworzenie arkusza z raportem na koncie użytkownika (auditor.services.sheets).
     'https://www.googleapis.com/auth/spreadsheets',
+    # Adres podłączonego konta, pokazywany w panelu analityki. Bez tego zakresu
+    # użytkownik z kilkoma kontami Google nie wie, czyje dane właśnie ogląda.
+    'openid',
+    'https://www.googleapis.com/auth/userinfo.email',
 ]
 GA4_REDIRECT_URI = os.environ.get('GA4_REDIRECT_URI', 'http://127.0.0.1:8000/ga4/callback/')
 

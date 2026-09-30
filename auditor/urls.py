@@ -10,6 +10,12 @@ urlpatterns = [
 
     # Panel analityki: wybór audytu, którego dane GA4/GSC chcemy oglądać.
     path("analytics/", views.AnalyticsPanelView.as_view(), name="analytics"),
+    path("analytics/disconnect/", views.google_disconnect, name="google_disconnect"),
+    path(
+        "analytics/<int:pk>/assign/",
+        views.assign_google_services,
+        name="assign_google_services",
+    ),
 
     # Skaner techniczny. Nazwa `index` zostaje, bo wskazuje na nią kilkanaście
     # miejsc w kodzie i szablonach - zmienia się tylko adres.

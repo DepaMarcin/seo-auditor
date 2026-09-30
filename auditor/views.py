@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import secrets
 from datetime import date
 from urllib.parse import urlparse
 
@@ -24,7 +25,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views import View
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_GET, require_POST
 from google_auth_oauthlib.flow import Flow
 
 from .models import Audit, AuditedPage, AuditMetric
@@ -49,6 +50,11 @@ from .presentation import (
     score_bucket,
 )
 from .ratelimit import is_rate_limited
+from .services.google_services import (
+    apply_google_services,
+    build_credentials_from_refresh_token,
+    load_google_client_config,
+)
 from .services.date_ranges import (
     DateRangeError,
     default_range,
@@ -147,18 +153,260 @@ class AnalyticsPanelView(View):
     template_name = "auditor/analytics.html"
 
     def get(self, request: HttpRequest) -> HttpResponse:
-        audits = _visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
+        audits = list(_visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT])
 
         connected, pending = [], []
         for audit in audits:
             (connected if audit.ga4_property_id else pending).append(audit)
 
+        # Konto Google jest wspólne dla wszystkich audytów użytkownika, ale token
+        # trzymamy przy audycie - bierzemy pierwszy, który go ma.
+        connected_audit = next(
+            (audit for audit in audits if audit.ga4_refresh_token_encrypted), None
+        )
+        google = _google_account_context(connected_audit)
+
+        # Przepływ OAuth startuje zawsze z konkretnego audytu. Gdy żaden nie ma
+        # jeszcze tokenu, bierzemy pierwszy z brzegu - inaczej baner "Brak konta"
+        # nie miałby dokąd prowadzić.
+        if google["connect_audit"] is None and audits:
+            google["connect_audit"] = audits[0]
+
         return render(request, self.template_name, {
             "nav_section": "analytics",
-            "connected_audits": connected,
-            "pending_audits": pending,
+            "connected_audits": [
+                _audit_with_selectors(audit, google) for audit in connected
+            ],
+            "pending_audits": [
+                _audit_with_selectors(audit, google) for audit in pending
+            ],
             "has_any_audit": bool(audits),
+            "google": google,
         })
+
+
+def _google_account_context(audit) -> dict:
+    """Stan połączenia z Google: adres konta i listy dostępnych usług.
+
+    Wszystko pochodzi z jednego tokenu, więc pobieramy raz na żądanie i dzielimy
+    między wiersze - inaczej lista dziesięciu audytów oznaczałaby dziesięć
+    kompletów zapytań do Google.
+    """
+    from auditor.services.crypto import ENCRYPTED_PREFIX
+    from auditor.services.google_api import fetch_account_email, list_gsc_sites
+
+    pusty = {
+        "connected": False,
+        "email": "",
+        "token_encrypted": False,
+        "ga4_properties": [],
+        "gsc_sites": [],
+        "connect_audit": None,
+        "error": "",
+    }
+    if audit is None:
+        return pusty
+
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+    except Exception:  # noqa: BLE001 - brak konfiguracji OAuth nie może wywrócić panelu
+        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
+        credentials = None
+
+    if credentials is None:
+        # Token jest w bazie, ale nie da się go odczytać (zmieniony klucz szyfrujący)
+        # albo stracił ważność - dla użytkownika to tyle samo co brak połączenia.
+        return {**pusty, "connect_audit": audit, "error": "token"}
+
+    email = audit.ga4_account_email or fetch_account_email(credentials)
+    if email and email != audit.ga4_account_email:
+        audit.ga4_account_email = email
+        audit.save(update_fields=["ga4_account_email"])
+
+    try:
+        properties = GA4OAuthService().list_accessible_properties(credentials)
+    except Exception:  # noqa: BLE001 - panel ma się wyrenderować mimo awarii Google
+        logger.exception("Nie udało się pobrać listy usług GA4.")
+        properties = []
+
+    return {
+        "connected": True,
+        "email": email,
+        "token_encrypted": (audit.ga4_refresh_token_encrypted or "").startswith(
+            ENCRYPTED_PREFIX
+        ),
+        "ga4_properties": properties,
+        "gsc_sites": list_gsc_sites(credentials),
+        "connect_audit": audit,
+        "error": "",
+    }
+
+
+def _audit_with_selectors(audit, google: dict) -> dict:
+    """Audyt wraz z listami wyboru usługi GA4 i witryny GSC.
+
+    Opcje pasujące do domeny audytu trafiają na początek listy z adnotacją
+    "(Sugerowana)" - przy kilkunastu usługach na koncie to różnica między wyborem
+    a szukaniem.
+    """
+    from auditor.services.google_api import audit_domain, mark_suggestions
+
+    domena = audit_domain(audit.url)
+
+    ga4_options = mark_suggestions(
+        [
+            {
+                "value": str(wlasciwosc.get("property_id", "")),
+                "label": wlasciwosc.get("display_name") or wlasciwosc.get("property_id", ""),
+                "account": wlasciwosc.get("account_name", ""),
+                "match": (wlasciwosc.get("display_name") or "").lower(),
+            }
+            for wlasciwosc in google.get("ga4_properties", [])
+        ],
+        domena,
+        "match",
+        mode="text",
+    )
+
+    gsc_options = mark_suggestions(
+        [
+            {
+                "value": witryna["site_url"],
+                "label": witryna["label"],
+                "match": witryna["domain"],
+            }
+            for witryna in google.get("gsc_sites", [])
+        ],
+        domena,
+        "match",
+    )
+
+    return {
+        "audit": audit,
+        "domain": domena,
+        # Token jest zapisany przy audycie - dopóki go nie ma, wiersz pokazuje
+        # własny przycisk rozpoczynający autoryzację właśnie dla niego.
+        "audit_has_token": bool(audit.ga4_refresh_token_encrypted),
+        "ga4_options": ga4_options,
+        "gsc_options": gsc_options,
+    }
+
+
+@login_required
+@require_POST
+def google_disconnect(request: HttpRequest) -> HttpResponse:
+    """Usuwa token Google ze wszystkich audytów użytkownika.
+
+    Token jest jeden na konto Google, ale zapisany przy każdym audycie, który z niego
+    korzysta - odłączenie pojedynczego audytu zostawiałoby poświadczenie w pozostałych.
+    """
+    audits = _visible_audits(request).exclude(ga4_refresh_token_encrypted__isnull=True)
+    liczba = 0
+    for audit in audits:
+        if not audit.ga4_refresh_token_encrypted:
+            continue
+        audit.ga4_refresh_token_encrypted = None
+        audit.ga4_account_email = ""
+        audit.save(update_fields=["ga4_refresh_token_encrypted", "ga4_account_email"])
+        liczba += 1
+
+    messages.success(
+        request,
+        f"Odłączono konto Google (wyczyszczono token w {liczba} audytach).",
+    )
+    return redirect("auditor:analytics")
+
+
+# Dokąd wrócić po zapisie. Przyjmujemy wyłącznie te dwie nazwy, a nie dowolny adres
+# z formularza - parametr `next` z żądania jest wartością od klienta i posłużyłby do
+# przekierowania użytkownika poza aplikację.
+ASSIGNMENT_RETURN_TARGETS = {
+    "analytics": "auditor:analytics",
+    "detail": "auditor:detail",
+}
+DEFAULT_RETURN_TARGET = "analytics"
+
+
+@login_required
+@require_POST
+def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
+    """Jedyne miejsce przypisujące usługi Google do audytu.
+
+    Obsługuje obie sytuacje: pierwszy wybór zaraz po autoryzacji OAuth i późniejszą
+    zmianę z panelu analityki. Wcześniej były to dwie osobne ścieżki, które robiły
+    prawie to samo - "prawie", bo tylko jedna czyściła dane poprzedniej usługi, więc
+    wynik zależał od tego, którędy użytkownik przyszedł.
+
+    Parametr `next` decyduje wyłącznie o tym, dokąd wrócić: po autoryzacji naturalnym
+    celem jest raport audytu, przy zmianie z panelu - lista audytów.
+    """
+    audit = _get_owned_audit(request, pk)
+
+    property_id = (request.POST.get("ga4_property_id") or "").strip()
+    site_url = (request.POST.get("gsc_site_url") or "").strip()
+    powrot = request.POST.get("next") or DEFAULT_RETURN_TARGET
+
+    wynik = apply_google_services(audit, property_id, site_url)
+
+    if not wynik.changed:
+        messages.info(request, "Ustawienia analityki pozostały bez zmian.")
+    elif wynik.fetched:
+        messages.success(
+            request, f"Zapisano ustawienia i pobrano świeże dane dla {audit.url}."
+        )
+    else:
+        messages.warning(
+            request,
+            f"Zapisano ustawienia dla {audit.url}, ale nie udało się pobrać danych "
+            "z Google. Dane poprzedniej usługi zostały wyczyszczone - odśwież raport "
+            "za chwilę.",
+        )
+
+    return _redirect_after_assignment(audit, powrot)
+
+
+def _redirect_after_assignment(audit: Audit, target: str) -> HttpResponse:
+    """Przekierowanie po zapisie - zawsze do tego audytu albo do panelu."""
+    nazwa = ASSIGNMENT_RETURN_TARGETS.get(target, ASSIGNMENT_RETURN_TARGETS[DEFAULT_RETURN_TARGET])
+    if nazwa == "auditor:detail":
+        return redirect(nazwa, pk=audit.pk)
+    return redirect(nazwa)
+
+
+def _refresh_google_data(audit: Audit, property_id: str, site_url: str) -> bool:
+    """Pobiera dane GA4 i GSC dla świeżo przypisanych usług.
+
+    Zwraca True, gdy cokolwiek udało się pobrać. Brak tokenu albo awaria Google nie
+    jest tu błędem krytycznym - użytkownik zobaczy ostrzeżenie, a nie stronę błędu.
+    """
+    from .services.audit_service import AuditService
+
+    if not audit.ga4_refresh_token:
+        return False
+
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+    except Exception:  # noqa: BLE001
+        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
+        return False
+
+    service = AuditService()
+    pobrano = False
+
+    if property_id:
+        try:
+            service.sync_ga4_data(audit, credentials, property_id)
+            pobrano = True
+        except Exception:  # noqa: BLE001
+            logger.exception("Nie udało się pobrać danych GA4 dla audytu %s.", audit.pk)
+
+    try:
+        service.sync_gsc_data(audit, credentials)
+        pobrano = True
+    except Exception:  # noqa: BLE001
+        logger.exception("Nie udało się pobrać danych Search Console dla audytu %s.", audit.pk)
+
+    return pobrano
 
 
 @login_required
@@ -284,10 +532,18 @@ def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
             scopes=settings.GA4_SCOPES,
             redirect_uri=settings.GA4_REDIRECT_URI,
         )
+        # "select_account" wymusza ekran wyboru konta - bez niego Google loguje
+        # po cichu na konto już aktywne w przeglądarce i przełączenie jest niemożliwe.
+        prompt = "consent select_account" if request.GET.get("switch") else "consent"
+        # Do losowego stanu doklejamy numer audytu - dzięki temu callback wie, dla
+        # którego audytu przyszła odpowiedź, nawet gdy w międzyczasie użytkownik
+        # zaczął łączyć inny audyt w drugiej karcie przeglądarki.
+        losowy_stan = secrets.token_urlsafe(32)
         authorization_url, state = flow.authorization_url(
             access_type="offline",
-            prompt="consent",
+            prompt=prompt,
             include_granted_scopes="true",
+            state=_build_oauth_state(audit.pk, losowy_stan),
         )
     except FileNotFoundError:
         logger.error("Brak pliku client_secret.json (oczekiwana ścieżka: %s).", settings.GA4_CLIENT_SECRETS_FILE)
@@ -309,25 +565,10 @@ def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
     return redirect(authorization_url)
 
 
-def _load_google_client_config() -> tuple[str, str]:
-    """Odczytuje `client_id`/`client_secret` bezpośrednio z pliku `client_secret.json`,
-    bez budowania pełnego obiektu `Flow` - potrzebne do odtworzenia `Credentials`
-    z zapisanego wcześniej `refresh_token` (patrz `_build_credentials_from_refresh_token`)."""
-    with open(settings.GA4_CLIENT_SECRETS_FILE, encoding="utf-8") as fh:
-        raw_config = json.load(fh)
-    config = raw_config.get("web") or raw_config.get("installed") or {}
-    return config["client_id"], config["client_secret"]
-
-
-def _build_credentials_from_refresh_token(audit: Audit):
-    """Odtwarza `google.oauth2.credentials.Credentials` z `audit.ga4_refresh_token`,
-    żeby móc odpytać GA4 bez ponownego przechodzenia przez ekran zgody Google."""
-    client_id, client_secret = _load_google_client_config()
-    return GA4OAuthService().build_credentials_from_refresh_token(
-        refresh_token=audit.ga4_refresh_token,
-        client_id=client_id,
-        client_secret=client_secret,
-    )
+# Odtwarzanie poświadczeń mieszka w warstwie serwisowej razem z resztą obsługi
+# Google. Te dwie nazwy zostają jako aliasy, bo używa ich kilkanaście widoków.
+_load_google_client_config = load_google_client_config
+_build_credentials_from_refresh_token = build_credentials_from_refresh_token
 
 
 def _brand_token(url: str) -> str:
@@ -339,6 +580,26 @@ def _brand_token(url: str) -> str:
     if domain.startswith("www."):
         domain = domain[len("www."):]
     return domain.split(".")[0] if domain else ""
+
+
+# Parametr `state` wraca z Google nienaruszony, więc to w nim wieziemy numer audytu.
+# Sesja tego nie załatwia: dwie karty przeglądarki dzielą jedną sesję, a każde
+# rozpoczęcie autoryzacji nadpisuje `pending_audit_id` - wraca wtedy audyt z karty,
+# którą kliknięto później, a nie ten, dla którego przyszła odpowiedź.
+OAUTH_STATE_SEPARATOR = ":"
+
+
+def _build_oauth_state(audit_pk: int, csrf_state: str) -> str:
+    """Skleja numer audytu z losowym stanem CSRF w jeden parametr `state`."""
+    return f"{audit_pk}{OAUTH_STATE_SEPARATOR}{csrf_state}"
+
+
+def _audit_pk_from_state(state: str) -> int | None:
+    """Wyciąga numer audytu z `state`. Zwraca None, gdy parametr jest nie nasz."""
+    if not state or OAUTH_STATE_SEPARATOR not in state:
+        return None
+    prefix = state.split(OAUTH_STATE_SEPARATOR, 1)[0]
+    return int(prefix) if prefix.isdigit() else None
 
 
 def _ga4_properties_cache_key(audit_pk: int) -> str:
@@ -358,12 +619,18 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
     przekierowuje na stronę wyboru usługi (`select_ga4_property`) - konto Google może
     mieć dostęp do wielu usług GA4 i backend nie ma jak automatycznie ustalić, która
     z nich odpowiada audytowanej domenie."""
-    audit_id = request.session.get("pending_audit_id")
-    state = request.session.get("ga4_oauth_state")
+    # Numer audytu bierzemy z `state` zwróconego przez Google, a nie z sesji: to
+    # jedyna wartość związana z TĄ konkretną odpowiedzią. Sesja zostaje jako zapas
+    # dla przepływów rozpoczętych przed tą zmianą.
+    state = request.GET.get("state") or request.session.get("ga4_oauth_state")
+    audit_id = _audit_pk_from_state(state) or request.session.get("pending_audit_id")
+
     if not audit_id:
         messages.error(request, "Sesja autoryzacji Google wygasła. Spróbuj połączyć konto ponownie.")
         return redirect("auditor:index")
 
+    # `_get_owned_audit` zwróci 404, gdy numer w `state` wskazuje cudzy audyt -
+    # parametr wraca od klienta, więc nie jest zaufany.
     audit = _get_owned_audit(request, audit_id)
 
     try:
@@ -420,43 +687,17 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
+@require_GET
 def select_ga4_property(request: HttpRequest, pk: int) -> HttpResponse:
-    """Krok pośredni po autoryzacji Google: prezentuje listę usług (properties) GA4
-    dostępnych dla zalogowanego konta (pobraną w `ga4_callback`) i pozwala użytkownikowi
-    ręcznie wskazać, która z nich odpowiada audytowanej domenie.
+    """Ekran wyboru usługi GA4 pokazywany zaraz po autoryzacji Google.
 
-    Po zatwierdzeniu formularza (POST) zapisuje wybrany `ga4_property_id`, odtwarza
-    `Credentials` z zapisanego `ga4_refresh_token` i przez `AuditService.sync_ga4_data`
-    pobiera oraz zapisuje statystyki ruchu organicznego z GA4.
+    Sam już nie zapisuje - formularz kieruje do `assign_google_services`, czyli tam,
+    gdzie trafia też zmiana z panelu analityki. Wcześniej zapis był tu zdublowany
+    i różnił się zachowaniem: ta ścieżka nie czyściła danych poprzedniej usługi, więc
+    wynik zależał od tego, którędy użytkownik przyszedł.
     """
-    from .services.audit_service import AuditService
-
     audit = _get_owned_audit(request, pk)
     cache_key = _ga4_properties_cache_key(audit.pk)
-
-    if request.method == "POST":
-        property_id = request.POST.get("property_id", "").strip()
-        if not property_id:
-            messages.error(request, "Wybierz usługę Google Analytics 4 z listy.")
-            return redirect("auditor:select_ga4_property", pk=audit.pk)
-
-        if not audit.ga4_refresh_token:
-            messages.error(request, "Brak zapisanego połączenia z Google - połącz konto ponownie.")
-            return redirect("auditor:detail", pk=audit.pk)
-
-        try:
-            credentials = _build_credentials_from_refresh_token(audit)
-        except (FileNotFoundError, KeyError, json.JSONDecodeError):
-            logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
-            messages.error(request, "Konfiguracja Google Analytics jest niekompletna. Spróbuj połączyć konto ponownie.")
-            return redirect("auditor:detail", pk=audit.pk)
-
-        AuditService().sync_ga4_data(audit, credentials, property_id)
-        cache.delete(cache_key)
-        # Świeże dane GA4/GSC unieważniają zbuforowaną listę zdarzeń tej usługi.
-        cache.delete(f"ga4_events:{property_id}")
-        messages.success(request, "Wybrano usługę GA4 i pobrano dane o ruchu organicznym.")
-        return redirect("auditor:detail", pk=audit.pk)
 
     properties = cache.get(cache_key) or []
     if not properties:

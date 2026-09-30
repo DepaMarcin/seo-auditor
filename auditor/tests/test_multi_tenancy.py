@@ -100,10 +100,10 @@ class AuditIsolationTests(TestCase):
     def test_analytics_panel_shows_only_own_audits(self):
         response = self.client.get(reverse("auditor:analytics"))
 
-        widoczne = list(response.context["connected_audits"]) + list(
+        wiersze = list(response.context["connected_audits"]) + list(
             response.context["pending_audits"]
         )
-        self.assertEqual(widoczne, [self.audyt_ali])
+        self.assertEqual([row["audit"] for row in wiersze], [self.audyt_ali])
 
 
 class AuditOwnershipTests(TestCase):

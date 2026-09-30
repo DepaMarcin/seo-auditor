@@ -37,6 +37,13 @@ class Audit(models.Model):
 
     # Integracja Google Analytics 4 przez OAuth 2.0 (auditor.services.ga4_service.GA4OAuthService).
     ga4_property_id = models.CharField(max_length=50, blank=True, null=True)
+    # Adres konta Google, z którego pochodzi token. Pokazujemy go w panelu analityki:
+    # bez tego użytkownik z kilkoma kontami nie wie, czyje dane właśnie ogląda.
+    ga4_account_email = models.CharField(max_length=254, blank=True, default="")
+    # Witryna Search Console wskazana ręcznie. Puste pole znaczy "dopasuj po domenie"
+    # (auditor.services.gsc_service.find_best_gsc_site) - automat radzi sobie w
+    # typowych przypadkach, ale nie odgadnie usługi zarejestrowanej pod inną nazwą.
+    gsc_site_url = models.CharField(max_length=255, blank=True, default="")
     # Token trzymany jest zaszyfrowany (auditor.services.crypto); kod aplikacji nigdy
     # nie sięga do tego pola bezpośrednio - korzysta z właściwości `ga4_refresh_token`.
     ga4_refresh_token_encrypted = models.TextField(blank=True, null=True)
