@@ -208,7 +208,13 @@
 </div>
 
 <div class="panel">
-    <h2 class="section-heading" id="analityka">🌱 Ruch organiczny (Google Analytics 4)</h2>
+    <h2 class="section-heading" id="analityka">
+        🌱 Ruch organiczny (Google Analytics 4)
+        {# Analityka tej domeny ma własny ekran - stąd prowadzi do niego skrót. #}
+        <a class="section-heading-link" href="{% url 'auditor:audit_analytics' audit.pk %}">
+            Analityka i Ruch →
+        </a>
+    </h2>
     {% if not audit.ga4_refresh_token %}
     <div class="ga4-connect-box">
         <p class="priority-empty">

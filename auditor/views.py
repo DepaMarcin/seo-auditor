@@ -141,48 +141,52 @@ class HubView(View):
         return render(request, self.template_name, {"tools": TOOLS})
 
 
-@method_decorator(login_required, name="dispatch")
-class AnalyticsPanelView(View):
-    """Panel analityki: wybór audytu, którego dane GA4/GSC chcemy oglądać.
+@login_required
+def audit_analytics(request: HttpRequest, pk: int) -> HttpResponse:
+    """Analityka JEDNEGO audytu: albo zaproszenie do podłączenia, albo dane.
 
-    Dane GA4 i GSC są przypięte do konkretnego audytu (własność `Audit.ga4_property_id`,
-    osobny token OAuth na audyt), więc nie istnieje jeden globalny widok liczb - ten
-    panel jest rozdzielnikiem do sekcji analityki w raporcie.
+    Wcześniej była tu globalna tablica wszystkich audytów z ich stanami połączenia.
+    Dane GA4 i GSC opisują zawsze jedną domenę, więc oglądanie ich obok listy innych
+    projektów gubiło kontekst - zwłaszcza po powrocie z autoryzacji Google.
     """
+    audit = _get_owned_audit(request, pk)
+    google = _google_account_context(audit)
 
-    template_name = "auditor/analytics.html"
+    return render(request, "auditor/audit_analytics.html", {
+        "nav_section": "analytics",
+        "audit": audit,
+        "google": google,
+        "selectors": _audit_with_selectors(audit, google),
+        # Dwa stany, nie więcej: brak przypisanej usługi albo gotowy dashboard.
+        "has_analytics": bool(audit.ga4_property_id),
+        "today_iso": timezone.localdate().isoformat(),
+    })
 
-    def get(self, request: HttpRequest) -> HttpResponse:
-        audits = list(_visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT])
 
-        connected, pending = [], []
-        for audit in audits:
-            (connected if audit.ga4_property_id else pending).append(audit)
+@login_required
+def analytics_entry(request: HttpRequest) -> HttpResponse:
+    """Wejście do analityki z hubu narzędzi - wyłącznie wybór audytu.
 
-        # Konto Google jest wspólne dla wszystkich audytów użytkownika, ale token
-        # trzymamy przy audycie - bierzemy pierwszy, który go ma.
-        connected_audit = next(
-            (audit for audit in audits if audit.ga4_refresh_token_encrypted), None
+    Kafelek w hubie musi gdzieś prowadzić, a analityka istnieje tylko w kontekście
+    audytu. Ten widok nie pokazuje żadnych danych ani stanów połączenia: przy jednym
+    audycie przechodzi od razu do niego, przy kilku pyta, który otworzyć.
+    """
+    audits = list(_visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT])
+
+    if not audits:
+        messages.info(
+            request,
+            "Analityka podpina się do konkretnego audytu - zacznij od uruchomienia skanera.",
         )
-        google = _google_account_context(connected_audit)
+        return redirect("auditor:index")
 
-        # Przepływ OAuth startuje zawsze z konkretnego audytu. Gdy żaden nie ma
-        # jeszcze tokenu, bierzemy pierwszy z brzegu - inaczej baner "Brak konta"
-        # nie miałby dokąd prowadzić.
-        if google["connect_audit"] is None and audits:
-            google["connect_audit"] = audits[0]
+    if len(audits) == 1:
+        return redirect("auditor:audit_analytics", pk=audits[0].pk)
 
-        return render(request, self.template_name, {
-            "nav_section": "analytics",
-            "connected_audits": [
-                _audit_with_selectors(audit, google) for audit in connected
-            ],
-            "pending_audits": [
-                _audit_with_selectors(audit, google) for audit in pending
-            ],
-            "has_any_audit": bool(audits),
-            "google": google,
-        })
+    return render(request, "auditor/analytics_choose.html", {
+        "nav_section": "analytics",
+        "audits": audits,
+    })
 
 
 def _google_account_context(audit) -> dict:
@@ -204,8 +208,12 @@ def _google_account_context(audit) -> dict:
         "connect_audit": None,
         "error": "",
     }
-    if audit is None:
-        return pusty
+    # Bez zapisanego tokenu nie ma czego odtwarzać. Sprawdzamy to WPROST, bo
+    # `build_credentials_from_refresh_token` zwraca obiekt poświadczeń także dla
+    # pustego tokenu - kod uznawał wtedy konto za połączone i odpytywał Google
+    # przy każdym otwarciu strony, czekając na timeout.
+    if audit is None or not audit.ga4_refresh_token_encrypted:
+        return pusty if audit is None else {**pusty, "connect_audit": audit}
 
     try:
         credentials = _build_credentials_from_refresh_token(audit)
@@ -314,6 +322,11 @@ def google_disconnect(request: HttpRequest) -> HttpResponse:
         request,
         f"Odłączono konto Google (wyczyszczono token w {liczba} audytach).",
     )
+
+    # Wracamy tam, skąd przyszło żądanie - odłączenie wywołuje się z dashboardu audytu.
+    wrocic_do = request.POST.get("audit")
+    if wrocic_do and wrocic_do.isdigit():
+        return redirect("auditor:audit_analytics", pk=int(wrocic_do))
     return redirect("auditor:analytics")
 
 
@@ -321,7 +334,8 @@ def google_disconnect(request: HttpRequest) -> HttpResponse:
 # z formularza - parametr `next` z żądania jest wartością od klienta i posłużyłby do
 # przekierowania użytkownika poza aplikację.
 ASSIGNMENT_RETURN_TARGETS = {
-    "analytics": "auditor:analytics",
+    # Po zapisie wracamy na dashboard analityki TEGO audytu - tam widać skutek.
+    "analytics": "auditor:audit_analytics",
     "detail": "auditor:detail",
 }
 DEFAULT_RETURN_TARGET = "analytics"
@@ -366,11 +380,9 @@ def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
 
 
 def _redirect_after_assignment(audit: Audit, target: str) -> HttpResponse:
-    """Przekierowanie po zapisie - zawsze do tego audytu albo do panelu."""
+    """Przekierowanie po zapisie - zawsze w kontekście TEGO audytu."""
     nazwa = ASSIGNMENT_RETURN_TARGETS.get(target, ASSIGNMENT_RETURN_TARGETS[DEFAULT_RETURN_TARGET])
-    if nazwa == "auditor:detail":
-        return redirect(nazwa, pk=audit.pk)
-    return redirect(nazwa)
+    return redirect(nazwa, pk=audit.pk)
 
 
 def _refresh_google_data(audit: Audit, property_id: str, site_url: str) -> bool:
@@ -543,7 +555,9 @@ def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
             access_type="offline",
             prompt=prompt,
             include_granted_scopes="true",
-            state=_build_oauth_state(audit.pk, losowy_stan),
+            state=_build_oauth_state(
+                audit.pk, losowy_stan, request.GET.get("return_to", OAUTH_RETURN_SELECT)
+            ),
         )
     except FileNotFoundError:
         logger.error("Brak pliku client_secret.json (oczekiwana ścieżka: %s).", settings.GA4_CLIENT_SECRETS_FILE)
@@ -567,6 +581,10 @@ def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
 
 # Odtwarzanie poświadczeń mieszka w warstwie serwisowej razem z resztą obsługi
 # Google. Te dwie nazwy zostają jako aliasy, bo używa ich kilkanaście widoków.
+#
+# Uwaga dla testów: alias kopiuje referencję w czasie importu, więc podmiana
+# `auditor.services.google_services.build_credentials_from_refresh_token` NIE wpłynie
+# na widoki. Patchuj `auditor.views._build_credentials_from_refresh_token`.
 _load_google_client_config = load_google_client_config
 _build_credentials_from_refresh_token = build_credentials_from_refresh_token
 
@@ -588,10 +606,20 @@ def _brand_token(url: str) -> str:
 # którą kliknięto później, a nie ten, dla którego przyszła odpowiedź.
 OAUTH_STATE_SEPARATOR = ":"
 
+# Dokąd wrócić po autoryzacji. "select" to ekran wyboru usługi dla tego audytu -
+# naturalne zakończenie podłączania konkretnego audytu. "analytics" to panel; tam
+# wracamy po przełączeniu konta Google, bo token jest wspólny dla wszystkich audytów
+# i wepchnięcie użytkownika w konfigurację jednego z nich byłoby przypadkowe.
+OAUTH_RETURN_SELECT = "select"
+OAUTH_RETURN_ANALYTICS = "analytics"
+OAUTH_RETURN_TARGETS = (OAUTH_RETURN_SELECT, OAUTH_RETURN_ANALYTICS)
 
-def _build_oauth_state(audit_pk: int, csrf_state: str) -> str:
-    """Skleja numer audytu z losowym stanem CSRF w jeden parametr `state`."""
-    return f"{audit_pk}{OAUTH_STATE_SEPARATOR}{csrf_state}"
+
+def _build_oauth_state(audit_pk: int, csrf_state: str, return_to: str = OAUTH_RETURN_SELECT) -> str:
+    """Skleja numer audytu, cel powrotu i losowy stan CSRF w jeden parametr `state`."""
+    if return_to not in OAUTH_RETURN_TARGETS:
+        return_to = OAUTH_RETURN_SELECT
+    return OAUTH_STATE_SEPARATOR.join((str(audit_pk), return_to, csrf_state))
 
 
 def _audit_pk_from_state(state: str) -> int | None:
@@ -600,6 +628,14 @@ def _audit_pk_from_state(state: str) -> int | None:
         return None
     prefix = state.split(OAUTH_STATE_SEPARATOR, 1)[0]
     return int(prefix) if prefix.isdigit() else None
+
+
+def _return_target_from_state(state: str) -> str:
+    """Cel powrotu zapisany w `state`; domyślnie ekran wyboru usługi."""
+    czesci = (state or "").split(OAUTH_STATE_SEPARATOR)
+    if len(czesci) >= 2 and czesci[1] in OAUTH_RETURN_TARGETS:
+        return czesci[1]
+    return OAUTH_RETURN_SELECT
 
 
 def _ga4_properties_cache_key(audit_pk: int) -> str:
@@ -682,6 +718,12 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
         properties,
         getattr(settings, "CACHE_TTL_GA4_PROPERTIES", 3600),
     )
+    # Jeden komunikat na jedno zdarzenie. Wcześniej przy przełączaniu konta padały
+    # dwa pod rząd, bo każda gałąź dokładała swój do wspólnego.
+    if _return_target_from_state(state) == OAUTH_RETURN_ANALYTICS:
+        messages.success(request, "Połączono konto Google. Wskaż usługę dla audytu.")
+        return redirect("auditor:audit_analytics", pk=audit.pk)
+
     messages.success(request, "Połączono z Google. Wybierz teraz usługę Google Analytics 4.")
     return redirect("auditor:select_ga4_property", pk=audit.pk)
 

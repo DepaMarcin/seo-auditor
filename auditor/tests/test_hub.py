@@ -96,8 +96,12 @@ class ScannerMovedTests(TestCase):
         self.assertNotIn('id="audit-form"', html)
 
 
-class AnalyticsPanelTests(TestCase):
-    """Panel analityki rozdziela audyty na podłączone i niepodłączone do GA4."""
+class AnalyticsEntryTests(TestCase):
+    """Kafelek analityki w hubie prowadzi do wyboru audytu.
+
+    Globalna tablica analityki została usunięta - dane GA4/GSC dotyczą zawsze jednej
+    domeny, więc mieszkają w widoku pojedynczego audytu.
+    """
 
     @classmethod
     def setUpTestData(cls):
@@ -105,13 +109,13 @@ class AnalyticsPanelTests(TestCase):
             username="analityka-test",
             password="haslo-kontrolne-1",
         )
-        cls.connected = Audit.objects.create(
+        cls.pierwszy = Audit.objects.create(
             url="https://podlaczony.example/",
             owner=cls.user,
             ga4_property_id="123456789",
             ga4_organic_sessions=4321,
         )
-        cls.pending = Audit.objects.create(
+        cls.drugi = Audit.objects.create(
             url="https://niepodlaczony.example/",
             owner=cls.user,
         )
@@ -119,34 +123,27 @@ class AnalyticsPanelTests(TestCase):
     def setUp(self):
         self.client.force_login(self.user)
 
-    def test_panel_renders(self):
+    def test_entry_offers_the_audits(self):
         response = self.client.get(reverse("auditor:analytics"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "auditor/analytics.html")
+        self.assertTemplateUsed(response, "auditor/analytics_choose.html")
+        self.assertContains(response, "podlaczony.example")
+        self.assertContains(response, "niepodlaczony.example")
 
-    def test_connected_audit_is_listed_with_its_property(self):
-        response = self.client.get(reverse("auditor:analytics"))
-
-        # Kontekst niesie teraz wiersze z listami wyboru usług, nie same audyty.
-        audyty = [row["audit"] for row in response.context["connected_audits"]]
-        self.assertEqual(audyty, [self.connected])
-        self.assertContains(response, "123456789")
-        self.assertContains(response, "4321")
-
-    def test_pending_audit_is_listed_separately(self):
-        response = self.client.get(reverse("auditor:analytics"))
-
-        audyty = [row["audit"] for row in response.context["pending_audits"]]
-        self.assertEqual(audyty, [self.pending])
-        self.assertContains(response, "Wskaż usługę")
-
-    def test_items_link_into_the_report_analytics_section(self):
+    def test_entry_links_to_per_audit_analytics(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertIn(f'href="/audits/{self.connected.pk}/#analityka"', html)
+        self.assertIn(f'href="/audits/{self.pierwszy.pk}/analytics/"', html)
 
-    def test_other_users_audits_are_not_listed(self):
+    def test_entry_shows_no_connection_state(self):
+        # Wybór domeny to nie miejsce na banery połączenia ani selektory usług.
+        html = self.client.get(reverse("auditor:analytics")).content.decode()
+
+        self.assertNotIn('name="ga4_property_id"', html)
+        self.assertNotIn("Zalogowano do Google jako", html)
+
+    def test_other_users_audits_are_not_offered(self):
         intruder = get_user_model().objects.create_user(
             username="obcy",
             password="haslo-kontrolne-2",
@@ -155,11 +152,12 @@ class AnalyticsPanelTests(TestCase):
 
         response = self.client.get(reverse("auditor:analytics"))
 
-        self.assertEqual(list(response.context["connected_audits"]), [])
-        self.assertEqual(list(response.context["pending_audits"]), [])
-        self.assertFalse(response.context["has_any_audit"])
+        # Bez własnych audytów użytkownik trafia do skanera.
+        self.assertRedirects(
+            response, reverse("auditor:index"), fetch_redirect_response=False
+        )
 
-    def test_panel_requires_login(self):
+    def test_entry_requires_login(self):
         self.client.logout()
 
         response = self.client.get(reverse("auditor:analytics"))

@@ -97,13 +97,22 @@ class AuditIsolationTests(TestCase):
 
         self.assertEqual(list(response.context["audits"]), [self.audyt_ali])
 
-    def test_analytics_panel_shows_only_own_audits(self):
+    def test_analytics_entry_shows_only_own_audits(self):
+        # Ala ma jeden audyt, więc wejście prowadzi od razu do jego analityki.
         response = self.client.get(reverse("auditor:analytics"))
 
-        wiersze = list(response.context["connected_audits"]) + list(
-            response.context["pending_audits"]
+        self.assertRedirects(
+            response,
+            reverse("auditor:audit_analytics", args=[self.audyt_ali.pk]),
+            fetch_redirect_response=False,
         )
-        self.assertEqual([row["audit"] for row in wiersze], [self.audyt_ali])
+
+    def test_foreign_audit_analytics_returns_404(self):
+        response = self.client.get(
+            reverse("auditor:audit_analytics", args=[self.audyt_bogdana.pk])
+        )
+
+        self.assertEqual(response.status_code, 404)
 
 
 class AuditOwnershipTests(TestCase):

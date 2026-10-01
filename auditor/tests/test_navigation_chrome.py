@@ -89,7 +89,15 @@ class ToolBarVisibilityTests(TestCase):
         self.assertIn(BACK_MARKER, html)
 
     def test_analytics_panel_shows_back_link(self):
-        html = self.client.get(reverse("auditor:analytics")).content.decode()
+        # Przy jednym audycie wejście przechodzi od razu do jego analityki, więc
+        # pasek sprawdzamy na docelowej stronie.
+        from auditor.models import Audit
+
+        audit = Audit.objects.create(url="https://przyklad.pl/", owner=self.user)
+
+        html = self.client.get(
+            reverse("auditor:audit_analytics", args=[audit.pk])
+        ).content.decode()
 
         self.assertIn(BAR_MARKER, html)
         self.assertIn(BACK_MARKER, html)

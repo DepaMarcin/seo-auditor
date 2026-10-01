@@ -69,13 +69,17 @@ class AssignServicesBindingTests(ThreeAuditsTestCase):
         self.assertEqual(self.orlen.gsc_site_url, "")
         self.assertIsNone(self.shell.ga4_property_id)
 
-    def test_redirect_leads_back_to_the_analytics_panel(self):
+    def test_redirect_leads_to_this_audits_analytics(self):
         response = self.client.post(
             reverse("auditor:assign_google_services", args=[self.enova.pk]),
             {"ga4_property_id": "222222", "gsc_site_url": ""},
         )
 
-        self.assertRedirects(response, reverse("auditor:analytics"))
+        self.assertRedirects(
+            response,
+            reverse("auditor:audit_analytics", args=[self.enova.pk]),
+            fetch_redirect_response=False,
+        )
 
     def test_middle_audit_is_not_confused_with_the_first(self):
         # Najczęstszy objaw błędu: zapis trafiał do pierwszego rekordu w bazie.
@@ -87,72 +91,6 @@ class AssignServicesBindingTests(ThreeAuditsTestCase):
         z_baza = {a.url: a.ga4_property_id for a in Audit.objects.all()}
         self.assertEqual(z_baza["https://enova.pl/"], "222222")
         self.assertIsNone(z_baza["https://orlen.pl/"])
-
-
-class PanelMarkupTests(ThreeAuditsTestCase):
-    """Każdy wiersz ma własne adresy - bez współdzielonych identyfikatorów."""
-
-    def test_every_audit_has_its_own_connect_link(self):
-        html = self.client.get(reverse("auditor:analytics")).content.decode()
-
-        linki = set(re.findall(r'href="/audits/(\d+)/ga4/connect/"', html))
-
-        self.assertEqual(
-            linki,
-            {str(self.orlen.pk), str(self.enova.pk), str(self.shell.pk)},
-        )
-
-    def test_connect_link_names_the_domain(self):
-        html = self.client.get(reverse("auditor:analytics")).content.decode()
-
-        self.assertIn("Połącz GA4 dla enova.pl", html)
-        self.assertIn("Połącz GA4 dla orlen.pl", html)
-
-    def test_form_actions_carry_distinct_audit_ids(self):
-        Audit.objects.update(ga4_refresh_token_encrypted="jawny-token-testowy")
-
-        with patch("auditor.views._build_credentials_from_refresh_token", return_value=MagicMock()), \
-             patch("auditor.services.google_api.fetch_account_email", return_value="jan@gmail.com"), \
-             patch("auditor.services.ga4_service.GA4OAuthService.list_accessible_properties", return_value=[]), \
-             patch("auditor.services.google_api.list_gsc_sites", return_value=[]):
-            html = self.client.get(reverse("auditor:analytics")).content.decode()
-
-        akcje = set(re.findall(r'action="/analytics/(\d+)/assign/"', html))
-
-        self.assertEqual(
-            akcje,
-            {str(self.orlen.pk), str(self.enova.pk), str(self.shell.pk)},
-        )
-
-    def test_select_element_ids_are_unique(self):
-        # Powtórzony identyfikator sprawia, że etykieta jednego wiersza steruje
-        # polem innego.
-        Audit.objects.update(ga4_refresh_token_encrypted="jawny-token-testowy")
-
-        with patch("auditor.views._build_credentials_from_refresh_token", return_value=MagicMock()), \
-             patch("auditor.services.google_api.fetch_account_email", return_value="jan@gmail.com"), \
-             patch("auditor.services.ga4_service.GA4OAuthService.list_accessible_properties", return_value=[]), \
-             patch("auditor.services.google_api.list_gsc_sites", return_value=[]):
-            html = self.client.get(reverse("auditor:analytics")).content.decode()
-
-        identyfikatory = re.findall(r'id="(ga4-\d+|gsc-\d+)"', html)
-
-        self.assertEqual(len(identyfikatory), len(set(identyfikatory)))
-        self.assertEqual(len(identyfikatory), 6)
-
-    def test_connected_audit_loses_its_connect_link(self):
-        Audit.objects.filter(pk=self.enova.pk).update(
-            ga4_refresh_token_encrypted="jawny-token-testowy"
-        )
-
-        with patch("auditor.views._build_credentials_from_refresh_token", return_value=MagicMock()), \
-             patch("auditor.services.google_api.fetch_account_email", return_value="jan@gmail.com"), \
-             patch("auditor.services.ga4_service.GA4OAuthService.list_accessible_properties", return_value=[]), \
-             patch("auditor.services.google_api.list_gsc_sites", return_value=[]):
-            html = self.client.get(reverse("auditor:analytics")).content.decode()
-
-        self.assertNotIn(f'href="/audits/{self.enova.pk}/ga4/connect/"', html)
-        self.assertIn(f'href="/audits/{self.orlen.pk}/ga4/connect/"', html)
 
 
 class OAuthStateTests(ThreeAuditsTestCase):
@@ -299,8 +237,8 @@ class RedirectTargetTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         cel = response["Location"]
-        self.assertIn(cel, ("/analytics/", f"/audits/{self.enova.pk}/"))
-        self.assertNotEqual(cel, f"/audits/{self.orlen.pk}/")
+        self.assertEqual(cel, f"/audits/{self.enova.pk}/analytics/")
+        self.assertNotIn(f"/audits/{self.orlen.pk}/", cel)
 
     def test_page_after_the_redirect_shows_the_edited_domain(self):
         response = self.client.post(

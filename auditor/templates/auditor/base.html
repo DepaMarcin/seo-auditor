@@ -2359,6 +2359,58 @@
             border-radius: 0;
             background: transparent;
         }
+        /* Stan "brak analityki" - jedna decyzja na wyśrodkowanym ekranie. */
+        .section-heading-link {
+            float: right;
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: var(--accent);
+            text-decoration: none;
+        }
+        .section-heading-link:hover { text-decoration: underline; }
+        .analytics-empty { text-align: center; padding: 3rem 1.5rem; }
+        .analytics-empty-icon {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 64px;
+            height: 64px;
+            margin-bottom: 1rem;
+            border-radius: 50%;
+            font-size: 1.8rem;
+            background: rgba(56, 189, 248, 0.12);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+        .analytics-empty-title {
+            font-size: 1.2rem;
+            font-weight: 650;
+            letter-spacing: -0.01em;
+            margin: 0 0 0.6rem;
+            overflow-wrap: anywhere;
+        }
+        .analytics-empty-text {
+            color: var(--muted);
+            font-size: 0.92rem;
+            max-width: 56ch;
+            margin: 0 auto 1.6rem;
+            line-height: 1.6;
+        }
+        .analytics-empty-note { color: var(--muted-dim); font-size: 0.8rem; margin: 1rem 0 0; }
+
+        .analytics-metrics-grid { margin-bottom: 0; }
+        .analytics-big-number {
+            font-size: 2.6rem;
+            font-weight: 700;
+            line-height: 1.1;
+            letter-spacing: -0.04em;
+            font-variant-numeric: tabular-nums;
+            margin: 0.8rem 0 0.2rem;
+        }
+        /* Konfiguracja wewnątrz karty - bez ramki, bo kartę rysuje `.panel`. */
+        .analytics-config-inline { border-top: none; margin-top: auto; }
+        .analytics-config-form-stacked { grid-template-columns: 1fr; padding: 0.4rem 0 0.8rem; }
+        .analytics-disconnect { padding-bottom: 0.4rem; }
+
         .analytics-connect-row {
             padding: 0.6rem 1.1rem;
             border-top: 1px solid var(--border);

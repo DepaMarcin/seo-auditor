@@ -271,16 +271,19 @@ class BothPathsAgreeTests(GoogleServicesBase):
         self.assertEqual(
             self._assign(po_oauth, "detail")["Location"], f"/audits/{po_oauth.pk}/"
         )
-        self.assertEqual(self._assign(z_panelu, "analytics")["Location"], "/analytics/")
+        self.assertEqual(
+            self._assign(z_panelu, "analytics")["Location"],
+            f"/audits/{z_panelu.pk}/analytics/",
+        )
 
-    def test_unknown_return_target_falls_back_to_the_panel(self):
+    def test_unknown_return_target_falls_back_to_this_audit(self):
         # `next` przychodzi od klienta - nie może posłużyć do wyprowadzenia
         # użytkownika poza aplikację.
         audit = self._audit(ga4_property_id="999999")
 
         response = self._assign(audit, "https://zlosliwa-strona.example/")
 
-        self.assertEqual(response["Location"], "/analytics/")
+        self.assertEqual(response["Location"], f"/audits/{audit.pk}/analytics/")
 
 
 class SelectionScreenTests(GoogleServicesBase):

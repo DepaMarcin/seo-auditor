@@ -1,0 +1,209 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Analityka — {{ audit.url }}{% endblock %}
+
+{% block content %}
+{% comment %}
+Analityka jednego audytu, w dwóch stanach: zaproszenie do podłączenia albo dane.
+Lista innych audytów nie pojawia się tutaj w ogóle - dane GA4 i GSC opisują zawsze
+jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z Google.
+{% endcomment %}
+
+<div class="panel geo-dashboard-header">
+    <div class="geo-header-text">
+        <h1 class="geo-header-title">Analityka i Ruch</h1>
+        <p class="geo-header-subtitle">
+            <strong>{{ audit.url }}</strong>
+            {% if google.email %}· konto Google: {{ google.email }}{% endif %}
+            · audyt z {{ audit.created_at|date:"j E Y" }}
+        </p>
+    </div>
+    <div class="geo-header-actions">
+        <a class="geo-button-secondary" href="{% url 'auditor:detail' audit.pk %}">
+            <span aria-hidden="true">←</span> Raport audytu
+        </a>
+    </div>
+</div>
+
+{% if not has_analytics %}
+{# Stan 1: nic nie jest podłączone. Jedna decyzja na ekranie. #}
+<div class="panel analytics-empty">
+    <span class="analytics-empty-icon" aria-hidden="true">📈</span>
+    <h2 class="analytics-empty-title">Brak podłączonej analityki dla domeny {{ audit.url }}</h2>
+    <p class="analytics-empty-text">
+        Podłącz konto Google, żeby zobaczyć sesje organiczne z Analytics 4 oraz
+        kliknięcia i frazy z Search Console dla tej domeny.
+    </p>
+    {% if google.connected %}
+    <a class="google-connect-button"
+       href="{% url 'auditor:select_ga4_property' audit.pk %}">
+        Wskaż usługę Google Analytics dla tej domeny
+    </a>
+    <p class="analytics-empty-note">
+        Konto <strong>{{ google.email|default:"Google" }}</strong> jest już połączone —
+        pozostaje wybrać właściwą usługę.
+    </p>
+    {% else %}
+    <a class="google-connect-button"
+       href="{% url 'auditor:start_ga4_auth' audit.pk %}?return_to=analytics">
+        Podłącz Google Analytics i Search Console
+    </a>
+    <p class="analytics-empty-note">
+        Potrzebny jest dostęp tylko do odczytu — aplikacja nie zmienia nic na Twoim koncie.
+    </p>
+    {% endif %}
+</div>
+
+{% else %}
+{# Stan 2: usługa przypisana - pokazujemy dane. #}
+<div class="geo-metrics-grid analytics-metrics-grid">
+    <div class="panel geo-metric-card">
+        <h2 class="geo-card-heading">Ruch organiczny (GA4)</h2>
+        <div class="analytics-big-number">{{ audit.ga4_organic_sessions }}</div>
+        <p class="geo-card-hint">sesji organicznych w ostatnim pobranym okresie</p>
+        <div class="geo-metric-footnotes">
+            <span>Usługa: {{ audit.ga4_property_id }}</span>
+            {% if audit.ga4_selected_lead_event %}
+            <span>Konwersja: {{ audit.ga4_selected_lead_event }}</span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="panel geo-metric-card">
+        <h2 class="geo-card-heading">Kliknięcia (Search Console)</h2>
+        <div class="analytics-big-number">{{ audit.gsc_total_clicks_current }}</div>
+        <p class="geo-card-hint">
+            rok temu: {{ audit.gsc_total_clicks_previous }}
+            {% if audit.gsc_yoy_change_percent %}
+            <span class="{% if audit.gsc_yoy_change_percent > 0 %}gsc-delta-positive{% else %}gsc-delta-negative{% endif %}">
+                {{ audit.gsc_yoy_change_percent|floatformat:1 }}%
+            </span>
+            {% endif %}
+        </p>
+        <div class="geo-metric-footnotes">
+            <span>Witryna: {{ audit.gsc_site_url|default:"dopasowana po domenie" }}</span>
+        </div>
+    </div>
+
+    <div class="panel geo-metric-card">
+        <h2 class="geo-card-heading">Konfiguracja</h2>
+        <p class="geo-card-hint">
+            Dane pochodzą z usługi i witryny przypisanych do tej domeny.
+        </p>
+        <details class="analytics-config analytics-config-inline">
+            <summary class="analytics-config-summary">⚙️ Zmień usługę Google</summary>
+            <form method="post" action="{% url 'auditor:assign_google_services' audit.pk %}"
+                  class="analytics-config-form analytics-config-form-stacked">
+                {% csrf_token %}
+
+                <div class="analytics-config-field">
+                    <label for="ga4-{{ audit.pk }}">Usługa GA4</label>
+                    <select name="ga4_property_id" id="ga4-{{ audit.pk }}">
+                        <option value="">— nie przypisano —</option>
+                        {% for option in selectors.ga4_options %}
+                        <option value="{{ option.value }}"
+                                {% if option.value == audit.ga4_property_id %}selected{% endif %}>
+                            {% if option.account %}{{ option.account }} → {% endif %}{{ option.label }}
+                            (ID: {{ option.value }}){% if option.suggested %} (Sugerowana){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="analytics-config-field">
+                    <label for="gsc-{{ audit.pk }}">Witryna Search Console</label>
+                    <select name="gsc_site_url" id="gsc-{{ audit.pk }}">
+                        <option value="">— dopasuj automatycznie po domenie —</option>
+                        {% for option in selectors.gsc_options %}
+                        <option value="{{ option.value }}"
+                                {% if option.value == audit.gsc_site_url %}selected{% endif %}>
+                            {{ option.label }}{% if option.suggested %} (Sugerowana){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="analytics-config-actions">
+                    <button type="submit">Zapisz</button>
+                </div>
+            </form>
+            <form method="post" action="{% url 'auditor:google_disconnect' %}"
+                  class="google-disconnect-form analytics-disconnect">
+                {% csrf_token %}
+                <input type="hidden" name="audit" value="{{ audit.pk }}">
+                <button type="submit" class="google-disconnect-button">Odłącz konto Google</button>
+            </form>
+        </details>
+    </div>
+</div>
+
+{% if audit.ga4_insights.summary or audit.gsc_query_commentary %}
+<div class="panel">
+    <h2 class="geo-card-heading">Wnioski</h2>
+    {% if audit.ga4_insights.summary %}
+    <p class="gsc-commentary-text">{{ audit.ga4_insights.summary }}</p>
+    {% endif %}
+    {% if audit.gsc_query_commentary %}
+    <p class="gsc-commentary-text">{{ audit.gsc_query_commentary }}</p>
+    {% endif %}
+    {% if audit.gsc_page_commentary %}
+    <p class="gsc-commentary-text">{{ audit.gsc_page_commentary }}</p>
+    {% endif %}
+</div>
+{% endif %}
+
+{% if audit.gsc_top_gainers or audit.gsc_top_losers %}
+<div class="panel">
+    <h2 class="geo-card-heading">Frazy rok do roku</h2>
+    <div class="gsc-tables-grid">
+        {% if audit.gsc_top_gainers %}
+        <div>
+            <h3 class="ga4-subheading">Największe wzrosty</h3>
+            <div class="table-scroll">
+                <table class="gsc-table">
+                    <thead><tr><th>Fraza</th><th>Teraz</th><th>Rok temu</th></tr></thead>
+                    <tbody>
+                        {% for row in audit.gsc_top_gainers|slice:":10" %}
+                        <tr>
+                            <td>{{ row.query }}</td>
+                            <td>{{ row.current }}</td>
+                            <td>{{ row.previous }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+        {% if audit.gsc_top_losers %}
+        <div>
+            <h3 class="ga4-subheading">Największe spadki</h3>
+            <div class="table-scroll">
+                <table class="gsc-table">
+                    <thead><tr><th>Fraza</th><th>Teraz</th><th>Rok temu</th></tr></thead>
+                    <tbody>
+                        {% for row in audit.gsc_top_losers|slice:":10" %}
+                        <tr>
+                            <td>{{ row.query }}</td>
+                            <td>{{ row.current }}</td>
+                            <td>{{ row.previous }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<div class="panel">
+    <p class="tool-panel-hint">
+        Interaktywne wykresy z wyborem zakresu dat (ruch wg kanałów, konwersje,
+        porównania rok do roku) znajdują się w
+        <a class="link" href="{% url 'auditor:detail' audit.pk %}#analityka">raporcie audytu</a>.
+    </p>
+</div>
+{% endif %}
+{% endblock %}

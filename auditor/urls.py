@@ -9,7 +9,8 @@ urlpatterns = [
     path("", views.HubView.as_view(), name="hub"),
 
     # Panel analityki: wybór audytu, którego dane GA4/GSC chcemy oglądać.
-    path("analytics/", views.AnalyticsPanelView.as_view(), name="analytics"),
+    # Wejście z hubu: wybór audytu, bo analityka istnieje tylko w jego kontekście.
+    path("analytics/", views.analytics_entry, name="analytics"),
     path("analytics/disconnect/", views.google_disconnect, name="google_disconnect"),
     path(
         "analytics/<int:pk>/assign/",
@@ -21,6 +22,8 @@ urlpatterns = [
     # miejsc w kodzie i szablonach - zmienia się tylko adres.
     path("audits/", views.index, name="index"),
     path("audits/<int:pk>/", views.audit_detail, name="detail"),
+    # Analityka JEDNEGO audytu - dwa stany: podłącz albo pokaż dane.
+    path("audits/<int:pk>/analytics/", views.audit_analytics, name="audit_analytics"),
     # Odpytywany przez stronę szczegółów, dopóki audyt wykonuje się w tle.
     path("audits/<int:pk>/status/", views.audit_status, name="status"),
     # Dane GA4/GSC dla wybranego zakresu dat (AJAX z sekcji "Widoczność i Ruch").

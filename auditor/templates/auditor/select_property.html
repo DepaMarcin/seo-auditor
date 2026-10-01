@@ -21,8 +21,12 @@
         {% csrf_token %}
         {# Po autoryzacji wracamy do raportu audytu, nie do listy - stamtąd przyszedł. #}
         <input type="hidden" name="next" value="detail">
-        {# Witryna Search Console zostaje dopasowana po domenie; ekran po OAuth pyta
-           wyłącznie o usługę GA4, żeby nie mnożyć decyzji w jednym kroku. #}
+        {% comment %}
+        Witryna Search Console zostaje dopasowana po domenie; ekran po OAuth pyta
+        wyłącznie o usługę GA4, żeby nie mnożyć decyzji w jednym kroku. Przesyłamy
+        bieżącą wartość, bo puste pole zunifikowany widok odczytałby jako polecenie
+        wyczyszczenia witryny.
+        {% endcomment %}
         <input type="hidden" name="gsc_site_url" value="{{ audit.gsc_site_url }}">
         <select name="ga4_property_id" required>
             <option value="" disabled {% if not has_auto_selected %}selected{% endif %}>-- wybierz usługę --</option>
