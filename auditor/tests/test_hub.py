@@ -123,25 +123,30 @@ class AnalyticsEntryTests(TestCase):
     def setUp(self):
         self.client.force_login(self.user)
 
-    def test_entry_offers_the_audits(self):
+    def test_entry_renders_the_dashboard_directly(self):
+        # Kafelek z hubu prowadzi wprost do danych - bez listy domen po drodze.
         response = self.client.get(reverse("auditor:analytics"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "auditor/analytics_choose.html")
-        self.assertContains(response, "podlaczony.example")
-        self.assertContains(response, "niepodlaczony.example")
+        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
 
-    def test_entry_links_to_per_audit_analytics(self):
+    def test_newest_audit_is_shown_first(self):
+        response = self.client.get(reverse("auditor:analytics"))
+
+        self.assertEqual(response.context["audit"], self.drugi)
+
+    def test_domain_switcher_offers_the_other_audits(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertIn(f'href="/audits/{self.pierwszy.pk}/analytics/"', html)
+        self.assertIn('id="analytics-domain"', html)
+        self.assertIn("podlaczony.example", html)
 
-    def test_entry_shows_no_connection_state(self):
-        # Wybór domeny to nie miejsce na banery połączenia ani selektory usług.
+    def test_entry_shows_the_connection_state_of_the_current_domain(self):
+        # Najnowszy audyt nie ma usługi ani konta Google - widać ekran podłączenia.
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertNotIn('name="ga4_property_id"', html)
-        self.assertNotIn("Zalogowano do Google jako", html)
+        self.assertIn("Brak podłączonej analityki", html)
+        self.assertIn("Zaloguj przez Google", html)
 
     def test_other_users_audits_are_not_offered(self):
         intruder = get_user_model().objects.create_user(

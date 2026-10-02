@@ -9,8 +9,8 @@ urlpatterns = [
     path("", views.HubView.as_view(), name="hub"),
 
     # Panel analityki: wybór audytu, którego dane GA4/GSC chcemy oglądać.
-    # Wejście z hubu: wybór audytu, bo analityka istnieje tylko w jego kontekście.
-    path("analytics/", views.analytics_entry, name="analytics"),
+    # Dashboard analityki bieżącej domeny - bez pośredniej listy wyboru.
+    path("analytics/", views.analytics_dashboard, name="analytics"),
     path("analytics/disconnect/", views.google_disconnect, name="google_disconnect"),
     path(
         "analytics/<int:pk>/assign/",

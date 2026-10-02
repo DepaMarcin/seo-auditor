@@ -142,34 +142,14 @@ class HubView(View):
 
 
 @login_required
-def audit_analytics(request: HttpRequest, pk: int) -> HttpResponse:
-    """Analityka JEDNEGO audytu: albo zaproszenie do podłączenia, albo dane.
+def analytics_dashboard(request: HttpRequest) -> HttpResponse:
+    """`/analytics/` - od razu dashboard albo ekran podłączenia.
 
-    Wcześniej była tu globalna tablica wszystkich audytów z ich stanami połączenia.
-    Dane GA4 i GSC opisują zawsze jedną domenę, więc oglądanie ich obok listy innych
-    projektów gubiło kontekst - zwłaszcza po powrocie z autoryzacji Google.
-    """
-    audit = _get_owned_audit(request, pk)
-    google = _google_account_context(audit)
+    Bez listy domen w środku: strona pokazuje analitykę bieżącej domeny, a przełącznik
+    w nagłówku pozwala zmienić ją w jednym kroku. Pośrednia lista była dodatkowym
+    kliknięciem przed każdym spojrzeniem na dane.
 
-    return render(request, "auditor/audit_analytics.html", {
-        "nav_section": "analytics",
-        "audit": audit,
-        "google": google,
-        "selectors": _audit_with_selectors(audit, google),
-        # Dwa stany, nie więcej: brak przypisanej usługi albo gotowy dashboard.
-        "has_analytics": bool(audit.ga4_property_id),
-        "today_iso": timezone.localdate().isoformat(),
-    })
-
-
-@login_required
-def analytics_entry(request: HttpRequest) -> HttpResponse:
-    """Wejście do analityki z hubu narzędzi - wyłącznie wybór audytu.
-
-    Kafelek w hubie musi gdzieś prowadzić, a analityka istnieje tylko w kontekście
-    audytu. Ten widok nie pokazuje żadnych danych ani stanów połączenia: przy jednym
-    audycie przechodzi od razu do niego, przy kilku pyta, który otworzyć.
+    Bieżąca domena to ta z `?audit=`, a bez niej - najnowszy audyt użytkownika.
     """
     audits = list(_visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT])
 
@@ -180,12 +160,52 @@ def analytics_entry(request: HttpRequest) -> HttpResponse:
         )
         return redirect("auditor:index")
 
-    if len(audits) == 1:
-        return redirect("auditor:audit_analytics", pk=audits[0].pk)
+    audit = _pick_active_audit(request, audits)
+    return _render_analytics(request, audit, audits)
 
-    return render(request, "auditor/analytics_choose.html", {
+
+@login_required
+def audit_analytics(request: HttpRequest, pk: int) -> HttpResponse:
+    """Analityka wskazanego audytu - ten sam ekran, inny punkt wejścia.
+
+    Zostaje, bo prowadzą tu odnośniki z raportu i z przepływu OAuth.
+    """
+    audit = _get_owned_audit(request, pk)
+    audits = list(_visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT])
+
+    # Audyt starszy niż limit listy nie znalazłby się w przełączniku, a ma być
+    # tam widoczny jako bieżący.
+    if all(pozycja.pk != audit.pk for pozycja in audits):
+        audits.insert(0, audit)
+
+    return _render_analytics(request, audit, audits)
+
+
+def _pick_active_audit(request: HttpRequest, audits: list) -> "Audit":
+    """Domena, której analitykę pokazujemy: z `?audit=` albo najnowsza."""
+    wskazany = request.GET.get("audit", "")
+    if wskazany.isdigit():
+        for audit in audits:
+            if audit.pk == int(wskazany):
+                return audit
+        # Numer spoza własnych audytów traktujemy jak brak wskazania - cudzej
+        # analityki nie pokazujemy, a 404 na wejściu z hubu byłoby mylące.
+    return audits[0]
+
+
+def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> HttpResponse:
+    """Wspólne renderowanie obu stanów analityki."""
+    google = _google_account_context(audit)
+
+    return render(request, "auditor/analytics_dashboard.html", {
         "nav_section": "analytics",
+        "audit": audit,
         "audits": audits,
+        "google": google,
+        "selectors": _audit_with_selectors(audit, google),
+        # Dwa stany, nie więcej: brak przypisanej usługi albo gotowy dashboard.
+        "has_analytics": bool(audit.ga4_property_id),
+        "today_iso": timezone.localdate().isoformat(),
     })
 
 
@@ -338,6 +358,7 @@ ASSIGNMENT_RETURN_TARGETS = {
     "analytics": "auditor:audit_analytics",
     "detail": "auditor:detail",
 }
+# Audyt, którego analitykę właśnie zapisano, staje się bieżącą domeną na /analytics/.
 DEFAULT_RETURN_TARGET = "analytics"
 
 

@@ -89,17 +89,21 @@ class EmptyStateTests(AnalyticsBase):
         ).content.decode()
 
         self.assertIn(f'href="/audits/{self.shell.pk}/ga4/connect/', html)
-        self.assertIn("Podłącz Google Analytics i Search Console", html)
+        self.assertIn("Zaloguj przez Google", html)
 
-    def test_no_other_audits_are_listed(self):
-        # Sedno przebudowy: ekran dotyczy jednej domeny.
+    def test_other_domains_appear_only_in_the_switcher(self):
+        # Przełącznik domeny z definicji wymienia pozostałe audyty. Poza nim treść
+        # ekranu dotyczy wyłącznie bieżącej domeny.
         html = _body_only(
             self.client.get(
                 reverse("auditor:audit_analytics", args=[self.shell.pk])
             ).content.decode()
         )
 
-        self.assertNotIn("orlen.pl", html)
+        przelacznik = html.split('class="analytics-domain-switch"', 1)
+        poza_przelacznikiem = przelacznik[0] + przelacznik[1].split("</form>", 1)[1]
+
+        self.assertNotIn("orlen.pl", poza_przelacznikiem)
 
     def test_no_charts_or_numbers_in_the_empty_state(self):
         html = _body_only(
@@ -119,7 +123,8 @@ class EmptyStateTests(AnalyticsBase):
 
         response = self._open(Audit.objects.get(pk=self.shell.pk))
 
-        self.assertContains(response, "Wskaż usługę Google Analytics dla tej domeny")
+        self.assertContains(response, "Wskaż usługi dla domeny")
+        self.assertContains(response, "Podłącz i pobierz dane")
         self.assertContains(response, "jan@gmail.com")
 
     def test_state_is_driven_by_the_property_not_the_token(self):
@@ -156,7 +161,7 @@ class DataStateTests(AnalyticsBase):
 
         html = self._open(audit).content.decode()
 
-        self.assertIn("⚙️ Zmień usługę Google", html)
+        self.assertIn("⚙️ Zmień usługę / domenę", html)
         self.assertIn(f'action="/analytics/{audit.pk}/assign/"', html)
 
     def test_empty_state_banner_is_gone(self):
@@ -166,13 +171,16 @@ class DataStateTests(AnalyticsBase):
 
         self.assertNotIn("Brak podłączonej analityki", html)
 
-    def test_other_audits_still_absent(self):
+    def test_data_section_describes_only_the_current_domain(self):
         self._connect(self.shell)
         self._connect(self.orlen, property_id="111111")
 
-        html = self._open(Audit.objects.get(pk=self.shell.pk)).content.decode()
+        html = _body_only(self._open(Audit.objects.get(pk=self.shell.pk)).content.decode())
+        czesci = html.split('class="analytics-domain-switch"', 1)
+        poza_przelacznikiem = czesci[0] + czesci[1].split("</form>", 1)[1]
 
-        self.assertNotIn("orlen.pl", html)
+        self.assertNotIn("orlen.pl", poza_przelacznikiem)
+        self.assertNotIn("111111", poza_przelacznikiem)
 
     def test_link_back_to_the_report(self):
         audit = self._connect(self.shell)
@@ -210,43 +218,52 @@ class IsolationTests(AnalyticsBase):
         self.assertIn("/login/", response.url)
 
 
-class EntryPointTests(AnalyticsBase):
-    """Wejście z hubu: wyłącznie wybór audytu."""
+class DirectEntryTests(AnalyticsBase):
+    """`/analytics/` pokazuje dane od razu, bez listy domen po drodze."""
 
-    def test_single_audit_goes_straight_to_its_analytics(self):
-        Audit.objects.filter(pk=self.orlen.pk).delete()
-
-        response = self.client.get(reverse("auditor:analytics"))
-
-        self.assertRedirects(
-            response,
-            reverse("auditor:audit_analytics", args=[self.shell.pk]),
-            fetch_redirect_response=False,
-        )
-
-    def test_several_audits_show_a_plain_chooser(self):
+    def test_entry_renders_the_dashboard_itself(self):
+        # Żadnego przekierowania ani ekranu wyboru - od razu treść.
         response = self.client.get(reverse("auditor:analytics"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "auditor/analytics_choose.html")
-        self.assertContains(response, "shell.pl")
-        self.assertContains(response, "orlen.pl")
+        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
 
-    def test_chooser_shows_no_connection_state(self):
-        # Wybór domeny to nie miejsce na banery i selektory usług.
-        self._connect(self.shell)
+    def test_newest_audit_is_the_default_domain(self):
+        response = self.client.get(reverse("auditor:analytics"))
+
+        self.assertEqual(response.context["audit"], self.shell)
+
+    def test_domain_can_be_switched_by_parameter(self):
+        response = self.client.get(reverse("auditor:analytics"), {"audit": self.orlen.pk})
+
+        self.assertEqual(response.context["audit"], self.orlen)
+
+    def test_switcher_lists_the_domains(self):
+        html = self.client.get(reverse("auditor:analytics")).content.decode()
+
+        self.assertIn('name="audit"', html)
+        self.assertIn("orlen.pl", html)
+        self.assertIn("shell.pl", html)
+
+    def test_single_audit_hides_the_switcher(self):
+        Audit.objects.filter(pk=self.orlen.pk).delete()
 
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertNotIn("Zalogowano do Google jako", html)
-        self.assertNotIn('name="ga4_property_id"', html)
-        self.assertNotIn("Brak podłączonej analityki", html)
+        self.assertNotIn('id="analytics-domain"', html)
 
-    def test_chooser_links_to_per_audit_analytics(self):
-        html = self.client.get(reverse("auditor:analytics")).content.decode()
+    def test_foreign_audit_parameter_falls_back_to_own_newest(self):
+        obcy = User.objects.create_user(
+            username="obcy3@przyklad.pl",
+            email="obcy3@przyklad.pl",
+            password="haslo-kontrolne-2",
+        )
+        cudzy = Audit.objects.create(url="https://cudzy.pl/", owner=obcy)
 
-        self.assertIn(f'href="/audits/{self.shell.pk}/analytics/"', html)
-        self.assertIn(f'href="/audits/{self.orlen.pk}/analytics/"', html)
+        response = self.client.get(reverse("auditor:analytics"), {"audit": cudzy.pk})
+
+        self.assertEqual(response.context["audit"], self.shell)
+        self.assertNotContains(response, "cudzy.pl")
 
     def test_without_any_audit_user_is_sent_to_the_scanner(self):
         Audit.objects.all().delete()
@@ -257,17 +274,70 @@ class EntryPointTests(AnalyticsBase):
             response, reverse("auditor:index"), fetch_redirect_response=False
         )
 
-    def test_only_own_audits_are_offered(self):
-        obcy = User.objects.create_user(
-            username="obcy2@przyklad.pl",
-            email="obcy2@przyklad.pl",
-            password="haslo-kontrolne-2",
-        )
-        Audit.objects.create(url="https://cudzy.pl/", owner=obcy)
+    def test_entry_requires_login(self):
+        self.client.logout()
 
+        response = self.client.get(reverse("auditor:analytics"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)
+
+
+class ConnectFormTests(AnalyticsBase):
+    """Stan 1 z autoryzowanym kontem: selektory i jeden przycisk."""
+
+    def _open_connected_account(self, audit):
+        Audit.objects.filter(pk=audit.pk).update(
+            ga4_refresh_token_encrypted="jawny-token-testowy"
+        )
+        with patch(
+            "auditor.views._build_credentials_from_refresh_token", return_value=MagicMock()
+        ), patch(
+            "auditor.services.google_api.fetch_account_email", return_value="jan@gmail.com"
+        ), patch(
+            "auditor.services.ga4_service.GA4OAuthService.list_accessible_properties",
+            return_value=[
+                {"property_id": "222222", "display_name": "shell.pl", "account_name": "Konto"}
+            ],
+        ), patch(
+            "auditor.services.google_api.list_gsc_sites",
+            return_value=[
+                {"site_url": "sc-domain:shell.pl", "label": "shell.pl", "domain": "shell.pl"}
+            ],
+        ):
+            return self.client.get(reverse("auditor:analytics"))
+
+    def test_account_banner_shows_the_email(self):
+        response = self._open_connected_account(self.shell)
+
+        self.assertContains(response, "Zalogowano jako")
+        self.assertContains(response, "jan@gmail.com")
+        self.assertContains(response, "Przełącz konto")
+
+    def test_both_selectors_are_offered(self):
+        html = self._open_connected_account(self.shell).content.decode()
+
+        self.assertIn('name="ga4_property_id"', html)
+        self.assertIn('name="gsc_site_url"', html)
+        self.assertIn("Podłącz i pobierz dane", html)
+
+    def test_form_targets_this_audit_and_returns_to_analytics(self):
+        html = self._open_connected_account(self.shell).content.decode()
+
+        self.assertIn(f'action="/analytics/{self.shell.pk}/assign/"', html)
+        self.assertIn('name="next" value="analytics"', html)
+
+    def test_suggested_option_is_preselected(self):
+        html = self._open_connected_account(self.shell).content.decode()
+
+        self.assertIn("(Sugerowana)", html)
+
+    def test_unauthorised_account_shows_a_single_login_button(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertNotIn("cudzy.pl", html)
+        self.assertIn("Zaloguj przez Google", html)
+        self.assertNotIn("Podłącz i pobierz dane", html)
+        self.assertNotIn('name="ga4_property_id"', _body_only(html))
 
 
 class RedirectAfterAssignmentTests(AnalyticsBase):
@@ -292,7 +362,7 @@ class RedirectAfterAssignmentTests(AnalyticsBase):
             fetch_redirect_response=False,
         )
 
-    def test_oauth_switch_returns_to_this_audit_analytics(self):
+    def test_oauth_returns_to_the_dashboard_with_data(self):
         from auditor.views import _build_oauth_state
 
         flow = MagicMock()

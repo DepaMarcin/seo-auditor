@@ -2359,6 +2359,52 @@
             border-radius: 0;
             background: transparent;
         }
+        /* Przełącznik domeny w nagłówku - zastąpił pośrednią listę wyboru. */
+        .analytics-domain-switch { display: flex; align-items: center; gap: 0.45rem; margin: 0; }
+        .analytics-domain-label {
+            font-size: 0.72rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            font-weight: 650;
+            color: var(--muted-dim);
+        }
+        .analytics-domain-switch select {
+            min-width: 180px;
+            max-width: 280px;
+            padding: 0.5rem 0.7rem;
+            font-size: 0.85rem;
+        }
+
+        /* Formularz podłączenia usług - wyśrodkowany, jedna kolumna decyzji. */
+        .analytics-connect { text-align: center; padding: 2.25rem 1.5rem; }
+        .analytics-connect-title {
+            font-size: 1.15rem;
+            font-weight: 650;
+            letter-spacing: -0.01em;
+            margin: 0 0 0.5rem;
+            overflow-wrap: anywhere;
+        }
+        .analytics-connect-text {
+            color: var(--muted);
+            font-size: 0.9rem;
+            max-width: 52ch;
+            margin: 0 auto 1.5rem;
+            line-height: 1.6;
+        }
+        .analytics-connect-form {
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            max-width: 460px;
+            margin: 0 auto;
+            text-align: left;
+        }
+        .analytics-connect-form select { width: 100%; min-width: 0; }
+        .analytics-connect-submit { margin-top: 0.3rem; padding: 0.8rem 1.2rem; font-weight: 700; }
+
+        /* Wykres sesji - stała wysokość, bo Chart.js skaluje się do kontenera. */
+        .chart-wrapper { position: relative; height: 320px; margin-top: 0.5rem; }
+
         /* Stan "brak analityki" - jedna decyzja na wyśrodkowanym ekranie. */
         .section-heading-link {
             float: right;

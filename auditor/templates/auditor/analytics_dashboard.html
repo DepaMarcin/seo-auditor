@@ -4,9 +4,9 @@
 
 {% block content %}
 {% comment %}
-Analityka jednego audytu, w dwóch stanach: zaproszenie do podłączenia albo dane.
-Lista innych audytów nie pojawia się tutaj w ogóle - dane GA4 i GSC opisują zawsze
-jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z Google.
+Analityka bieżącej domeny w dwóch stanach: ekran podłączenia albo gotowy dashboard.
+Pośrednia lista domen została usunięta - domenę zmienia się przełącznikiem w nagłówku,
+bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
 {% endcomment %}
 
 <div class="panel geo-dashboard-header">
@@ -19,6 +19,19 @@ jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z G
         </p>
     </div>
     <div class="geo-header-actions">
+        {% if audits|length > 1 %}
+        <form method="get" action="{% url 'auditor:analytics' %}" class="analytics-domain-switch">
+            <label for="analytics-domain" class="analytics-domain-label">Domena</label>
+            <select name="audit" id="analytics-domain" onchange="this.form.submit()">
+                {% for pozycja in audits %}
+                <option value="{{ pozycja.pk }}" {% if pozycja.pk == audit.pk %}selected{% endif %}>
+                    {{ pozycja.url }}
+                </option>
+                {% endfor %}
+            </select>
+            <noscript><button type="submit">Pokaż</button></noscript>
+        </form>
+        {% endif %}
         <a class="geo-button-secondary" href="{% url 'auditor:detail' audit.pk %}">
             <span aria-hidden="true">←</span> Raport audytu
         </a>
@@ -26,36 +39,100 @@ jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z G
 </div>
 
 {% if not has_analytics %}
-{# Stan 1: nic nie jest podłączone. Jedna decyzja na ekranie. #}
+{# Stan 1: brak przypisanej usługi. Jedna decyzja na ekranie. #}
+{% if google.connected %}
+<div class="panel google-banner google-banner-connected">
+    <div class="google-banner-main">
+        <span class="google-banner-icon" aria-hidden="true">🔗</span>
+        <div class="google-banner-text">
+            <p class="google-banner-title">
+                Zalogowano jako: <strong>{{ google.email|default:"(adres nieznany)" }}</strong>
+            </p>
+            <p class="google-banner-meta">
+                {% if google.token_encrypted %}
+                <span class="status-flag status-ok">Token aktywny · zaszyfrowany</span>
+                {% else %}
+                <span class="status-flag status-warning">Token aktywny · zapisany jawnie</span>
+                {% endif %}
+            </p>
+        </div>
+    </div>
+    <div class="google-banner-actions">
+        <a class="geo-button-secondary"
+           href="{% url 'auditor:start_ga4_auth' audit.pk %}?switch=1&amp;return_to=analytics">
+            Przełącz konto
+        </a>
+    </div>
+</div>
+
+<div class="panel analytics-connect">
+    <h2 class="analytics-connect-title">Wskaż usługi dla domeny {{ audit.url }}</h2>
+    <p class="analytics-connect-text">
+        Wybierz usługę Analytics 4 i witrynę Search Console. Dane pobierzemy od razu
+        po zapisaniu.
+    </p>
+
+    <form method="post" action="{% url 'auditor:assign_google_services' audit.pk %}"
+          class="analytics-connect-form">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="analytics">
+
+        <div class="analytics-config-field">
+            <label for="ga4-{{ audit.pk }}">Usługa Google Analytics 4</label>
+            <select name="ga4_property_id" id="ga4-{{ audit.pk }}" required>
+                <option value="">— wybierz usługę —</option>
+                {% for option in selectors.ga4_options %}
+                <option value="{{ option.value }}" {% if option.suggested %}selected{% endif %}>
+                    {% if option.account %}{{ option.account }} → {% endif %}{{ option.label }}
+                    (ID: {{ option.value }}){% if option.suggested %} (Sugerowana){% endif %}
+                </option>
+                {% empty %}
+                <option value="" disabled>Brak usług dostępnych na tym koncie</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="analytics-config-field">
+            <label for="gsc-{{ audit.pk }}">Witryna Search Console</label>
+            <select name="gsc_site_url" id="gsc-{{ audit.pk }}">
+                <option value="">— dopasuj automatycznie po domenie —</option>
+                {% for option in selectors.gsc_options %}
+                <option value="{{ option.value }}" {% if option.suggested %}selected{% endif %}>
+                    {{ option.label }}{% if option.suggested %} (Sugerowana){% endif %}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <button type="submit" class="analytics-connect-submit">Podłącz i pobierz dane</button>
+    </form>
+</div>
+
+{% else %}
 <div class="panel analytics-empty">
     <span class="analytics-empty-icon" aria-hidden="true">📈</span>
     <h2 class="analytics-empty-title">Brak podłączonej analityki dla domeny {{ audit.url }}</h2>
     <p class="analytics-empty-text">
+        {% if google.error == "token" %}
+        Zapisany token wygasł albo nie da się go odczytać. Połącz konto ponownie,
+        żeby przywrócić dane z Analytics 4 i Search Console.
+        {% else %}
         Podłącz konto Google, żeby zobaczyć sesje organiczne z Analytics 4 oraz
         kliknięcia i frazy z Search Console dla tej domeny.
+        {% endif %}
     </p>
-    {% if google.connected %}
-    <a class="google-connect-button"
-       href="{% url 'auditor:select_ga4_property' audit.pk %}">
-        Wskaż usługę Google Analytics dla tej domeny
-    </a>
-    <p class="analytics-empty-note">
-        Konto <strong>{{ google.email|default:"Google" }}</strong> jest już połączone —
-        pozostaje wybrać właściwą usługę.
-    </p>
-    {% else %}
     <a class="google-connect-button"
        href="{% url 'auditor:start_ga4_auth' audit.pk %}?return_to=analytics">
-        Podłącz Google Analytics i Search Console
+        Zaloguj przez Google
     </a>
     <p class="analytics-empty-note">
         Potrzebny jest dostęp tylko do odczytu — aplikacja nie zmienia nic na Twoim koncie.
     </p>
-    {% endif %}
 </div>
+{% endif %}
 
 {% else %}
-{# Stan 2: usługa przypisana - pokazujemy dane. #}
+{# Stan 2: pełny dashboard. #}
 <div class="geo-metrics-grid analytics-metrics-grid">
     <div class="panel geo-metric-card">
         <h2 class="geo-card-heading">Ruch organiczny (GA4)</h2>
@@ -91,14 +168,15 @@ jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z G
             Dane pochodzą z usługi i witryny przypisanych do tej domeny.
         </p>
         <details class="analytics-config analytics-config-inline">
-            <summary class="analytics-config-summary">⚙️ Zmień usługę Google</summary>
+            <summary class="analytics-config-summary">⚙️ Zmień usługę / domenę</summary>
             <form method="post" action="{% url 'auditor:assign_google_services' audit.pk %}"
                   class="analytics-config-form analytics-config-form-stacked">
                 {% csrf_token %}
+                <input type="hidden" name="next" value="analytics">
 
                 <div class="analytics-config-field">
-                    <label for="ga4-{{ audit.pk }}">Usługa GA4</label>
-                    <select name="ga4_property_id" id="ga4-{{ audit.pk }}">
+                    <label for="ga4-change-{{ audit.pk }}">Usługa GA4</label>
+                    <select name="ga4_property_id" id="ga4-change-{{ audit.pk }}">
                         <option value="">— nie przypisano —</option>
                         {% for option in selectors.ga4_options %}
                         <option value="{{ option.value }}"
@@ -111,8 +189,8 @@ jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z G
                 </div>
 
                 <div class="analytics-config-field">
-                    <label for="gsc-{{ audit.pk }}">Witryna Search Console</label>
-                    <select name="gsc_site_url" id="gsc-{{ audit.pk }}">
+                    <label for="gsc-change-{{ audit.pk }}">Witryna Search Console</label>
+                    <select name="gsc_site_url" id="gsc-change-{{ audit.pk }}">
                         <option value="">— dopasuj automatycznie po domenie —</option>
                         {% for option in selectors.gsc_options %}
                         <option value="{{ option.value }}"
@@ -137,9 +215,20 @@ jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z G
     </div>
 </div>
 
-{% if audit.ga4_insights.summary or audit.gsc_query_commentary %}
+{% if audit.ga4_history.dates %}
 <div class="panel">
-    <h2 class="geo-card-heading">Wnioski</h2>
+    <h2 class="geo-card-heading">Sesje organiczne w czasie</h2>
+    <div class="chart-wrapper">
+        <canvas id="analytics-sessions-chart"
+                data-dates="{{ audit.ga4_history.dates|join:"," }}"
+                data-sessions="{{ audit.ga4_history.sessions|join:"," }}"></canvas>
+    </div>
+</div>
+{% endif %}
+
+{% if audit.ga4_insights.summary or audit.gsc_query_commentary or audit.gsc_page_commentary %}
+<div class="panel">
+    <h2 class="geo-card-heading">Automatyczne wnioski</h2>
     {% if audit.ga4_insights.summary %}
     <p class="gsc-commentary-text">{{ audit.ga4_insights.summary }}</p>
     {% endif %}
@@ -154,7 +243,7 @@ jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z G
 
 {% if audit.gsc_top_gainers or audit.gsc_top_losers %}
 <div class="panel">
-    <h2 class="geo-card-heading">Frazy rok do roku</h2>
+    <h2 class="geo-card-heading">Frazy kluczowe rok do roku</h2>
     <div class="gsc-tables-grid">
         {% if audit.gsc_top_gainers %}
         <div>
@@ -200,10 +289,49 @@ jedną domenę, a sąsiedztwo innych projektów gubiło kontekst po powrocie z G
 
 <div class="panel">
     <p class="tool-panel-hint">
-        Interaktywne wykresy z wyborem zakresu dat (ruch wg kanałów, konwersje,
-        porównania rok do roku) znajdują się w
+        Wykresy z wyborem zakresu dat (ruch wg kanałów, konwersje, porównania okresów)
+        znajdują się w
         <a class="link" href="{% url 'auditor:detail' audit.pk %}#analityka">raporcie audytu</a>.
     </p>
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+    var canvas = document.getElementById("analytics-sessions-chart");
+    if (!canvas || typeof Chart === "undefined") { return; }
+
+    // Dane jadą w atrybutach data-*, a nie w literale JS: treść pochodzi z API
+    // Google, więc wstawiona do skryptu musiałaby być osobno escapowana.
+    var dates = (canvas.dataset.dates || "").split(",").filter(Boolean);
+    var sessions = (canvas.dataset.sessions || "").split(",").filter(Boolean).map(Number);
+    if (!dates.length) { return; }
+
+    new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: {
+            labels: dates,
+            datasets: [{
+                label: "Sesje organiczne",
+                data: sessions,
+                borderColor: "#00E676",
+                backgroundColor: "rgba(0, 230, 118, 0.12)",
+                fill: true,
+                tension: 0.3,
+                pointRadius: 0,
+            }],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { labels: { color: "#94A3B8" } } },
+            scales: {
+                x: { ticks: { color: "#64748B" }, grid: { color: "rgba(255,255,255,0.06)" } },
+                y: { ticks: { color: "#64748B" }, grid: { color: "rgba(255,255,255,0.06)" } },
+            },
+        },
+    });
+})();
+</script>
 {% endif %}
 {% endblock %}
