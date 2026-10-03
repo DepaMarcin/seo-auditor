@@ -151,12 +151,14 @@ class AssignServicesTests(TestCase):
     def test_selection_is_saved_on_the_audit(self):
         self.client.post(
             reverse("auditor:assign_google_services", args=[self.audit.pk]),
-            {"ga4_property_id": "111111", "gsc_site_url": "sc-domain:przyklad.pl"},
+            {"ga4_property_id": "111111"},
         )
 
         self.audit.refresh_from_db()
         self.assertEqual(self.audit.ga4_property_id, "111111")
-        self.assertEqual(self.audit.gsc_site_url, "sc-domain:przyklad.pl")
+        # Witrynę Search Console dobiera automat; bez tokenu nie ma czym odpytać
+        # Google, więc pole zostaje puste.
+        self.assertEqual(self.audit.gsc_site_url, "")
 
     def test_empty_values_clear_the_assignment(self):
         # Puste pole to świadomy wybór "dopasuj automatycznie", nie brak danych.
@@ -372,13 +374,19 @@ class PropertySwitchDataTests(TestCase):
         self.assertEqual(audit.gsc_query_commentary, "")
 
     def test_unchanged_selection_keeps_the_data(self):
-        # Ponowne zatwierdzenie tych samych wartości nie może kasować raportu.
+        # Ponowne zatwierdzenie tej samej usługi nie może kasować raportu. Witrynę
+        # podstawiamy tę samą, którą zwróci automat - inaczej sama zmiana witryny
+        # uznałaby zapis za zmianę.
         audit = self._audit_with_old_data()
 
-        self.client.post(
-            reverse("auditor:assign_google_services", args=[audit.pk]),
-            {"ga4_property_id": "999999", "gsc_site_url": "sc-domain:orlen.pl"},
-        )
+        with patch(
+            "auditor.services.google_services.resolve_gsc_site",
+            return_value="sc-domain:orlen.pl",
+        ):
+            self.client.post(
+                reverse("auditor:assign_google_services", args=[audit.pk]),
+                {"ga4_property_id": "999999"},
+            )
 
         audit.refresh_from_db()
         self.assertEqual(audit.ga4_organic_sessions, 123456)

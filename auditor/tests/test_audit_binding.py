@@ -50,12 +50,14 @@ class AssignServicesBindingTests(ThreeAuditsTestCase):
     def test_selected_audit_gets_the_property(self):
         self.client.post(
             reverse("auditor:assign_google_services", args=[self.enova.pk]),
-            {"ga4_property_id": "222222", "gsc_site_url": "sc-domain:enova.pl"},
+            {"ga4_property_id": "222222"},
         )
 
         self.enova.refresh_from_db()
         self.assertEqual(self.enova.ga4_property_id, "222222")
-        self.assertEqual(self.enova.gsc_site_url, "sc-domain:enova.pl")
+        # Witrynę Search Console dobiera automat po domenie audytu; bez tokenu
+        # nie ma czym odpytać Google, więc pole zostaje puste.
+        self.assertEqual(self.enova.gsc_site_url, "")
 
     def test_other_audits_are_untouched(self):
         self.client.post(

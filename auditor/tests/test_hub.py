@@ -123,30 +123,33 @@ class AnalyticsEntryTests(TestCase):
     def setUp(self):
         self.client.force_login(self.user)
 
-    def test_entry_renders_the_dashboard_directly(self):
-        # Kafelek z hubu prowadzi wprost do danych - bez listy domen po drodze.
+    def test_entry_asks_which_project(self):
+        # Kafelek z hubu prowadzi do jawnego wyboru projektu - analityka dotyczy
+        # zawsze jednej domeny i aplikacja nie zgaduje, której.
         response = self.client.get(reverse("auditor:analytics"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
+        self.assertTemplateUsed(response, "auditor/analytics_pick.html")
 
-    def test_newest_audit_is_shown_first(self):
-        response = self.client.get(reverse("auditor:analytics"))
-
-        self.assertEqual(response.context["audit"], self.drugi)
-
-    def test_domain_switcher_offers_the_other_audits(self):
+    def test_entry_offers_both_audits(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertIn('id="analytics-domain"', html)
         self.assertIn("podlaczony.example", html)
+        self.assertIn("niepodlaczony.example", html)
 
-    def test_entry_shows_the_connection_state_of_the_current_domain(self):
-        # Najnowszy audyt nie ma usługi ani konta Google - widać ekran podłączenia.
+    def test_chosen_project_opens_its_dashboard(self):
+        response = self.client.get(
+            reverse("auditor:analytics"), {"audit": self.pierwszy.pk}
+        )
+
+        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
+        self.assertEqual(response.context["audit"], self.pierwszy)
+
+    def test_entry_renders_no_data_before_choosing(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertIn("Brak podłączonej analityki", html)
-        self.assertIn("Zaloguj przez Google", html)
+        self.assertNotIn("Brak podłączonej analityki", html)
+        self.assertNotIn("4321", html)
 
     def test_other_users_audits_are_not_offered(self):
         intruder = get_user_model().objects.create_user(

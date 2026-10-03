@@ -160,8 +160,21 @@ def analytics_dashboard(request: HttpRequest) -> HttpResponse:
         )
         return redirect("auditor:index")
 
-    audit = _pick_active_audit(request, audits)
-    return _render_analytics(request, audit, audits)
+    wskazany = _audit_from_parameter(request, audits)
+
+    # Bez jawnego wskazania NIE wybieramy audytu za użytkownika. Przy kilkudziesięciu
+    # audytach "najnowszy" to loteria: użytkownik konfigurował usługę dla domeny,
+    # której nawet nie zauważył w nagłówku.
+    if wskazany is None:
+        if len(audits) == 1:
+            return _render_analytics(request, audits[0], audits)
+
+        return render(request, "auditor/analytics_pick.html", {
+            "nav_section": "analytics",
+            "projects": _projects_for_picker(audits),
+        })
+
+    return _render_analytics(request, wskazany, audits)
 
 
 @login_required
@@ -181,21 +194,64 @@ def audit_analytics(request: HttpRequest, pk: int) -> HttpResponse:
     return _render_analytics(request, audit, audits)
 
 
-def _pick_active_audit(request: HttpRequest, audits: list) -> "Audit":
-    """Domena, której analitykę pokazujemy: z `?audit=` albo najnowsza."""
+def _projects_for_picker(audits: list) -> list[dict]:
+    """Projekty na ekranie wyboru wraz z akcją właściwą dla ich stanu.
+
+    Każdy wiersz ma własny przycisk, bo trzy stany prowadzą w trzy różne miejsca:
+    projekt bez konta Google idzie do autoryzacji, projekt z kontem ale bez usługi
+    do jej wyboru, a skonfigurowany wprost do danych. Jeden wspólny przycisk pod
+    listą musiałby zgadywać, które z tych trzech znaczy "dalej".
+    """
+    projekty = []
+    for audit in audits:
+        ma_usluge = bool(audit.ga4_property_id)
+        ma_token = bool(audit.ga4_refresh_token_encrypted)
+
+        if ma_usluge:
+            etykieta, akcja = "Pokaż analitykę", "data"
+        elif ma_token:
+            etykieta, akcja = "Wskaż usługę GA4", "configure"
+        else:
+            etykieta, akcja = "Połącz z GA4 i GSC", "connect"
+
+        projekty.append({
+            "audit": audit,
+            "has_analytics": ma_usluge,
+            "has_token": ma_token,
+            "label": etykieta,
+            "action": akcja,
+        })
+    return projekty
+
+
+def _audit_from_parameter(request: HttpRequest, audits: list):
+    """Audyt wskazany w `?audit=`, albo None, gdy nie wskazano żadnego.
+
+    Numer spoza własnych audytów traktujemy jak brak wskazania - cudzej analityki
+    nie pokazujemy, a 404 na wejściu z hubu byłoby mylące.
+    """
     wskazany = request.GET.get("audit", "")
-    if wskazany.isdigit():
-        for audit in audits:
-            if audit.pk == int(wskazany):
-                return audit
-        # Numer spoza własnych audytów traktujemy jak brak wskazania - cudzej
-        # analityki nie pokazujemy, a 404 na wejściu z hubu byłoby mylące.
-    return audits[0]
+    if not wskazany.isdigit():
+        return None
+
+    for audit in audits:
+        if audit.pk == int(wskazany):
+            return audit
+    return None
 
 
 def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> HttpResponse:
     """Wspólne renderowanie obu stanów analityki."""
     google = _google_account_context(audit)
+
+    from .services.google_api import audit_domain, gsc_site_domain
+
+    # Rozbieżność domen zwykle znaczy, że usługę przypisano omyłkowo nie temu
+    # audytowi - pokazujemy to wprost, zamiast prezentować cudze liczby jako swoje.
+    niespojna_witryna = bool(
+        audit.gsc_site_url
+        and gsc_site_domain(audit.gsc_site_url) != audit_domain(audit.url)
+    )
 
     return render(request, "auditor/analytics_dashboard.html", {
         "nav_section": "analytics",
@@ -205,6 +261,9 @@ def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> Htt
         "selectors": _audit_with_selectors(audit, google),
         # Dwa stany, nie więcej: brak przypisanej usługi albo gotowy dashboard.
         "has_analytics": bool(audit.ga4_property_id),
+        "mismatched_site": niespojna_witryna,
+        "gsc_site_domain": gsc_site_domain(audit.gsc_site_url) if audit.gsc_site_url else "",
+        "audit_domain": audit_domain(audit.url),
         "today_iso": timezone.localdate().isoformat(),
     })
 
@@ -378,13 +437,17 @@ def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
     audit = _get_owned_audit(request, pk)
 
     property_id = (request.POST.get("ga4_property_id") or "").strip()
-    site_url = (request.POST.get("gsc_site_url") or "").strip()
     powrot = request.POST.get("next") or DEFAULT_RETURN_TARGET
 
-    wynik = apply_google_services(audit, property_id, site_url)
+    # Witryny Search Console nie czytamy z formularza: dobiera ją automat po domenie
+    # audytu. Ręczny wybór produkował przypisania w poprzek projektów, których
+    # użytkownik nie miał jak zauważyć.
+    wynik = apply_google_services(audit, property_id)
 
+    # Brak zmian nie wymaga komunikatu: użytkownik widzi te same ustawienia, a
+    # powtarzane zapisy zostawiały za sobą kolejkę identycznych powiadomień.
     if not wynik.changed:
-        messages.info(request, "Ustawienia analityki pozostały bez zmian.")
+        pass
     elif wynik.fetched:
         messages.success(
             request, f"Zapisano ustawienia i pobrano świeże dane dla {audit.url}."

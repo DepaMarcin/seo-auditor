@@ -61,14 +61,54 @@ def reset_derived_fields(audit, fields: dict) -> list[str]:
     return list(fields)
 
 
-def apply_google_services(audit, property_id: str, site_url: str) -> AssignmentResult:
+def resolve_gsc_site(audit, credentials=None) -> str:
+    """Witryna Search Console odpowiadająca domenie audytu.
+
+    Dobieramy ją automatycznie, bo ręczny wybór okazał się źródłem błędów: użytkownik
+    przypisywał witrynę jednego klienta do audytu drugiego i raport pokazywał cudze
+    liczby. `find_best_gsc_site` radzi sobie z wszystkimi formatami, w jakich GSC
+    rejestruje tę samą domenę (usługa domenowa, prefiks URL, z www i bez).
+
+    Pusty wynik znaczy "brak pasującej usługi" - przy pobieraniu danych GSCService
+    spróbuje dopasować ponownie, więc nic nie tracimy.
+    """
+    from auditor.services.gsc_service import GSCService
+
+    if credentials is None:
+        if not audit.ga4_refresh_token:
+            return ""
+        try:
+            credentials = build_credentials_from_refresh_token(audit)
+        except Exception:  # noqa: BLE001
+            logger.exception("Nie udało się odtworzyć poświadczeń dla audytu %s.", audit.pk)
+            return ""
+
+    try:
+        return GSCService().resolve_site_url(credentials, audit.url) or ""
+    except Exception:  # noqa: BLE001 - brak dopasowania nie może wywrócić zapisu
+        logger.exception("Nie udało się dopasować witryny Search Console dla audytu %s.", audit.pk)
+        return ""
+
+
+def apply_google_services(audit, property_id: str, site_url: str | None = None) -> AssignmentResult:
     """Zapisuje wybór, unieważnia dane poprzedniej usługi i pobiera nowe.
 
     Kolejność jest istotna: najpierw czyścimy, potem pobieramy. Gdy pobranie się nie
     uda, audyt zostaje z pustymi liczbami - to lepsze niż liczby cudzej witryny pod
     nazwą bieżącej, bo użytkownik nie ma jak tej podmiany zauważyć.
+
+    `site_url=None` znaczy "dobierz automatycznie po domenie audytu" i jest wariantem
+    domyślnym. Jawna wartość zostaje przyjęta bez zmian - korzysta z tego panel
+    administracyjny, gdzie usługę zarejestrowaną pod inną nazwą trzeba wskazać ręcznie.
     """
     property_id = (property_id or "").strip()
+
+    if site_url is None:
+        site_url = resolve_gsc_site(audit)
+        if site_url:
+            logger.info(
+                "Dopasowano witrynę Search Console %s do audytu %s.", site_url, audit.pk
+            )
     site_url = (site_url or "").strip()
 
     poprzednia_usluga = audit.ga4_property_id or ""

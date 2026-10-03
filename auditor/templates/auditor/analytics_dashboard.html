@@ -92,17 +92,16 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
             </select>
         </div>
 
-        <div class="analytics-config-field">
-            <label for="gsc-{{ audit.pk }}">Witryna Search Console</label>
-            <select name="gsc_site_url" id="gsc-{{ audit.pk }}">
-                <option value="">— dopasuj automatycznie po domenie —</option>
-                {% for option in selectors.gsc_options %}
-                <option value="{{ option.value }}" {% if option.suggested %}selected{% endif %}>
-                    {{ option.label }}{% if option.suggested %} (Sugerowana){% endif %}
-                </option>
-                {% endfor %}
-            </select>
-        </div>
+        {% comment %}
+        Search Console nie ma już selektora: witrynę dobiera `find_best_gsc_site` po
+        domenie audytu. Ręczny wybór był źródłem przypisań w poprzek projektów -
+        witryna jednego klienta trafiała do raportu drugiego, a użytkownik nie miał
+        jak tego zauważyć.
+        {% endcomment %}
+        <p class="analytics-auto-gsc">
+            <span class="analytics-auto-gsc-icon" aria-hidden="true">🔎</span>
+            Search Console: automatycznie dopasowane do <strong>{{ audit_domain }}</strong>
+        </p>
 
         <button type="submit" class="analytics-connect-submit">Podłącz i pobierz dane</button>
     </form>
@@ -133,6 +132,20 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
 
 {% else %}
 {# Stan 2: pełny dashboard. #}
+{% if mismatched_site %}
+<div class="panel analytics-mismatch">
+    <span class="analytics-mismatch-icon" aria-hidden="true">⚠️</span>
+    <div>
+        <p class="analytics-mismatch-title">Niespójna konfiguracja</p>
+        <p class="analytics-mismatch-text">
+            Ten audyt dotyczy domeny <strong>{{ audit_domain }}</strong>, ale przypisana
+            witryna Search Console to <strong>{{ gsc_site_domain }}</strong>. Liczby poniżej
+            mogą opisywać inny projekt — sprawdź przypisanie w sekcji „Zmień usługę / domenę”.
+        </p>
+    </div>
+</div>
+{% endif %}
+
 <div class="geo-metrics-grid analytics-metrics-grid">
     <div class="panel geo-metric-card">
         <h2 class="geo-card-heading">Ruch organiczny (GA4)</h2>
@@ -188,18 +201,13 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
                     </select>
                 </div>
 
-                <div class="analytics-config-field">
-                    <label for="gsc-change-{{ audit.pk }}">Witryna Search Console</label>
-                    <select name="gsc_site_url" id="gsc-change-{{ audit.pk }}">
-                        <option value="">— dopasuj automatycznie po domenie —</option>
-                        {% for option in selectors.gsc_options %}
-                        <option value="{{ option.value }}"
-                                {% if option.value == audit.gsc_site_url %}selected{% endif %}>
-                            {{ option.label }}{% if option.suggested %} (Sugerowana){% endif %}
-                        </option>
-                        {% endfor %}
-                    </select>
-                </div>
+                <p class="analytics-auto-gsc">
+                    <span class="analytics-auto-gsc-icon" aria-hidden="true">🔎</span>
+                    Search Console: dopasowana po domenie
+                    {% if audit.gsc_site_url %}
+                    (<strong>{{ audit.gsc_site_url }}</strong>)
+                    {% endif %}
+                </p>
 
                 <div class="analytics-config-actions">
                     <button type="submit">Zapisz</button>

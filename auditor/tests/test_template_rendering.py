@@ -190,4 +190,5 @@ class SelectionScreenRenderTests(RenderedTemplateBase):
         html = self._ekran(self.shell)
 
         self.assertIn('name="next" value="detail"', html)
-        self.assertIn('name="gsc_site_url"', html)
+        # Pola witryny Search Console już nie ma - dobiera ją automat po domenie.
+        self.assertNotIn('name="gsc_site_url"', html)

@@ -1,0 +1,58 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Analityka i Ruch — wybierz projekt{% endblock %}
+
+{% block content %}
+{% comment %}
+Pierwszy krok analityki: wskazanie projektu.
+
+Każdy wiersz ma własny przycisk, a nie wspólny pod listą rozwijaną. Trzy stany
+prowadzą w trzy różne miejsca (autoryzacja konta, wybór usługi, gotowe dane), więc
+jedna etykieta musiałaby zgadywać, co znaczy "dalej". Przy okazji odpada krok
+wybierania w dropdownie przed kliknięciem.
+
+Aplikacja nie wybiera projektu za użytkownika: wcześniej brała najnowszy audyt, a
+przy kilkudziesięciu audytach to loteria - usługa Google trafiała do domeny, której
+nikt nie zauważył w nagłówku.
+{% endcomment %}
+<div class="panel">
+    <h1>Analityka i Ruch</h1>
+    <p class="tool-panel-intro">
+        Dane z Analytics 4 i Search Console dotyczą zawsze jednej domeny.
+        Wybierz projekt, który chcesz podłączyć lub którego dane chcesz zobaczyć.
+    </p>
+
+    <div class="analytics-list">
+        {% for project in projects %}
+        <div class="project-row{% if project.has_analytics %} project-row-connected{% endif %}">
+            <div class="project-row-main">
+                <span class="project-row-url">{{ project.audit.url }}</span>
+                <span class="project-row-meta">
+                    {% if project.has_analytics %}
+                    <span class="status-flag status-ok">Analityka podłączona</span>
+                    {% elif project.has_token %}
+                    <span class="status-flag status-warning">Konto Google gotowe</span>
+                    {% else %}
+                    <span class="status-flag geo-stability-absent">Brak połączenia</span>
+                    {% endif %}
+                    audyt z {{ project.audit.created_at|date:"j E Y" }}
+                </span>
+            </div>
+
+            {% if project.action == "connect" %}
+            {# Bez tokenu pierwszym krokiem jest zgoda Google - prowadzimy tam wprost. #}
+            <a class="project-row-button project-row-button-primary"
+               href="{% url 'auditor:start_ga4_auth' project.audit.pk %}?return_to=analytics">
+                {{ project.label }} →
+            </a>
+            {% else %}
+            <a class="project-row-button{% if project.action == 'configure' %} project-row-button-primary{% endif %}"
+               href="{% url 'auditor:analytics' %}?audit={{ project.audit.pk }}">
+                {{ project.label }} →
+            </a>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
