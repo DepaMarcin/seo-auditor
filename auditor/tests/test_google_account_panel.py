@@ -25,6 +25,23 @@ from auditor.services.google_api import (
 
 User = get_user_model()
 
+
+def _connected_google_account(user, email="jan@gmail.com"):
+    """Konto Google użytkownika - od wdrożenia `GoogleAccount` token leży tutaj."""
+    from auditor.models import GoogleAccount
+
+    konto, _ = GoogleAccount.objects.get_or_create(user=user)
+    konto.refresh_token_encrypted = "jawny-token-testowy"
+    konto.email = email
+    konto.save()
+    return konto
+
+
+def _allow_property_access():
+    """Przepuszcza weryfikację uprawnień do usługi GA4 w Google."""
+    return patch("auditor.views._has_access_to_property", return_value=True)
+
+
 WLASCIWOSCI_GA4 = [
     {"property_id": "111111", "display_name": "przyklad.pl - GA4", "account_name": "Agencja"},
     {"property_id": "222222", "display_name": "inna-firma.pl", "account_name": "Agencja"},
@@ -149,10 +166,13 @@ class AssignServicesTests(TestCase):
         self.client.force_login(self.user)
 
     def test_selection_is_saved_on_the_audit(self):
-        self.client.post(
-            reverse("auditor:assign_google_services", args=[self.audit.pk]),
-            {"ga4_property_id": "111111"},
-        )
+        _connected_google_account(self.user)
+
+        with _allow_property_access():
+            self.client.post(
+                reverse("auditor:assign_google_services", args=[self.audit.pk]),
+                {"ga4_property_id": "111111"},
+            )
 
         self.audit.refresh_from_db()
         self.assertEqual(self.audit.ga4_property_id, "111111")
@@ -307,6 +327,23 @@ class PropertySwitchDataTests(TestCase):
 
     def setUp(self):
         self.client.force_login(self.user)
+        _connected_google_account(self.user)
+        # Weryfikację uprawnień w Google przepuszczamy - te testy badają czyszczenie
+        # danych pochodnych, nie kontrolę dostępu.
+        self._access = _allow_property_access()
+        self._access.start()
+        self.addCleanup(self._access.stop)
+
+        # Pobieranie danych podmieniamy: te testy badają, co ZOSTAJE po zmianie
+        # usługi, a prawdziwy `sync_*` zapisałby na to miejsce pusty szkielet
+        # odpowiedzi Google i zacierał różnicę.
+        for sciezka in (
+            "auditor.services.audit_service.AuditService.sync_ga4_data",
+            "auditor.services.audit_service.AuditService.sync_gsc_data",
+        ):
+            atrapa = patch(sciezka)
+            atrapa.start()
+            self.addCleanup(atrapa.stop)
 
     def _audit_with_old_data(self) -> Audit:
         return Audit.objects.create(
@@ -339,7 +376,7 @@ class PropertySwitchDataTests(TestCase):
 
         self.client.post(
             reverse("auditor:assign_google_services", args=[audit.pk]),
-            {"ga4_property_id": "111111", "gsc_site_url": "sc-domain:orlen.pl"},
+            {"ga4_property_id": "111111"},
         )
 
         audit.refresh_from_db()
@@ -364,10 +401,14 @@ class PropertySwitchDataTests(TestCase):
     def test_gsc_numbers_are_cleared_when_the_site_changes(self):
         audit = self._audit_with_old_data()
 
-        self.client.post(
-            reverse("auditor:assign_google_services", args=[audit.pk]),
-            {"ga4_property_id": "999999", "gsc_site_url": "sc-domain:universe.pl"},
-        )
+        with patch(
+            "auditor.services.google_services.resolve_gsc_site",
+            return_value="sc-domain:universe.pl",
+        ):
+            self.client.post(
+                reverse("auditor:assign_google_services", args=[audit.pk]),
+                {"ga4_property_id": "999999"},
+            )
 
         audit.refresh_from_db()
         self.assertEqual(audit.gsc_total_clicks_current, 0)
@@ -395,10 +436,14 @@ class PropertySwitchDataTests(TestCase):
     def test_changing_only_gsc_keeps_ga4_data(self):
         audit = self._audit_with_old_data()
 
-        self.client.post(
-            reverse("auditor:assign_google_services", args=[audit.pk]),
-            {"ga4_property_id": "999999", "gsc_site_url": "sc-domain:universe.pl"},
-        )
+        with patch(
+            "auditor.services.google_services.resolve_gsc_site",
+            return_value="sc-domain:universe.pl",
+        ):
+            self.client.post(
+                reverse("auditor:assign_google_services", args=[audit.pk]),
+                {"ga4_property_id": "999999"},
+            )
 
         audit.refresh_from_db()
         self.assertEqual(audit.ga4_organic_sessions, 123456)

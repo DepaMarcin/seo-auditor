@@ -1,0 +1,341 @@
+"""Wyspecjalizowani agenci badania.
+
+Każdy agent dostaje wspólny stan, dokłada do niego swoje wnioski i nie podnosi
+wyjątków na zewnątrz - awarię zapisuje w `state.errors`. Dwóch pierwszych nie używa
+modelu językowego: ich zadaniem jest przełożyć liczby na zdania, a to reguły, nie
+interpretacja. LLM wchodzi dopiero przy syntezie, gdzie faktycznie wnosi wartość.
+"""
+from __future__ import annotations
+
+import logging
+
+from .state import SEOInvestigatorState
+from .tools import get_geo_visibility, get_technical_health, get_traffic_trends
+
+logger = logging.getLogger(__name__)
+
+# Model syntezy. Tańszy wariant wystarcza: materiał jest już przygotowany, zadaniem
+# modelu jest ułożyć go w raport, a nie szukać wniosków od zera.
+REPORTER_MODEL = "gpt-4o-mini"
+
+# Ile problemów technicznych trafia do wniosków. Lista wszystkiego byłaby zrzutem
+# metryk, a nie wnioskiem - raport ma wskazywać, czym zająć się najpierw.
+MAX_TECHNICAL_ISSUES = 12
+
+# Progi istotności zmiany ruchu. Wahania poniżej tej granicy to szum sezonowy.
+SIGNIFICANT_CHANGE_PERCENT = 10
+
+REPORTER_PROMPT = """Jesteś konsultantem SEO przygotowującym podsumowanie dla klienta.
+
+Domena: {domain}
+
+USTALENIA TECHNICZNE:
+{technical}
+
+USTALENIA ANALITYCZNE (GA4 / Search Console):
+{analytics}
+
+WIDOCZNOŚĆ W WYSZUKIWARKACH AI:
+{geo}
+
+OGRANICZENIA BADANIA:
+{errors}
+
+ZADANIE:
+Napisz zwięzły raport w języku polskim, w formacie Markdown, o strukturze:
+
+## Podsumowanie
+Dwa, trzy zdania: co jest najważniejsze dla biznesu.
+
+## Co wymaga uwagi
+Lista priorytetów - od najpilniejszego. Przy każdym jedno zdanie uzasadnienia.
+
+## Co działa dobrze
+Krótka lista. Pomiń, jeśli nie ma czego pochwalić.
+
+## Czego nie udało się zbadać
+Wypisz ograniczenia z sekcji OGRANICZENIA. Pomiń całą sekcję, gdy ich nie ma.
+
+ZASADY:
+- Opieraj się WYŁĄCZNIE na przekazanych ustaleniach. Nie dopowiadaj faktów.
+- Nie powtarzaj surowych nazw metryk - tłumacz je na skutek dla firmy.
+- Bez wstępów o tym, czym jest SEO. Klient to wie."""
+
+
+class TechnicalAgent:
+    """Przekłada metryki techniczne na twarde wnioski."""
+
+    name = "TechnicalAgent"
+
+    def run(self, state: SEOInvestigatorState, owner=None) -> SEOInvestigatorState:
+        try:
+            zdrowie = get_technical_health(state.domain, owner=owner)
+        except Exception as exc:  # noqa: BLE001 - agent nie przerywa badania
+            logger.exception("%s padł dla %s.", self.name, state.domain)
+            state.record_error(self.name, exc)
+            return state
+
+        if zdrowie.get("error"):
+            state.record_error(self.name, zdrowie["error"])
+            return state
+
+        if zdrowie.get("audit_id"):
+            state.audit_id = zdrowie["audit_id"]
+
+        problemy = zdrowie.get("problems") or []
+        if not problemy:
+            zrodlo = "audytu" if zdrowie["source"] == "audit" else "skanu strony"
+            state.technical_issues.append(
+                f"Nie znaleziono błędów technicznych wymagających uwagi (na podstawie {zrodlo})."
+            )
+            return state
+
+        # Błędy przed ostrzeżeniami: raport ma zaczynać się od tego, co boli najbardziej.
+        kolejnosc = {"error": 0, "warning": 1}
+        problemy.sort(key=lambda p: kolejnosc.get(p["status"], 2))
+
+        if zdrowie.get("score") is not None:
+            state.technical_issues.append(
+                f"Wynik audytu technicznego: {zdrowie['score']}/100."
+            )
+
+        for problem in problemy[:MAX_TECHNICAL_ISSUES]:
+            waga = "Błąd" if problem["status"] == "error" else "Ostrzeżenie"
+            state.technical_issues.append(f"{waga}: {problem['value']}")
+
+        pozostale = len(problemy) - MAX_TECHNICAL_ISSUES
+        if pozostale > 0:
+            state.technical_issues.append(
+                f"Pozostało {pozostale} dalszych uwag o niższym priorytecie."
+            )
+
+        return state
+
+
+class AnalyticsAgent:
+    """Przekłada dane GA4 i Search Console na wnioski o ruchu."""
+
+    name = "AnalyticsAgent"
+
+    def run(self, state: SEOInvestigatorState, owner=None) -> SEOInvestigatorState:
+        try:
+            trendy = get_traffic_trends(state.domain, owner=owner)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("%s padł dla %s.", self.name, state.domain)
+            state.record_error(self.name, exc)
+            return state
+
+        if not trendy.get("authorized"):
+            # Brak autoryzacji to normalny stan, nie awaria - zapisujemy go jako
+            # ograniczenie badania, żeby raport nie udawał kompletnego.
+            powod = trendy.get("error") or "Brak autoryzacji GA4/GSC."
+            state.analytics_insights.append(f"Brak autoryzacji GA4/GSC - {powod}")
+            state.record_error(self.name, powod)
+            return state
+
+        self._describe_ga4(state, trendy.get("ga4"))
+        self._describe_gsc(state, trendy.get("gsc"))
+
+        if not state.analytics_insights:
+            state.analytics_insights.append(
+                "Konto Google jest podłączone, ale nie zwróciło danych dla tej domeny."
+            )
+
+        return state
+
+    def _describe_ga4(self, state: SEOInvestigatorState, ga4: dict | None) -> None:
+        if ga4 is None:
+            state.analytics_insights.append(
+                "Do tej domeny nie przypisano usługi Analytics 4 - brak danych o sesjach."
+            )
+            return
+        if ga4.get("error"):
+            state.record_error(self.name, f"GA4: {ga4['error']}")
+            return
+
+        state.analytics_insights.append(
+            f"Sesje organiczne w ostatnich {ga4['window_days']} dniach: {ga4['sessions']}."
+        )
+
+        kanaly = ga4.get("channels") or {}
+        biezace = (kanaly.get("current") or {}).get("Organic Search")
+        poprzednie = (kanaly.get("previous") or {}).get("Organic Search")
+        zmiana = _percent_change(biezace, poprzednie)
+        if zmiana is not None:
+            kierunek = "wzrost" if zmiana > 0 else "spadek"
+            waga = "istotny" if abs(zmiana) >= SIGNIFICANT_CHANGE_PERCENT else "nieznaczny"
+            state.analytics_insights.append(
+                f"Ruch organiczny rok do roku: {waga} {kierunek} o {abs(zmiana)}% "
+                f"({poprzednie} → {biezace} sesji)."
+            )
+
+    def _describe_gsc(self, state: SEOInvestigatorState, gsc: dict | None) -> None:
+        if gsc is None:
+            return
+        if gsc.get("error"):
+            state.record_error(self.name, f"Search Console: {gsc['error']}")
+            return
+
+        biezace = gsc.get("clicks_current")
+        poprzednie = gsc.get("clicks_previous")
+        if biezace:
+            state.analytics_insights.append(
+                f"Kliknięcia z wyszukiwarki: {biezace} (rok temu: {poprzednie})."
+            )
+
+        # Serwis sam liczy zmianę rok do roku - korzystamy z jego wyniku, zamiast
+        # przeliczać drugi raz i ryzykować rozbieżność.
+        zmiana = gsc.get("yoy_change_percent")
+        if zmiana is not None and abs(zmiana) >= SIGNIFICANT_CHANGE_PERCENT:
+            kierunek = "wzrost" if zmiana > 0 else "spadek"
+            state.analytics_insights.append(
+                f"Kliknięcia rok do roku: {kierunek} o {abs(zmiana)}%."
+            )
+
+        rosnace = [w.get("query") for w in (gsc.get("gainers") or [])[:3] if w.get("query")]
+        spadajace = [w.get("query") for w in (gsc.get("losers") or [])[:3] if w.get("query")]
+        if rosnace:
+            state.analytics_insights.append(f"Frazy rosnące: {', '.join(rosnace)}.")
+        if spadajace:
+            state.analytics_insights.append(f"Frazy spadające: {', '.join(spadajace)}.")
+
+
+class GeoAgent:
+    """Dokłada wynik ostatniego badania widoczności w wyszukiwarkach AI.
+
+    Nie zleca nowego badania - jedno kosztuje kilkadziesiąt wywołań modelu i trwa
+    minuty, więc byłoby to zaskoczeniem dla kogoś, kto prosił o raport.
+    """
+
+    name = "GeoAgent"
+
+    def run(self, state: SEOInvestigatorState, owner=None) -> SEOInvestigatorState:
+        try:
+            geo = get_geo_visibility(state.domain, owner=owner)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("%s padł dla %s.", self.name, state.domain)
+            state.record_error(self.name, exc)
+            return state
+
+        if not geo.get("measured"):
+            state.geo_visibility_notes.append(
+                "Widoczność w wyszukiwarkach AI nie była dotąd mierzona dla tej domeny."
+            )
+            return state
+
+        sumy = geo.get("totals") or {}
+        state.geo_visibility_notes.append(
+            f"Widoczność w wyszukiwarkach AI: {geo['overall_score']}% "
+            f"(obecna w {sumy.get('visible', 0)} z {sumy.get('total', 0)} odpowiedzi)."
+        )
+        if sumy.get("linked") is not None:
+            state.geo_visibility_notes.append(
+                f"W tym {sumy['linked']} cytowań z odnośnikiem i "
+                f"{sumy.get('mentions', 0)} wzmianek bez odnośnika."
+            )
+        if geo.get("top_competitors"):
+            state.geo_visibility_notes.append(
+                f"Najczęściej cytowani konkurenci: {geo['top_competitors']}."
+            )
+
+        return state
+
+
+class ReporterAgent:
+    """Agent syntezy: składa wnioski specjalistów w raport biznesowy (wywołanie LLM)."""
+
+    name = "ReporterAgent"
+
+    def __init__(self, client=None, model: str = REPORTER_MODEL):
+        self._client = client
+        self._model = model
+
+    def run(self, state: SEOInvestigatorState) -> SEOInvestigatorState:
+        if not state.has_findings:
+            state.final_synthesis_report = _fallback_report(state)
+            state.record_error(self.name, "Brak ustaleń do syntezy.")
+            return state
+
+        try:
+            client = self._client or _llm_client()
+            odpowiedz = client.responses.create(
+                model=self._model,
+                input=REPORTER_PROMPT.format(
+                    domain=state.domain,
+                    technical=_bullets(state.technical_issues),
+                    analytics=_bullets(state.analytics_insights),
+                    geo=_bullets(state.geo_visibility_notes),
+                    errors=_bullets(state.errors) if state.errors else "(brak)",
+                ),
+            )
+            raport = (odpowiedz.output_text or "").strip()
+        except Exception as exc:  # noqa: BLE001 - bez raportu LLM zostają ustalenia
+            logger.exception("%s nie zdołał wygenerować raportu dla %s.", self.name, state.domain)
+            state.record_error(self.name, exc)
+            state.final_synthesis_report = _fallback_report(state)
+            return state
+
+        # Pusta odpowiedź modelu nie może zostawić użytkownika bez niczego -
+        # zebrane ustalenia same w sobie mają wartość.
+        state.final_synthesis_report = raport or _fallback_report(state)
+        return state
+
+
+def _percent_change(current, previous) -> int | None:
+    """Zmiana procentowa między okresami - albo None, gdy nie da się jej policzyć.
+
+    Brak punktu odniesienia (zero rok temu) nie jest wzrostem nieskończonym, tylko
+    informacją, której nie ma - i tak ją traktujemy.
+    """
+    if current is None or previous is None or not previous:
+        return None
+    return round((current - previous) / previous * 100)
+
+
+def _llm_client():
+    """Klient OpenAI - ten sam wzorzec konfiguracji co w pozostałych modułach."""
+    from django.conf import settings
+
+    api_key = getattr(settings, "OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "Synteza raportu wymaga OPENAI_API_KEY - bez niego raport powstaje "
+            "z surowych ustaleń."
+        )
+    from openai import OpenAI
+
+    return OpenAI(api_key=api_key)
+
+
+def _bullets(items: list[str]) -> str:
+    return "\n".join(f"- {pozycja}" for pozycja in items) if items else "(brak ustaleń)"
+
+
+def _fallback_report(state: SEOInvestigatorState) -> str:
+    """Raport złożony bez modelu - z samych ustaleń.
+
+    Powstaje, gdy synteza zawiedzie albo nie ma klucza API. Surowa lista jest mniej
+    czytelna niż tekst, ale prawdziwa - a badanie nie powinno kończyć się pustką
+    tylko dlatego, że jeden krok wymagał sieci.
+    """
+    sekcje = [f"# Badanie SEO: {state.domain}", ""]
+
+    for naglowek, wpisy in (
+        ("## Ustalenia techniczne", state.technical_issues),
+        ("## Ruch i widoczność w wyszukiwarce", state.analytics_insights),
+        ("## Widoczność w wyszukiwarkach AI", state.geo_visibility_notes),
+    ):
+        if wpisy:
+            sekcje.append(naglowek)
+            sekcje.extend(f"- {wpis}" for wpis in wpisy)
+            sekcje.append("")
+
+    if state.errors:
+        sekcje.append("## Czego nie udało się zbadać")
+        sekcje.extend(f"- {blad}" for blad in state.errors)
+        sekcje.append("")
+
+    if not state.has_findings:
+        sekcje.append("Nie udało się zebrać żadnych ustaleń dla tej domeny.")
+
+    return "\n".join(sekcje).strip()

@@ -4,6 +4,53 @@ from django.db import models
 from .services.crypto import decrypt_secret, encrypt_secret
 
 
+class GoogleAccount(models.Model):
+    """Konto Google podłączone przez użytkownika aplikacji.
+
+    Token odświeżania leżał wcześniej przy każdym audycie osobno. Skutek był taki, że
+    w bazie zbierało się kilkanaście niezależnych tokenów z kolejnych autoryzacji,
+    a aplikacja brała "jakiś" z nich i uznawała powiązaną domenę za podłączoną -
+    również wtedy, gdy zalogowane konto Google nie miało do niej żadnego dostępu.
+
+    Poświadczenie jest jedno na użytkownika, bo to jedno konto Google. Dostęp do
+    konkretnych usług GA4 i witryn Search Console wynika z uprawnień w Google,
+    a nie z zapisu w naszej bazie - i tam jest sprawdzany.
+    """
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="google_account",
+    )
+    email = models.CharField(max_length=254, blank=True, default="")
+    # Szyfrowane tak samo jak wcześniej (auditor.services.crypto).
+    refresh_token_encrypted = models.TextField(blank=True, null=True)
+    connected_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Konto Google"
+        verbose_name_plural = "Konta Google"
+
+    def __str__(self):
+        return self.email or f"konto Google użytkownika {self.user_id}"
+
+    @property
+    def refresh_token(self) -> str | None:
+        from .services.crypto import decrypt_secret
+
+        return decrypt_secret(self.refresh_token_encrypted)
+
+    @refresh_token.setter
+    def refresh_token(self, value: str | None) -> None:
+        from .services.crypto import encrypt_secret
+
+        self.refresh_token_encrypted = encrypt_secret(value)
+
+    @property
+    def is_connected(self) -> bool:
+        return bool(self.refresh_token_encrypted)
+
+
 class Audit(models.Model):
     class Status(models.TextChoices):
         PENDING = "pending", "Oczekujący"
@@ -23,6 +70,11 @@ class Audit(models.Model):
         blank=True,
     )
     url = models.URLField(max_length=2048)
+    # Rekord powstały wyłącznie po to, żeby pokazać analitykę domeny z konta Google.
+    # Analityka nie wymaga audytu technicznego, ale potrzebuje miejsca na zapis
+    # wybranej usługi GA4 i pobranych liczb. Takie wpisy są wykluczone z listy
+    # skanera - nie są audytami i nie mają metryk.
+    analytics_only = models.BooleanField(default=False)
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
     score = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -75,13 +127,38 @@ class Audit(models.Model):
         return f"{self.url} ({self.status})"
 
     @property
+    def google_account(self):
+        """Konto Google właściciela audytu - albo None."""
+        if self.owner_id is None:
+            return None
+        from .models import GoogleAccount
+
+        return GoogleAccount.objects.filter(user_id=self.owner_id).first()
+
+    @property
     def ga4_refresh_token(self) -> str | None:
-        """Odszyfrowany token odświeżania Google (albo None, gdy brak/nie da się odczytać)."""
+        """Token odświeżania Google do użycia dla tego audytu.
+
+        Pierwszeństwo ma konto Google właściciela - tam poświadczenie mieszka od
+        wdrożenia `GoogleAccount`. Własne pole audytu zostaje jako odczyt danych
+        sprzed tej zmiany (i ścieżka dla testów, które ustawiają je wprost).
+        """
+        konto = self.google_account
+        if konto is not None and konto.refresh_token_encrypted:
+            return konto.refresh_token
         return decrypt_secret(self.ga4_refresh_token_encrypted)
 
     @ga4_refresh_token.setter
     def ga4_refresh_token(self, value: str | None) -> None:
         self.ga4_refresh_token_encrypted = encrypt_secret(value)
+
+    @property
+    def has_google_credentials(self) -> bool:
+        """Czy jest czym odpytać Google w imieniu tego audytu."""
+        konto = self.google_account
+        if konto is not None and konto.refresh_token_encrypted:
+            return True
+        return bool(self.ga4_refresh_token_encrypted)
 
 
 class AuditMetric(models.Model):

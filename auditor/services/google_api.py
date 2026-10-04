@@ -120,3 +120,75 @@ def mark_suggestions(
             )
 
     return sorted(options, key=lambda o: (not o.get("suggested"), o.get("label", "")))
+
+
+def list_ga4_properties(credentials) -> list[dict]:
+    """Usługi GA4, do których konto ma dostęp - z nazwą konta nadrzędnego."""
+    from auditor.services.ga4_service import GA4OAuthService
+
+    try:
+        return GA4OAuthService().list_accessible_properties(credentials)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Nie udało się pobrać listy usług GA4: %s", exc)
+        return []
+
+
+def property_domain(display_name: str) -> str:
+    """Domena wyłuskana z nazwy usługi GA4.
+
+    Nazwa usługi to dowolny tekst nadany przez właściciela ("przyklad.pl - GA4",
+    "Sklep (przyklad.pl)"), więc szukamy w niej czegoś, co wygląda jak domena.
+    """
+    import re
+
+    dopasowanie = re.search(r"\b([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+)\b", (display_name or "").lower())
+    return dopasowanie.group(1).removeprefix("www.") if dopasowanie else ""
+
+
+def list_authorized_domains(credentials) -> list[dict]:
+    """Domeny, do których zalogowane konto Google MA dostęp.
+
+    Źródłem prawdy jest Google, nie nasza baza: wpis w bazie mówi tylko, że ktoś
+    kiedyś coś przypisał, a nie że bieżące konto ma do tego uprawnienia. Łączymy
+    dwie listy, bo dostęp do GA4 i do Search Console nadaje się niezależnie -
+    bywa jeden bez drugiego.
+    """
+    domeny: dict[str, dict] = {}
+
+    for wlasciwosc in list_ga4_properties(credentials):
+        domena = property_domain(wlasciwosc.get("display_name", ""))
+        if not domena:
+            continue
+        wpis = domeny.setdefault(domena, {"domain": domena, "ga4": [], "gsc": []})
+        wpis["ga4"].append({
+            "property_id": str(wlasciwosc.get("property_id", "")),
+            "display_name": wlasciwosc.get("display_name", ""),
+            "account_name": wlasciwosc.get("account_name", ""),
+        })
+
+    for witryna in list_gsc_sites(credentials):
+        domena = witryna["domain"]
+        if not domena:
+            continue
+        wpis = domeny.setdefault(domena, {"domain": domena, "ga4": [], "gsc": []})
+        wpis["gsc"].append(witryna)
+
+    return sorted(domeny.values(), key=lambda w: w["domain"])
+
+
+def find_authorized_domain(domains: list[dict], wanted: str) -> dict | None:
+    """Wpis z listy uprawnień odpowiadający szukanej domenie.
+
+    Dopasowanie obejmuje subdomeny w obie strony: usługa "sklep.przyklad.pl" obsługuje
+    audyt "przyklad.pl" i odwrotnie - w Google jedno konto zwykle ma dostęp do całej
+    rodziny adresów jednej firmy.
+    """
+    szukana = (wanted or "").lower().removeprefix("www.").strip().rstrip("/")
+    if not szukana:
+        return None
+
+    for wpis in domains:
+        domena = wpis["domain"]
+        if domena == szukana or szukana.endswith("." + domena) or domena.endswith("." + szukana):
+            return wpis
+    return None

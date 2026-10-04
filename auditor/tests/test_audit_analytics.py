@@ -50,16 +50,24 @@ class AnalyticsBase(TestCase):
         self.client.force_login(self.user)
         cache.clear()
 
+    def _google_account(self, email="jan@gmail.com") -> "GoogleAccount":
+        """Konto Google użytkownika - jedno poświadczenie, nie kopia per audyt."""
+        from auditor.models import GoogleAccount
+
+        konto, _ = GoogleAccount.objects.get_or_create(user=self.user)
+        konto.refresh_token_encrypted = "jawny-token-testowy"
+        konto.email = email
+        konto.save()
+        return konto
+
     def _audit_with_token(self, audit: Audit) -> Audit:
-        """Audyt z poświadczeniami, ale bez przypisanej usługi."""
-        Audit.objects.filter(pk=audit.pk).update(
-            ga4_refresh_token_encrypted="jawny-token-testowy"
-        )
+        """Audyt widziany przez podłączone konto Google, bez przypisanej usługi."""
+        self._google_account()
         return Audit.objects.get(pk=audit.pk)
 
     def _connect(self, audit: Audit, property_id="222222") -> Audit:
+        self._google_account()
         Audit.objects.filter(pk=audit.pk).update(
-            ga4_refresh_token_encrypted="jawny-token-testowy",
             ga4_property_id=property_id,
             ga4_organic_sessions=4321,
             gsc_total_clicks_current=890,
@@ -227,74 +235,72 @@ class IsolationTests(AnalyticsBase):
         self.assertIn("/login/", response.url)
 
 
-class EntryRequiresExplicitChoiceTests(AnalyticsBase):
-    """`/analytics/` nie wybiera projektu za użytkownika.
+class EntryScreenTests(AnalyticsBase):
+    """Ekran wejściowy `/analytics/`: konto Google i jedno pole.
 
-    Wcześniej brał najnowszy audyt. Przy kilkudziesięciu audytach to loteria:
-    użytkownik konfigurował usługę Google dla domeny, której nie zauważył
-    w nagłówku, i witryna jednego klienta trafiała do audytu drugiego.
+    Lista starych skanów technicznych zniknęła stąd celowo. Mówiła o tym, co kiedyś
+    przeskanowano, a nie o tym, do czego zalogowane konto Google ma dostęp - i przez
+    to sugerowała podłączoną analitykę dla domen bez żadnych uprawnień.
     """
 
-    def test_entry_asks_which_project(self):
-        response = self.client.get(reverse("auditor:analytics"))
+    def _open(self, domains=None, email="jan@gmail.com"):
+        self._google_account(email=email)
+        with patch(
+            "auditor.services.google_services.build_credentials_from_refresh_token",
+            return_value=MagicMock(),
+        ), patch(
+            "auditor.services.google_api.fetch_account_email", return_value=email
+        ), patch(
+            "auditor.services.google_api.list_authorized_domains",
+            return_value=domains if domains is not None else [],
+        ):
+            return self.client.get(reverse("auditor:analytics"))
 
-        self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "auditor/analytics_pick.html")
-        self.assertContains(response, "Wybierz projekt")
+    def test_no_list_of_old_audits(self):
+        response = self._open()
 
-    def test_entry_does_not_render_any_data(self):
-        # Sedno objawu: dashboard z liczbami domeny, której nikt nie wskazał.
-        self._connect(self.shell)
+        self.assertTemplateUsed(response, "auditor/analytics_entry.html")
+        html = _body_only(response.content.decode())
+        # Audyty istnieją w bazie, ale ekran wejściowy ich nie wymienia.
+        self.assertNotIn("orlen.pl", html)
+        self.assertNotIn("shell.pl", html)
 
-        html = _body_only(self.client.get(reverse("auditor:analytics")).content.decode())
+    def test_search_field_is_present(self):
+        response = self._open()
 
-        self.assertNotIn("analytics-big-number", html)
-        self.assertNotIn("4321", html)
+        self.assertContains(response, 'name="domain"')
+        self.assertContains(response, "Wpisz domenę lub wybierz z podłączonego konta Google")
 
-    def test_entry_offers_every_own_audit(self):
+    def test_account_banner_shows_the_email(self):
+        response = self._open(email="krzysztof@gmail.com")
+
+        self.assertContains(response, "Konto Google:")
+        self.assertContains(response, "krzysztof@gmail.com")
+        self.assertContains(response, "Przełącz konto Google")
+
+    def test_authorized_domains_come_from_google(self):
+        domeny = [
+            {"domain": "enova.pl", "ga4": [{"property_id": "1"}], "gsc": [{"site_url": "x"}]},
+        ]
+
+        response = self._open(domains=domeny)
+
+        self.assertContains(response, "enova.pl")
+        self.assertContains(response, "Dostępne na tym koncie")
+        self.assertEqual(
+            [w["domain"] for w in response.context["google"]["domains"]], ["enova.pl"]
+        )
+
+    def test_account_without_access_says_so(self):
+        response = self._open(domains=[])
+
+        self.assertContains(response, "nie ma dostępu do żadnej usługi")
+
+    def test_disconnected_account_shows_one_login_button(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        # Każdy projekt to wiersz z własnym przyciskiem akcji. Liczymy przyciski,
-        # a nie wystąpienia prefiksu klasy - wiersz zawiera kilka klas `project-row-*`.
-        self.assertIn("shell.pl", html)
-        self.assertIn("orlen.pl", html)
-        self.assertEqual(len(re.findall(r'class="project-row-button', html)), 2)
-
-    def test_chosen_project_is_shown(self):
-        response = self.client.get(reverse("auditor:analytics"), {"audit": self.orlen.pk})
-
-        self.assertEqual(response.context["audit"], self.orlen)
-        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
-
-    def test_single_audit_needs_no_choosing(self):
-        Audit.objects.filter(pk=self.orlen.pk).delete()
-
-        response = self.client.get(reverse("auditor:analytics"))
-
-        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
-        self.assertEqual(response.context["audit"], self.shell)
-
-    def test_foreign_audit_parameter_asks_again(self):
-        obcy = User.objects.create_user(
-            username="obcy3@przyklad.pl",
-            email="obcy3@przyklad.pl",
-            password="haslo-kontrolne-2",
-        )
-        cudzy = Audit.objects.create(url="https://cudzy.pl/", owner=obcy)
-
-        response = self.client.get(reverse("auditor:analytics"), {"audit": cudzy.pk})
-
-        self.assertTemplateUsed(response, "auditor/analytics_pick.html")
-        self.assertNotContains(response, "cudzy.pl")
-
-    def test_without_any_audit_user_is_sent_to_the_scanner(self):
-        Audit.objects.all().delete()
-
-        response = self.client.get(reverse("auditor:analytics"))
-
-        self.assertRedirects(
-            response, reverse("auditor:index"), fetch_redirect_response=False
-        )
+        self.assertIn("Zaloguj przez Google", html)
+        self.assertNotIn('name="domain"', html)
 
     def test_entry_requires_login(self):
         self.client.logout()
@@ -303,6 +309,85 @@ class EntryRequiresExplicitChoiceTests(AnalyticsBase):
 
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login/", response.url)
+
+
+class DomainAccessTests(AnalyticsBase):
+    """Domena bez uprawnień w Google nie zostaje podłączona."""
+
+    def _search(self, domain, authorized=None, email="jan@gmail.com"):
+        self._google_account(email=email)
+        with patch(
+            "auditor.services.google_services.build_credentials_from_refresh_token",
+            return_value=MagicMock(),
+        ), patch(
+            "auditor.services.google_api.fetch_account_email", return_value=email
+        ), patch(
+            "auditor.services.google_api.list_authorized_domains",
+            return_value=authorized if authorized is not None else [],
+        ):
+            return self.client.get(
+                reverse("auditor:analytics"), {"domain": domain}, follow=True
+            )
+
+    def test_domain_without_access_is_refused(self):
+        response = self._search("orlen.pl", authorized=[{"domain": "enova.pl", "ga4": [], "gsc": []}])
+
+        komunikaty = [m.message for m in response.context["messages"]]
+        self.assertTrue(
+            any("Brak dostępu do usługi GA4/GSC dla domeny orlen.pl" in m for m in komunikaty),
+            f"komunikaty: {komunikaty}",
+        )
+
+    def test_refusal_names_the_logged_in_account(self):
+        response = self._search(
+            "orlen.pl",
+            authorized=[{"domain": "enova.pl", "ga4": [], "gsc": []}],
+            email="krzysztof@gmail.com",
+        )
+
+        komunikaty = " ".join(m.message for m in response.context["messages"])
+        self.assertIn("krzysztof@gmail.com", komunikaty)
+
+    def test_nothing_is_assigned_on_refusal(self):
+        self._search("orlen.pl", authorized=[{"domain": "enova.pl", "ga4": [], "gsc": []}])
+
+        for audit in Audit.objects.all():
+            self.assertIsNone(audit.ga4_property_id)
+
+    def test_authorized_domain_with_an_audit_opens_its_dashboard(self):
+        response = self._search(
+            "shell.pl", authorized=[{"domain": "shell.pl", "ga4": [], "gsc": []}]
+        )
+
+        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
+        self.assertEqual(response.context["audit"], self.shell)
+
+    def test_authorized_domain_without_an_audit_opens_the_dashboard(self):
+        # Analityka opisuje domenę, nie wynik skanowania - brak audytu technicznego
+        # nie może blokować dostępu do danych z Google.
+        response = self._search(
+            "nowa-domena.pl", authorized=[{"domain": "nowa-domena.pl", "ga4": [], "gsc": []}]
+        )
+
+        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
+        self.assertEqual(response.context["audit"].url, "https://nowa-domena.pl/")
+
+    def test_no_message_pushes_the_user_to_the_scanner(self):
+        response = self._search(
+            "nowa-domena.pl", authorized=[{"domain": "nowa-domena.pl", "ga4": [], "gsc": []}]
+        )
+
+        komunikaty = " ".join(m.message for m in response.context["messages"])
+        self.assertNotIn("Uruchom skaner", komunikaty)
+        self.assertNotIn("nie ma jeszcze", komunikaty)
+
+    def test_search_without_an_account_is_refused(self):
+        response = self.client.get(
+            reverse("auditor:analytics"), {"domain": "shell.pl"}, follow=True
+        )
+
+        komunikaty = " ".join(m.message for m in response.context["messages"])
+        self.assertIn("Najpierw podłącz konto Google", komunikaty)
 
 
 HEADER_RE = r'class="geo-header-subtitle">\s*<strong>([^<]+)</strong>'
@@ -667,86 +752,130 @@ class AutomaticGscBindingTests(AnalyticsBase):
         self.assertEqual(audit.gsc_site_url, "sc-domain:wskazana-recznie.pl")
 
 
-class ProjectPickerTests(AnalyticsBase):
-    """Ekran wyboru projektu: każdy wiersz prowadzi tam, gdzie trzeba.
+class AnalyticsWithoutScanTests(AnalyticsBase):
+    """Domena z konta Google nie potrzebuje audytu technicznego.
 
-    Trzy stany prowadzą w trzy różne miejsca, więc każdy wiersz ma własny przycisk.
-    Wspólny przycisk pod listą musiałby zgadywać, co dla danego projektu znaczy "dalej".
+    Wcześniej kliknięcie takiej domeny odsyłało użytkownika do skanera z komunikatem
+    "nie ma jeszcze audytu tej domeny". Analityka opisuje jednak domenę, a nie wynik
+    skanowania - zależność była sztuczna.
     """
 
-    def _rows(self):
-        response = self.client.get(reverse("auditor:analytics"))
-        return {row["audit"].pk: row for row in response.context["projects"]}, response
+    def _open_domain(self, domain, ga4=None, email="jan@gmail.com"):
+        self._google_account(email=email)
+        uprawnienie = {"domain": domain, "ga4": ga4 or [], "gsc": []}
 
-    def test_project_without_connection_offers_to_connect(self):
-        wiersze, response = self._rows()
+        with patch(
+            "auditor.services.google_services.build_credentials_from_refresh_token",
+            return_value=MagicMock(),
+        ), patch(
+            "auditor.views._build_credentials_from_refresh_token", return_value=MagicMock()
+        ), patch(
+            "auditor.services.google_api.fetch_account_email", return_value=email
+        ), patch(
+            "auditor.services.google_api.list_authorized_domains", return_value=[uprawnienie]
+        ), patch(
+            "auditor.services.google_api.list_ga4_properties",
+            return_value=[{"property_id": str(u["property_id"]), "display_name": domain} for u in (ga4 or [])],
+        ), patch(
+            "auditor.services.ga4_service.GA4OAuthService.list_accessible_properties",
+            return_value=[],
+        ), patch(
+            "auditor.services.google_api.list_gsc_sites", return_value=[]
+        ), patch(
+            "auditor.services.gsc_service.GSCService.resolve_site_url",
+            return_value=f"sc-domain:{domain}",
+        ), patch(
+            "auditor.services.audit_service.AuditService.sync_ga4_data"
+        ) as sync_ga4, patch(
+            "auditor.services.audit_service.AuditService.sync_gsc_data"
+        ):
+            response = self.client.get(
+                reverse("auditor:analytics"), {"domain": domain}, follow=True
+            )
+        return response, sync_ga4
 
-        wiersz = wiersze[self.shell.pk]
-        self.assertEqual(wiersz["action"], "connect")
-        self.assertEqual(wiersz["label"], "Połącz z GA4 i GSC")
-        self.assertContains(response, "Połącz z GA4 i GSC")
+    def test_record_is_created_for_the_domain(self):
+        response, _ = self._open_domain("amso.eu")
 
-    def test_connect_button_leads_straight_to_google(self):
-        html = self.client.get(reverse("auditor:analytics")).content.decode()
+        audit = Audit.objects.get(url="https://amso.eu/")
+        self.assertTrue(audit.analytics_only)
+        self.assertEqual(audit.owner, self.user)
+        self.assertEqual(response.context["audit"], audit)
 
-        # Bez tokenu pierwszym krokiem jest zgoda Google - bez przystanku po drodze.
-        self.assertIn(
-            f'href="/audits/{self.shell.pk}/ga4/connect/?return_to=analytics"', html
+    def test_dashboard_renders_without_a_technical_audit(self):
+        response, _ = self._open_domain("amso.eu")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
+        self.assertContains(response, "amso.eu")
+
+    def test_single_ga4_property_is_assigned_and_fetched(self):
+        # Gdy konto ma dokładnie jedną usługę dla tej domeny, nie ma o co pytać.
+        response, sync_ga4 = self._open_domain(
+            "amso.eu", ga4=[{"property_id": "555555", "display_name": "amso.eu"}]
         )
 
-    def test_project_with_account_but_no_service_offers_to_pick_one(self):
-        self._audit_with_token(self.shell)
+        audit = Audit.objects.get(url="https://amso.eu/")
+        self.assertEqual(audit.ga4_property_id, "555555")
+        sync_ga4.assert_called_once()
+        self.assertTrue(response.context["has_analytics"])
 
-        wiersze, response = self._rows()
+    def test_several_properties_leave_the_choice_to_the_user(self):
+        self._open_domain(
+            "amso.eu",
+            ga4=[
+                {"property_id": "111", "display_name": "amso.eu"},
+                {"property_id": "222", "display_name": "amso.eu sklep"},
+            ],
+        )
 
-        wiersz = wiersze[self.shell.pk]
-        self.assertEqual(wiersz["action"], "configure")
-        self.assertEqual(wiersz["label"], "Wskaż usługę GA4")
-        self.assertContains(response, "Konto Google gotowe")
+        audit = Audit.objects.get(url="https://amso.eu/")
+        self.assertIsNone(audit.ga4_property_id)
 
-    def test_configured_project_offers_the_data(self):
-        self._connect(self.shell)
+    def test_record_is_reused_on_second_visit(self):
+        self._open_domain("amso.eu")
+        self._open_domain("amso.eu")
 
-        wiersze, response = self._rows()
+        self.assertEqual(Audit.objects.filter(url="https://amso.eu/").count(), 1)
 
-        wiersz = wiersze[self.shell.pk]
-        self.assertEqual(wiersz["action"], "data")
-        self.assertEqual(wiersz["label"], "Pokaż analitykę")
-        self.assertContains(response, "Analityka podłączona")
+    def test_analytics_record_stays_out_of_the_scanner_list(self):
+        # Rekord nie ma metryk ani wyniku - na liście audytów byłby pustym wierszem.
+        self._open_domain("amso.eu")
 
-    def test_each_row_links_to_its_own_project(self):
-        self._connect(self.shell)
+        response = self.client.get(reverse("auditor:index"))
 
-        html = self.client.get(reverse("auditor:analytics")).content.decode()
+        adresy = [a.url for a in response.context["audits"]]
+        self.assertNotIn("https://amso.eu/", adresy)
+        self.assertIn(self.shell.url, adresy)
 
-        self.assertIn(f'?audit={self.shell.pk}"', html)
-        self.assertIn(f'/audits/{self.orlen.pk}/ga4/connect/', html)
+    def test_dashboard_offers_a_scan_instead_of_a_report_link(self):
+        response, _ = self._open_domain("amso.eu")
+        html = response.content.decode()
 
-    def test_rows_show_the_connection_state(self):
-        self._connect(self.shell)
-        self._audit_with_token(self.orlen)
+        self.assertIn("Uruchom audyt techniczny", html)
+        self.assertNotIn(f'href="/audits/{response.context["audit"].pk}/"', html)
 
-        html = self.client.get(reverse("auditor:analytics")).content.decode()
+    def test_existing_audit_is_preferred_over_a_new_record(self):
+        response, _ = self._open_domain("shell.pl")
 
-        self.assertIn("Analityka podłączona", html)
-        self.assertIn("Konto Google gotowe", html)
+        self.assertEqual(response.context["audit"], self.shell)
+        self.assertFalse(
+            Audit.objects.filter(url="https://shell.pl/", analytics_only=True).exists()
+        )
 
-    def test_no_dropdown_to_pick_from(self):
-        # Wybór w liście rozwijanej był krokiem przed kliknięciem - odpadł.
-        html = _body_only(self.client.get(reverse("auditor:analytics")).content.decode())
+    def test_record_belongs_to_the_logged_in_user(self):
+        self._open_domain("amso.eu")
 
-        self.assertNotIn("analytics-pick-audit", html)
-        self.assertNotIn("<select", html)
+        audit = Audit.objects.get(url="https://amso.eu/")
+        self.assertEqual(audit.owner, self.user)
 
-    def test_only_own_projects_are_offered(self):
         obcy = User.objects.create_user(
-            username="obcy4@przyklad.pl",
-            email="obcy4@przyklad.pl",
+            username="obcy5@przyklad.pl",
+            email="obcy5@przyklad.pl",
             password="haslo-kontrolne-2",
         )
-        Audit.objects.create(url="https://cudzy.pl/", owner=obcy)
-
-        wiersze, response = self._rows()
-
-        self.assertEqual(set(wiersze), {self.shell.pk, self.orlen.pk})
-        self.assertNotContains(response, "cudzy.pl")
+        self.client.force_login(obcy)
+        response = self.client.get(
+            reverse("auditor:audit_analytics", args=[audit.pk])
+        )
+        self.assertEqual(response.status_code, 404)

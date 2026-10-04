@@ -97,12 +97,12 @@ class AuditIsolationTests(TestCase):
 
         self.assertEqual(list(response.context["audits"]), [self.audyt_ali])
 
-    def test_analytics_shows_only_own_audits(self):
+    def test_analytics_entry_leaks_no_other_audits(self):
+        # Ekran wejściowy nie wymienia audytów w ogóle - tym bardziej cudzych.
         response = self.client.get(reverse("auditor:analytics"))
 
-        self.assertEqual(response.context["audit"], self.audyt_ali)
-        self.assertEqual(list(response.context["audits"]), [self.audyt_ali])
         self.assertNotContains(response, "bogdan.example")
+        self.assertNotContains(response, "ala.example")
 
     def test_foreign_audit_analytics_returns_404(self):
         response = self.client.get(

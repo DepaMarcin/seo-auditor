@@ -36,6 +36,17 @@ class ThreeAuditsTestCase(TestCase):
 
     def setUp(self):
         self.client.force_login(self.user)
+        # Zapis usługi wymaga podłączonego konta Google; weryfikację uprawnień
+        # przepuszczamy, bo te testy badają powiązanie z audytem.
+        from auditor.models import GoogleAccount
+
+        konto, _ = GoogleAccount.objects.get_or_create(user=self.user)
+        konto.refresh_token_encrypted = "jawny-token-testowy"
+        konto.email = "jan@gmail.com"
+        konto.save()
+        self._access = patch("auditor.views._has_access_to_property", return_value=True)
+        self._access.start()
+        self.addCleanup(self._access.stop)
 
     def _flow(self) -> MagicMock:
         flow = MagicMock()
@@ -55,9 +66,6 @@ class AssignServicesBindingTests(ThreeAuditsTestCase):
 
         self.enova.refresh_from_db()
         self.assertEqual(self.enova.ga4_property_id, "222222")
-        # Witrynę Search Console dobiera automat po domenie audytu; bez tokenu
-        # nie ma czym odpytać Google, więc pole zostaje puste.
-        self.assertEqual(self.enova.gsc_site_url, "")
 
     def test_other_audits_are_untouched(self):
         self.client.post(
@@ -176,15 +184,18 @@ class CallbackBindingTests(ThreeAuditsTestCase):
             fetch_redirect_response=False,
         )
 
-    def test_token_lands_on_the_audit_from_state(self):
+    def test_token_lands_on_the_user_account(self):
+        # Token nie jest już kopiowany do audytu: należy do konta użytkownika.
+        from auditor.models import GoogleAccount
+
         state = _build_oauth_state(self.enova.pk, "losowy")
 
         self._callback(state, session_audit_pk=self.orlen.pk)
 
+        konto = GoogleAccount.objects.get(user=self.user)
+        self.assertTrue(konto.refresh_token_encrypted)
         self.enova.refresh_from_db()
-        self.orlen.refresh_from_db()
-        self.assertTrue(self.enova.ga4_refresh_token_encrypted)
-        self.assertFalse(self.orlen.ga4_refresh_token_encrypted)
+        self.assertFalse(self.enova.ga4_refresh_token_encrypted)
 
     def test_session_still_works_for_flows_started_earlier(self):
         # Przepływy rozpoczęte przed tą zmianą mają `state` bez numeru audytu.

@@ -1,0 +1,118 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Analityka i Ruch{% endblock %}
+
+{% block content %}
+{% comment %}
+Czysty ekran wejściowy: konto Google i jedno pole.
+
+Lista starych skanów technicznych zniknęła stąd celowo. Mówiła o tym, co kiedyś
+przeskanowano, a nie o tym, do czego zalogowane konto Google ma dostęp - i przez to
+sugerowała podłączoną analitykę dla domen, do których użytkownik nie ma żadnych
+uprawnień w Google.
+
+Lista poniżej pochodzi z Google (GA4 Account Summaries + Search Console sites), więc
+zawiera wyłącznie domeny z realnym dostępem.
+{% endcomment %}
+
+{% if google.connected %}
+<div class="panel google-banner google-banner-connected">
+    <div class="google-banner-main">
+        <span class="google-banner-icon" aria-hidden="true">🔗</span>
+        <div class="google-banner-text">
+            <p class="google-banner-title">
+                Konto Google: <strong>{{ google.email|default:"(adres nieznany)" }}</strong>
+            </p>
+            <p class="google-banner-meta">
+                Dostęp do {{ google.domains|length }} domen w Analytics 4 i Search Console
+            </p>
+        </div>
+    </div>
+    <div class="google-banner-actions">
+        {% if connect_audit %}
+        <a class="geo-button-secondary"
+           href="{% url 'auditor:start_ga4_auth' connect_audit.pk %}?switch=1&amp;return_to=analytics">
+            Przełącz konto Google
+        </a>
+        {% endif %}
+        <form method="post" action="{% url 'auditor:google_disconnect' %}" class="google-disconnect-form">
+            {% csrf_token %}
+            <button type="submit" class="google-disconnect-button">Odłącz</button>
+        </form>
+    </div>
+</div>
+
+<div class="panel analytics-search">
+    <h1 class="analytics-search-title">Analityka i Ruch</h1>
+    <p class="analytics-search-subtitle">
+        Wpisz domenę albo wybierz jedną z witryn podłączonego konta Google.
+    </p>
+
+    <form method="get" action="{% url 'auditor:analytics' %}" class="analytics-search-form">
+        <span class="analytics-search-icon" aria-hidden="true">🔍</span>
+        <input type="text" name="domain" id="analytics-domain-input"
+               class="analytics-search-input"
+               list="analytics-authorized-domains"
+               placeholder="Wpisz domenę lub wybierz z podłączonego konta Google…"
+               autocomplete="off" spellcheck="false" autofocus required>
+        <datalist id="analytics-authorized-domains">
+            {% for wpis in google.domains %}
+            <option value="{{ wpis.domain }}"></option>
+            {% endfor %}
+        </datalist>
+        <button type="submit">Otwórz</button>
+    </form>
+
+    {% if google.domains %}
+    <div class="analytics-authorized">
+        <p class="analytics-authorized-label">Dostępne na tym koncie</p>
+        <div class="analytics-authorized-list">
+            {% for wpis in google.domains %}
+            <a class="analytics-authorized-item"
+               href="{% url 'auditor:analytics' %}?domain={{ wpis.domain }}">
+                <span class="analytics-authorized-domain">{{ wpis.domain }}</span>
+                <span class="analytics-authorized-sources">
+                    {% if wpis.ga4 %}<span class="analytics-source-tag">GA4</span>{% endif %}
+                    {% if wpis.gsc %}<span class="analytics-source-tag">Search Console</span>{% endif %}
+                </span>
+            </a>
+            {% endfor %}
+        </div>
+    </div>
+    {% else %}
+    <p class="analytics-empty-note">
+        To konto Google nie ma dostępu do żadnej usługi Analytics 4 ani witryny
+        Search Console. Przełącz konto albo poproś o uprawnienia w Google.
+    </p>
+    {% endif %}
+</div>
+
+{% else %}
+<div class="panel analytics-search analytics-search-disconnected">
+    <h1 class="analytics-search-title">Analityka i Ruch</h1>
+    <p class="analytics-search-subtitle">
+        {% if google.error == "token" %}
+        Zapisane połączenie z Google wygasło. Zaloguj się ponownie, żeby odczytać
+        dane z Analytics 4 i Search Console.
+        {% else %}
+        Podłącz konto Google, żeby zobaczyć sesje, kliknięcia i frazy dla swoich domen.
+        {% endif %}
+    </p>
+
+    {% if connect_audit %}
+    <a class="google-connect-button analytics-search-connect"
+       href="{% url 'auditor:start_ga4_auth' connect_audit.pk %}?return_to=analytics">
+        🔑 Zaloguj przez Google
+    </a>
+    <p class="analytics-empty-note">
+        Potrzebny jest dostęp tylko do odczytu — aplikacja nie zmienia nic na Twoim koncie.
+    </p>
+    {% else %}
+    <p class="analytics-empty-note">
+        Najpierw <a class="link" href="{% url 'auditor:index' %}">uruchom skaner</a>
+        dla swojej domeny — analityka podpina się do konkretnego audytu.
+    </p>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock %}

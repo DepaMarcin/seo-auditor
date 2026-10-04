@@ -108,6 +108,15 @@ def _visible_audits(request: HttpRequest):
     return queryset
 
 
+def _visible_scans(request: HttpRequest):
+    """Audyty techniczne - bez rekordów założonych wyłącznie dla analityki.
+
+    Rekord `analytics_only` nie ma metryk ani wyniku skanowania, więc na liście
+    audytów byłby pustym wierszem z zerowym wynikiem.
+    """
+    return _visible_audits(request).filter(analytics_only=False)
+
+
 def _visible_geo_studies(request: HttpRequest):
     """Badania GEO widoczne dla tego użytkownika - ta sama zasada co przy audytach."""
     from auditor.models import GeoStudy
@@ -152,29 +161,94 @@ def analytics_dashboard(request: HttpRequest) -> HttpResponse:
     Bieżąca domena to ta z `?audit=`, a bez niej - najnowszy audyt użytkownika.
     """
     audits = list(_visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT])
+    google = _google_access_context(request)
 
-    if not audits:
-        messages.info(
-            request,
-            "Analityka podpina się do konkretnego audytu - zacznij od uruchomienia skanera.",
-        )
-        return redirect("auditor:index")
-
+    # Wskazanie audytu wprost (z raportu, z przepływu OAuth) omija ekran wejściowy.
     wskazany = _audit_from_parameter(request, audits)
+    if wskazany is not None:
+        return _render_analytics(request, wskazany, audits)
 
-    # Bez jawnego wskazania NIE wybieramy audytu za użytkownika. Przy kilkudziesięciu
-    # audytach "najnowszy" to loteria: użytkownik konfigurował usługę dla domeny,
-    # której nawet nie zauważył w nagłówku.
-    if wskazany is None:
-        if len(audits) == 1:
-            return _render_analytics(request, audits[0], audits)
-
-        return render(request, "auditor/analytics_pick.html", {
+    szukana = (request.GET.get("domain") or "").strip()
+    if not szukana:
+        # Czysty ekran wejściowy: konto Google i jedno pole. Lista starych skanów
+        # technicznych nie ma tu czego szukać - mówi o audytach, nie o dostępach.
+        return render(request, "auditor/analytics_entry.html", {
             "nav_section": "analytics",
-            "projects": _projects_for_picker(audits),
+            "google": google,
+            "connect_audit": audits[0] if audits else None,
         })
 
-    return _render_analytics(request, wskazany, audits)
+    return _open_domain_analytics(request, szukana, google, audits)
+
+
+def _open_domain_analytics(request: HttpRequest, wanted: str, google: dict, audits: list):
+    """Otwiera analitykę wpisanej domeny - po sprawdzeniu uprawnień w Google."""
+    from auditor.services.google_api import audit_domain, find_authorized_domain
+
+    if not google["connected"]:
+        messages.error(
+            request, "Najpierw podłącz konto Google, żeby zobaczyć dane analityczne."
+        )
+        return redirect("auditor:analytics")
+
+    uprawnienie = find_authorized_domain(google["domains"], wanted)
+    if uprawnienie is None:
+        # Kluczowa odmowa: bez dostępu w Google nie przypisujemy niczego i nie
+        # udajemy, że domena jest podłączona.
+        messages.error(
+            request,
+            f"Brak dostępu do usługi GA4/GSC dla domeny {wanted} na zalogowanym "
+            f"koncie Google [{google['email'] or 'nieznane'}]. "
+            "Przełącz konto albo poproś o uprawnienia w Google.",
+        )
+        return redirect("auditor:analytics")
+
+    docelowy = next(
+        (a for a in audits if audit_domain(a.url) == uprawnienie["domain"]
+         or audit_domain(a.url).endswith("." + uprawnienie["domain"])
+         or uprawnienie["domain"].endswith("." + audit_domain(a.url))),
+        None,
+    )
+
+    # Brak audytu technicznego nie jest przeszkodą: analityka opisuje domenę, nie
+    # wynik skanowania. Zakładamy lekki rekord, bo wybór usługi i pobrane liczby
+    # muszą mieć gdzie leżeć - ale nie udajemy, że powstał audyt.
+    if docelowy is None:
+        docelowy = _create_analytics_record(request, uprawnienie)
+
+    return redirect("auditor:audit_analytics", pk=docelowy.pk)
+
+
+def _create_analytics_record(request: HttpRequest, uprawnienie: dict) -> Audit:
+    """Zakłada rekord analityczny dla domeny z konta Google.
+
+    `analytics_only` odróżnia go od audytu technicznego: nie ma metryk, nie pojawia
+    się na liście skanera i nikt go nie zlecał. Istnieje wyłącznie jako miejsce na
+    przypisanie usługi GA4 i pobrane dane.
+    """
+    from auditor.services.google_services import apply_google_services
+
+    audit = Audit.objects.create(
+        url=f"https://{uprawnienie['domain']}/",
+        owner=request.user,
+        analytics_only=True,
+        status=Audit.Status.COMPLETED,
+    )
+
+    # Gdy konto ma dokładnie jedną usługę GA4 dla tej domeny, nie ma o co pytać -
+    # przypisujemy ją i pobieramy dane, żeby dashboard od razu coś pokazał.
+    uslugi = uprawnienie.get("ga4") or []
+    if len(uslugi) == 1:
+        try:
+            apply_google_services(audit, str(uslugi[0].get("property_id", "")))
+        except Exception:  # noqa: BLE001 - brak danych nie może zablokować wejścia
+            logger.exception("Nie udało się pobrać danych dla nowego rekordu %s.", audit.pk)
+
+    logger.info(
+        "Utworzono rekord analityczny dla %s (audyt techniczny nie jest wymagany).",
+        uprawnienie["domain"],
+    )
+    return audit
 
 
 @login_required
@@ -192,36 +266,6 @@ def audit_analytics(request: HttpRequest, pk: int) -> HttpResponse:
         audits.insert(0, audit)
 
     return _render_analytics(request, audit, audits)
-
-
-def _projects_for_picker(audits: list) -> list[dict]:
-    """Projekty na ekranie wyboru wraz z akcją właściwą dla ich stanu.
-
-    Każdy wiersz ma własny przycisk, bo trzy stany prowadzą w trzy różne miejsca:
-    projekt bez konta Google idzie do autoryzacji, projekt z kontem ale bez usługi
-    do jej wyboru, a skonfigurowany wprost do danych. Jeden wspólny przycisk pod
-    listą musiałby zgadywać, które z tych trzech znaczy "dalej".
-    """
-    projekty = []
-    for audit in audits:
-        ma_usluge = bool(audit.ga4_property_id)
-        ma_token = bool(audit.ga4_refresh_token_encrypted)
-
-        if ma_usluge:
-            etykieta, akcja = "Pokaż analitykę", "data"
-        elif ma_token:
-            etykieta, akcja = "Wskaż usługę GA4", "configure"
-        else:
-            etykieta, akcja = "Połącz z GA4 i GSC", "connect"
-
-        projekty.append({
-            "audit": audit,
-            "has_analytics": ma_usluge,
-            "has_token": ma_token,
-            "label": etykieta,
-            "action": akcja,
-        })
-    return projekty
 
 
 def _audit_from_parameter(request: HttpRequest, audits: list):
@@ -268,8 +312,71 @@ def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> Htt
     })
 
 
+def _user_google_account(request: HttpRequest):
+    """Konto Google zalogowanego użytkownika - albo None.
+
+    Jedno poświadczenie na użytkownika. Wcześniej token leżał przy każdym audycie
+    osobno, więc aplikacja brała "jakiś" z kilkunastu i uznawała powiązaną domenę
+    za podłączoną także wtedy, gdy konto Google nie miało do niej dostępu.
+    """
+    from auditor.models import GoogleAccount
+
+    return GoogleAccount.objects.filter(user=request.user).first()
+
+
+def _google_access_context(request: HttpRequest) -> dict:
+    """Stan konta Google i lista domen, do których MA ono realny dostęp.
+
+    Uprawnienia czytamy z Google (GA4 Account Summaries + GSC sites list), nie z
+    naszej bazy: wpis w bazie mówi tylko, że ktoś kiedyś coś przypisał.
+    """
+    from auditor.services.google_api import fetch_account_email, list_authorized_domains
+    from auditor.services.google_services import build_credentials_from_refresh_token
+
+    pusty = {
+        "connected": False,
+        "email": "",
+        "domains": [],
+        "error": "",
+    }
+
+    konto = _user_google_account(request)
+    if konto is None or not konto.is_connected:
+        return pusty
+
+    class _Nosnik:
+        """Minimalny obiekt dla `build_credentials_from_refresh_token`."""
+
+        def __init__(self, token, pk):
+            self.ga4_refresh_token = token
+            self.pk = pk
+
+    try:
+        credentials = build_credentials_from_refresh_token(
+            _Nosnik(konto.refresh_token, konto.pk)
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Nie udało się odtworzyć poświadczeń konta Google %s.", konto.pk)
+        return {**pusty, "error": "token"}
+
+    if credentials is None:
+        return {**pusty, "error": "token"}
+
+    email = konto.email or fetch_account_email(credentials)
+    if email and email != konto.email:
+        konto.email = email
+        konto.save(update_fields=["email"])
+
+    return {
+        "connected": True,
+        "email": email,
+        "domains": list_authorized_domains(credentials),
+        "error": "",
+    }
+
+
 def _google_account_context(audit) -> dict:
-    """Stan połączenia z Google: adres konta i listy dostępnych usług.
+    """Stan połączenia z Google dla audytu - używane przez dashboard pojedynczej domeny.
 
     Wszystko pochodzi z jednego tokenu, więc pobieramy raz na żądanie i dzielimy
     między wiersze - inaczej lista dziesięciu audytów oznaczałaby dziesięć
@@ -291,7 +398,7 @@ def _google_account_context(audit) -> dict:
     # `build_credentials_from_refresh_token` zwraca obiekt poświadczeń także dla
     # pustego tokenu - kod uznawał wtedy konto za połączone i odpytywał Google
     # przy każdym otwarciu strony, czekając na timeout.
-    if audit is None or not audit.ga4_refresh_token_encrypted:
+    if audit is None or not audit.has_google_credentials:
         return pusty if audit is None else {**pusty, "connect_audit": audit}
 
     try:
@@ -379,27 +486,75 @@ def _audit_with_selectors(audit, google: dict) -> dict:
     }
 
 
+def _reset_assignments_after_account_change(request: HttpRequest, nowy_email: str) -> None:
+    """Czyści przypisania usług, gdy podłączono inne konto Google.
+
+    Usługa GA4 i witryna Search Console zapisane z poprzedniego konta mogą być
+    niedostępne dla nowego - a raport pokazywałby wtedy liczby, których bieżące
+    konto nie ma prawa widzieć.
+    """
+    from .services.google_services import GA4_DERIVED_FIELDS, GSC_DERIVED_FIELDS, reset_derived_fields
+
+    do_czyszczenia = _visible_audits(request).exclude(
+        ga4_property_id__isnull=True, gsc_site_url=""
+    )
+
+    liczba = 0
+    for audit in do_czyszczenia:
+        if audit.ga4_account_email and audit.ga4_account_email == nowy_email:
+            # To samo konto co wcześniej - przypisania zostają w mocy.
+            continue
+
+        audit.ga4_property_id = None
+        audit.gsc_site_url = ""
+        audit.ga4_account_email = nowy_email
+        pola = ["ga4_property_id", "gsc_site_url", "ga4_account_email"]
+        pola += reset_derived_fields(audit, GA4_DERIVED_FIELDS)
+        pola += reset_derived_fields(audit, GSC_DERIVED_FIELDS)
+        audit.save(update_fields=pola)
+        liczba += 1
+
+    if liczba:
+        logger.info("Zmiana konta Google: wyczyszczono przypisania w %s audytach.", liczba)
+
+
 @login_required
 @require_POST
 def google_disconnect(request: HttpRequest) -> HttpResponse:
-    """Usuwa token Google ze wszystkich audytów użytkownika.
+    """Odłącza konto Google użytkownika i unieważnia przypisania usług.
 
-    Token jest jeden na konto Google, ale zapisany przy każdym audycie, który z niego
-    korzysta - odłączenie pojedynczego audytu zostawiałoby poświadczenie w pozostałych.
+    Poświadczenie jest jedno, przy koncie użytkownika. Czyścimy też przypisane usługi:
+    bez tokenu nie da się ich odpytać, a zostawione sugerowałyby działające połączenie.
     """
-    audits = _visible_audits(request).exclude(ga4_refresh_token_encrypted__isnull=True)
+    from .services.google_services import GA4_DERIVED_FIELDS, GSC_DERIVED_FIELDS, reset_derived_fields
+
+    konto = _user_google_account(request)
+    if konto is not None:
+        konto.delete()
+
     liczba = 0
-    for audit in audits:
-        if not audit.ga4_refresh_token_encrypted:
+    for audit in _visible_audits(request):
+        if not (audit.ga4_property_id or audit.gsc_site_url or audit.ga4_refresh_token_encrypted):
             continue
-        audit.ga4_refresh_token_encrypted = None
+        audit.ga4_property_id = None
+        audit.gsc_site_url = ""
         audit.ga4_account_email = ""
-        audit.save(update_fields=["ga4_refresh_token_encrypted", "ga4_account_email"])
+        # Kopia tokenu sprzed wdrożenia `GoogleAccount` też musi zniknąć.
+        audit.ga4_refresh_token_encrypted = None
+        pola = [
+            "ga4_property_id",
+            "gsc_site_url",
+            "ga4_account_email",
+            "ga4_refresh_token_encrypted",
+        ]
+        pola += reset_derived_fields(audit, GA4_DERIVED_FIELDS)
+        pola += reset_derived_fields(audit, GSC_DERIVED_FIELDS)
+        audit.save(update_fields=pola)
         liczba += 1
 
     messages.success(
         request,
-        f"Odłączono konto Google (wyczyszczono token w {liczba} audytach).",
+        f"Odłączono konto Google (wyczyszczono przypisania w {liczba} audytach).",
     )
 
     # Wracamy tam, skąd przyszło żądanie - odłączenie wywołuje się z dashboardu audytu.
@@ -439,6 +594,18 @@ def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
     property_id = (request.POST.get("ga4_property_id") or "").strip()
     powrot = request.POST.get("next") or DEFAULT_RETURN_TARGET
 
+    # Przypisanie usługi, do której konto Google nie ma dostępu, dałoby raport
+    # pełen cudzych albo pustych liczb pod nazwą tej domeny. Sprawdzamy uprawnienia
+    # w Google ZANIM cokolwiek zapiszemy.
+    if property_id and not _has_access_to_property(request, property_id):
+        google = _google_access_context(request)
+        messages.error(
+            request,
+            f"Brak dostępu do usługi GA4 o identyfikatorze {property_id} na zalogowanym "
+            f"koncie Google [{google['email'] or 'nieznane'}]. Nic nie zostało zapisane.",
+        )
+        return _redirect_after_assignment(audit, powrot)
+
     # Witryny Search Console nie czytamy z formularza: dobiera ją automat po domenie
     # audytu. Ręczny wybór produkował przypisania w poprzek projektów, których
     # użytkownik nie miał jak zauważyć.
@@ -461,6 +628,42 @@ def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
         )
 
     return _redirect_after_assignment(audit, powrot)
+
+
+def _has_access_to_property(request: HttpRequest, property_id: str) -> bool:
+    """Czy zalogowane konto Google ma dostęp do tej usługi GA4.
+
+    Pytamy Google, a nie bazę: wpis w bazie mówi tylko, że ktoś kiedyś coś przypisał.
+    Gdy Google nie odpowiada, nie blokujemy zapisu - inaczej awaria po ich stronie
+    uniemożliwiałaby pracę, a sam zapis nie jest operacją niebezpieczną.
+    """
+    from auditor.services.google_api import list_ga4_properties
+    from auditor.services.google_services import build_credentials_from_refresh_token
+
+    konto = _user_google_account(request)
+    if konto is None or not konto.is_connected:
+        return False
+
+    class _Nosnik:
+        def __init__(self, token, pk):
+            self.ga4_refresh_token = token
+            self.pk = pk
+
+    try:
+        credentials = build_credentials_from_refresh_token(
+            _Nosnik(konto.refresh_token, konto.pk)
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Nie udało się odtworzyć poświadczeń konta Google %s.", konto.pk)
+        return True
+
+    wlasciwosci = list_ga4_properties(credentials)
+    if not wlasciwosci:
+        # Pusta lista znaczy albo brak dostępu, albo awarię pobrania - nie da się
+        # tego rozróżnić, więc nie blokujemy.
+        return True
+
+    return any(str(w.get("property_id")) == property_id for w in wlasciwosci)
 
 
 def _redirect_after_assignment(audit: Audit, target: str) -> HttpResponse:
@@ -538,7 +741,7 @@ def index(request: HttpRequest) -> HttpResponse:
         enqueue_audit(audit.pk)
         return redirect("auditor:detail", pk=audit.pk)
 
-    audits = _visible_audits(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
+    audits = _visible_scans(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
     return render(
         request,
         "auditor/index.html",
@@ -776,9 +979,20 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
         request.session.pop("code_verifier", None)
 
     if credentials.refresh_token:
-        # Setter właściwości szyfruje wartość, zapisujemy więc realne pole bazy.
-        audit.ga4_refresh_token = credentials.refresh_token
-        audit.save(update_fields=["ga4_refresh_token_encrypted"])
+        # Token zapisujemy przy KONCIE użytkownika, nie przy audycie. Kopia per audyt
+        # rozsiewała po bazie kilkanaście niezależnych poświadczeń i prowadziła do
+        # fałszywych statusów "podłączone" dla domen bez dostępu w Google.
+        from auditor.models import GoogleAccount
+        from auditor.services.google_api import fetch_account_email
+
+        konto, _ = GoogleAccount.objects.get_or_create(user=request.user)
+        konto.refresh_token = credentials.refresh_token
+        konto.email = fetch_account_email(credentials) or konto.email
+        konto.save(update_fields=["refresh_token_encrypted", "email", "connected_at"])
+
+        # Zmiana konta unieważnia wszystko, co przypisano z poprzedniego: usługi
+        # i liczby mogły pochodzić z zasobów, do których nowe konto nie ma dostępu.
+        _reset_assignments_after_account_change(request, konto.email)
     else:
         logger.warning(
             "Google nie zwróciło refresh_token dla audytu %s - konto mogło już wcześniej wyrazić zgodę.", audit.pk
@@ -1295,7 +1509,7 @@ class GeoVisibilityDashboardView(View):
         return render(request, self.template_name, {
             "nav_section": "geo",
             "studies": studies,
-            "audits": _visible_audits(request)[:20],
+            "audits": _visible_scans(request)[:20],
             "default_questions": [],
         })
 

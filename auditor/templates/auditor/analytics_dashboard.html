@@ -32,8 +32,21 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
             <noscript><button type="submit">Pokaż</button></noscript>
         </form>
         {% endif %}
+        {% if not audit.analytics_only %}
         <a class="geo-button-secondary" href="{% url 'auditor:detail' audit.pk %}">
             <span aria-hidden="true">←</span> Raport audytu
+        </a>
+        {% else %}
+        {% comment %}
+        Domena bez audytu technicznego - analityka działa niezależnie. Proponujemy
+        skan, ale nie wymagamy go do obejrzenia danych.
+        {% endcomment %}
+        <a class="geo-button-secondary" href="{% url 'auditor:index' %}">
+            Uruchom audyt techniczny
+        </a>
+        {% endif %}
+        <a class="geo-button-secondary" href="{% url 'auditor:analytics' %}">
+            <span aria-hidden="true">←</span> Inna domena
         </a>
     </div>
 </div>
@@ -295,6 +308,7 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
 </div>
 {% endif %}
 
+{% if not audit.analytics_only %}
 <div class="panel">
     <p class="tool-panel-hint">
         Wykresy z wyborem zakresu dat (ruch wg kanałów, konwersje, porównania okresów)
@@ -302,6 +316,7 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
         <a class="link" href="{% url 'auditor:detail' audit.pk %}#analityka">raporcie audytu</a>.
     </p>
 </div>
+{% endif %}
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>

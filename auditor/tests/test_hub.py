@@ -97,10 +97,10 @@ class ScannerMovedTests(TestCase):
 
 
 class AnalyticsEntryTests(TestCase):
-    """Kafelek analityki w hubie prowadzi do wyboru audytu.
+    """Kafelek analityki w hubie prowadzi na czysty ekran wejściowy.
 
-    Globalna tablica analityki została usunięta - dane GA4/GSC dotyczą zawsze jednej
-    domeny, więc mieszkają w widoku pojedynczego audytu.
+    Bez listy audytów: ekran pyta o domenę i pokazuje wyłącznie te, do których
+    zalogowane konto Google ma realny dostęp.
     """
 
     @classmethod
@@ -109,61 +109,28 @@ class AnalyticsEntryTests(TestCase):
             username="analityka-test",
             password="haslo-kontrolne-1",
         )
-        cls.pierwszy = Audit.objects.create(
-            url="https://podlaczony.example/",
-            owner=cls.user,
-            ga4_property_id="123456789",
-            ga4_organic_sessions=4321,
-        )
-        cls.drugi = Audit.objects.create(
-            url="https://niepodlaczony.example/",
-            owner=cls.user,
+        cls.audyt = Audit.objects.create(
+            url="https://podlaczony.example/", owner=cls.user, ga4_property_id="123456789"
         )
 
     def setUp(self):
         self.client.force_login(self.user)
 
-    def test_entry_asks_which_project(self):
-        # Kafelek z hubu prowadzi do jawnego wyboru projektu - analityka dotyczy
-        # zawsze jednej domeny i aplikacja nie zgaduje, której.
+    def test_entry_renders_the_search_screen(self):
         response = self.client.get(reverse("auditor:analytics"))
 
         self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, "auditor/analytics_pick.html")
+        self.assertTemplateUsed(response, "auditor/analytics_entry.html")
 
-    def test_entry_offers_both_audits(self):
+    def test_entry_does_not_list_audits(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertIn("podlaczony.example", html)
-        self.assertIn("niepodlaczony.example", html)
+        self.assertNotIn("podlaczony.example", html)
 
-    def test_chosen_project_opens_its_dashboard(self):
-        response = self.client.get(
-            reverse("auditor:analytics"), {"audit": self.pierwszy.pk}
-        )
-
-        self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
-        self.assertEqual(response.context["audit"], self.pierwszy)
-
-    def test_entry_renders_no_data_before_choosing(self):
+    def test_entry_without_google_offers_login(self):
         html = self.client.get(reverse("auditor:analytics")).content.decode()
 
-        self.assertNotIn("Brak podłączonej analityki", html)
-        self.assertNotIn("4321", html)
-
-    def test_other_users_audits_are_not_offered(self):
-        intruder = get_user_model().objects.create_user(
-            username="obcy",
-            password="haslo-kontrolne-2",
-        )
-        self.client.force_login(intruder)
-
-        response = self.client.get(reverse("auditor:analytics"))
-
-        # Bez własnych audytów użytkownik trafia do skanera.
-        self.assertRedirects(
-            response, reverse("auditor:index"), fetch_redirect_response=False
-        )
+        self.assertIn("Zaloguj przez Google", html)
 
     def test_entry_requires_login(self):
         self.client.logout()
