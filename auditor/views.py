@@ -147,7 +147,12 @@ class HubView(View):
     template_name = "auditor/hub.html"
 
     def get(self, request: HttpRequest) -> HttpResponse:
-        return render(request, self.template_name, {"tools": TOOLS})
+        from auditor.services.domains import recent_domains_for
+
+        return render(request, self.template_name, {
+            "tools": TOOLS,
+            "recent_domains": recent_domains_for(request.user),
+        })
 
 
 @login_required
@@ -798,6 +803,80 @@ def sitemap_suggestions(request: HttpRequest) -> JsonResponse:
         "suggestions": result["suggestions"],
         "scanned_urls": result["scanned_urls"],
         "error": result["error"],
+    })
+
+
+@login_required
+def audit_investigate_view(request: HttpRequest, pk: int) -> HttpResponse:
+    """Holistyczna synteza danych o domenie - uruchamia agentów i pokazuje raport.
+
+    Badanie odpytuje trzy niezależne źródła i kończy się wywołaniem modelu, więc
+    żądanie trwa kilkanaście sekund. Nie uciekamy od tego w zadanie w tle: wynik jest
+    jednorazowy i nie ma go gdzie trzymać, a przycisk w raporcie pokazuje stan
+    ładowania, zanim przeglądarka przejdzie na tę stronę.
+    """
+    from auditor.services.google_api import audit_domain
+
+    audit = _get_owned_audit(request, pk)
+
+    # Model `Audit` przechowuje pełny adres, nie domenę - agenci pracują na domenie,
+    # bo analityka i GEO opisują cały serwis, nie jedną podstronę.
+    return _render_investigation(request, audit_domain(audit.url), audit=audit)
+
+
+@login_required
+def investigate_domain_view(request: HttpRequest) -> HttpResponse:
+    """`/investigate/?domain=` - synteza dla domeny wskazanej na hubie.
+
+    Wejście po domenie, a nie po identyfikatorze audytu, bo badanie dotyczy witryny:
+    domena może mieć podłączoną analitykę i badanie GEO, nigdy nie przechodząc skanu
+    technicznego. Wymuszanie audytu odcięłoby te przypadki od podsumowania.
+    """
+    from auditor.services.geo import normalize_domain
+
+    domena = normalize_domain(request.GET.get("custom") or request.GET.get("domain") or "")
+
+    # Kropka jako jedyny warunek: cokolwiek bez niej nie jest adresem witryny,
+    # a agenci próbowaliby to pobierać. Prywatne adresy odrzuca `url_guard`
+    # w momencie pobrania - tutaj nie rozwiązujemy DNS-u.
+    if "." not in domena:
+        messages.error(request, "Podaj adres witryny, na przykład enova.pl.")
+        return redirect("auditor:hub")
+
+    return _render_investigation(request, domena)
+
+
+def _render_investigation(request: HttpRequest, domain: str, audit=None) -> HttpResponse:
+    """Uruchamia agentów i rysuje raport - wspólne dla wejścia z audytu i z hubu."""
+    from auditor.agents.orchestrator import run_seo_investigation
+    from auditor.agents.specialists import SOURCE_ANALYTICS, SOURCE_GEO, SOURCE_TECHNICAL
+    from auditor.presentation import render_ai_answer
+
+    state = run_seo_investigation(domain, owner=request.user)
+
+    return render(request, "auditor/audit_investigation.html", {
+        "audit": audit,
+        "state": state,
+        # Raport przechodzi przez ten sam parser co rekomendacje RAG: treść pochodzi
+        # od modelu, więc najpierw escape, potem własne znaczniki.
+        "report_html": render_ai_answer(state.final_synthesis_report),
+        "source_badges": [
+            {
+                "label": "Audyt Techniczny",
+                "available": state.has_source(SOURCE_TECHNICAL),
+                "hint": "Metryki ze skanu strony",
+            },
+            {
+                "label": "Analityka GA4/GSC",
+                "available": state.has_source(SOURCE_ANALYTICS),
+                "hint": "Sesje, kliknięcia, frazy",
+            },
+            {
+                "label": "Widoczność w AI (GEO)",
+                "available": state.has_source(SOURCE_GEO),
+                "hint": "Cytowania w wyszukiwarkach AI",
+            },
+        ],
     })
 
 

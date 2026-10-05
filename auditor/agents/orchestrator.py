@@ -95,6 +95,7 @@ def _run_parallel(agenci: list, state: SEOInvestigatorState, owner, on_progress)
         state.analytics_insights.extend(czastka.analytics_insights)
         state.geo_visibility_notes.extend(czastka.geo_visibility_notes)
         state.errors.extend(czastka.errors)
+        state.sources.update(czastka.sources)
         if czastka.audit_id and state.audit_id is None:
             state.audit_id = czastka.audit_id
 

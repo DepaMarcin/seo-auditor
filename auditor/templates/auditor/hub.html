@@ -27,5 +27,92 @@ przystanki tabulatora na ten sam cel.
         </a>
         {% endfor %}
     </div>
+
+    {% comment %}
+    Synteza stoi pod kafelkami, bo nie jest czwartym narzędziem - łączy dane z tych
+    trzech. Lista i pole adresu to jeden formularz: wpisany adres ma pierwszeństwo nad
+    wyborem z listy, bo wpisanie jest aktem bardziej konkretnym niż pozostawienie
+    domyślnej opcji. Skrypt poniżej wyłącza listę, gdy pole nie jest puste - żeby
+    pierwszeństwo było widać, a nie tylko działało.
+    {% endcomment %}
+    <section class="panel hub-investigate">
+        <div class="hub-investigate-intro">
+            <h2 class="hub-investigate-heading">
+                <span aria-hidden="true">🤖</span> Holistyczne podsumowanie AI
+                <span class="hub-investigate-badge">3 w 1</span>
+            </h2>
+            <p class="hub-investigate-text">
+                Połącz dane techniczne, analityczne i widoczność w AI dla swojej witryny.
+            </p>
+        </div>
+
+        <form class="hub-investigate-form" id="hub-investigate-form"
+              method="get" action="{% url 'auditor:investigate_domain' %}">
+            {% if recent_domains %}
+            <div class="hub-investigate-field">
+                <label class="hub-investigate-label" for="hub-investigate-domain">
+                    Ostatnie projekty
+                </label>
+                <select class="hub-investigate-select" id="hub-investigate-domain" name="domain">
+                    {% for wpis in recent_domains %}
+                    <option value="{{ wpis.domain }}">{{ wpis.domain }}{% if wpis.sources %} · {{ wpis.sources|join:", " }}{% endif %}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="hub-investigate-separator" aria-hidden="true">albo</div>
+            {% endif %}
+
+            <div class="hub-investigate-field">
+                <label class="hub-investigate-label" for="hub-investigate-custom">
+                    Inny adres
+                </label>
+                <input class="hub-investigate-input" type="text" id="hub-investigate-custom"
+                       name="custom" placeholder="np. enova.pl" autocomplete="off"
+                       {% if not recent_domains %}required{% endif %}>
+            </div>
+
+            <button class="investigate-button hub-investigate-submit" type="submit"
+                    id="hub-investigate-submit">
+                Podsumuj dane witryny
+            </button>
+        </form>
+
+        <p class="hub-investigate-note">
+            {% if recent_domains %}
+            Podsumowanie korzysta z danych już zebranych w tych narzędziach. Dla nowego
+            adresu agent wykona lekki skan strony.
+            {% else %}
+            Nie masz jeszcze żadnych badań — podaj adres, a agent wykona lekki skan strony.
+            {% endif %}
+        </p>
+    </section>
 </div>
+
+<script>
+(function () {
+    var form = document.getElementById("hub-investigate-form");
+    if (!form) { return; }
+
+    var lista = document.getElementById("hub-investigate-domain");
+    var pole = document.getElementById("hub-investigate-custom");
+    var przycisk = document.getElementById("hub-investigate-submit");
+
+    if (lista && pole) {
+        pole.addEventListener("input", function () {
+            // Wyłączona lista nie trafia do żądania - pierwszeństwo wpisanego adresu
+            // wynika wtedy z samego formularza, nie z kolejności w widoku.
+            lista.disabled = pole.value.trim() !== "";
+        });
+        lista.addEventListener("change", function () {
+            pole.value = "";
+            lista.disabled = false;
+        });
+    }
+
+    form.addEventListener("submit", function () {
+        przycisk.classList.add("investigate-button-busy");
+        przycisk.innerHTML = '<span class="btn-spinner"></span>Agenci badają domenę…';
+    });
+})();
+</script>
 {% endblock %}

@@ -13,6 +13,23 @@
         &nbsp;&middot;&nbsp; {{ audit.created_at|date:"Y-m-d H:i" }}
     </p>
 
+    {% if audit.status == "completed" %}
+    {% comment %}
+    Badanie odpytuje trzy źródła i kończy się wywołaniem modelu, więc trwa
+    kilkanaście sekund. Spinner pojawia się od razu po kliknięciu - zanim
+    przeglądarka przejdzie na nową stronę - żeby nie wyglądało to na zawieszenie.
+    {% endcomment %}
+    <div class="investigate-row">
+        <a class="investigate-button" id="investigate-link"
+           href="{% url 'auditor:investigate' audit.pk %}">
+            🤖 Podsumuj dane witryny
+        </a>
+        <span class="investigate-hint" id="investigate-hint">
+            Agent zbierze dane techniczne, analityczne i widoczność w AI.
+        </span>
+    </div>
+    {% endif %}
+
     {% if audit_in_progress %}
     <div class="loading-container" id="audit-progress">
         <div class="loading-header">
@@ -659,6 +676,22 @@
 </div>
 
 </div>
+
+<script>
+(function () {
+    var link = document.getElementById("investigate-link");
+    var hint = document.getElementById("investigate-hint");
+    if (!link) { return; }
+
+    link.addEventListener("click", function () {
+        link.classList.add("investigate-button-busy");
+        link.innerHTML = '<span class="btn-spinner"></span>Agenci badają domenę…';
+        if (hint) {
+            hint.textContent = "Trwa odpytywanie źródeł i synteza. To potrwa kilkanaście sekund.";
+        }
+    });
+})();
+</script>
 
 {% if show_charts_js %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>

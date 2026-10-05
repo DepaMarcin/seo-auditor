@@ -14,6 +14,11 @@ from .tools import get_geo_visibility, get_technical_health, get_traffic_trends
 
 logger = logging.getLogger(__name__)
 
+# Nazwy źródeł w `state.sources` - interfejs rysuje po nich odznaki.
+SOURCE_TECHNICAL = "technical"
+SOURCE_ANALYTICS = "analytics"
+SOURCE_GEO = "geo"
+
 # Model syntezy. Tańszy wariant wystarcza: materiał jest już przygotowany, zadaniem
 # modelu jest ułożyć go w raport, a nie szukać wniosków od zera.
 REPORTER_MODEL = "gpt-4o-mini"
@@ -68,6 +73,8 @@ class TechnicalAgent:
     name = "TechnicalAgent"
 
     def run(self, state: SEOInvestigatorState, owner=None) -> SEOInvestigatorState:
+        state.mark_source(SOURCE_TECHNICAL, False)
+
         try:
             zdrowie = get_technical_health(state.domain, owner=owner)
         except Exception as exc:  # noqa: BLE001 - agent nie przerywa badania
@@ -78,6 +85,8 @@ class TechnicalAgent:
         if zdrowie.get("error"):
             state.record_error(self.name, zdrowie["error"])
             return state
+
+        state.mark_source(SOURCE_TECHNICAL, True)
 
         if zdrowie.get("audit_id"):
             state.audit_id = zdrowie["audit_id"]
@@ -118,6 +127,8 @@ class AnalyticsAgent:
     name = "AnalyticsAgent"
 
     def run(self, state: SEOInvestigatorState, owner=None) -> SEOInvestigatorState:
+        state.mark_source(SOURCE_ANALYTICS, False)
+
         try:
             trendy = get_traffic_trends(state.domain, owner=owner)
         except Exception as exc:  # noqa: BLE001
@@ -133,8 +144,11 @@ class AnalyticsAgent:
             state.record_error(self.name, powod)
             return state
 
+        # Autoryzacja sama nie wystarcza: liczy się, czy którekolwiek API oddało dane.
+        przed = len(state.analytics_insights)
         self._describe_ga4(state, trendy.get("ga4"))
         self._describe_gsc(state, trendy.get("gsc"))
+        state.mark_source(SOURCE_ANALYTICS, len(state.analytics_insights) > przed)
 
         if not state.analytics_insights:
             state.analytics_insights.append(
@@ -210,6 +224,8 @@ class GeoAgent:
     name = "GeoAgent"
 
     def run(self, state: SEOInvestigatorState, owner=None) -> SEOInvestigatorState:
+        state.mark_source(SOURCE_GEO, False)
+
         try:
             geo = get_geo_visibility(state.domain, owner=owner)
         except Exception as exc:  # noqa: BLE001
@@ -222,6 +238,8 @@ class GeoAgent:
                 "Widoczność w wyszukiwarkach AI nie była dotąd mierzona dla tej domeny."
             )
             return state
+
+        state.mark_source(SOURCE_GEO, True)
 
         sumy = geo.get("totals") or {}
         state.geo_visibility_notes.append(

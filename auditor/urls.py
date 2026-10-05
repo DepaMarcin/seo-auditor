@@ -8,6 +8,9 @@ urlpatterns = [
     # Hub narzędziowy - ekran wyboru narzędzia zaraz po zalogowaniu.
     path("", views.HubView.as_view(), name="hub"),
 
+    # Synteza dla domeny wskazanej na hubie - bez wymaganego audytu technicznego.
+    path("investigate/", views.investigate_domain_view, name="investigate_domain"),
+
     # Panel analityki: wybór audytu, którego dane GA4/GSC chcemy oglądać.
     # Dashboard analityki bieżącej domeny - bez pośredniej listy wyboru.
     path("analytics/", views.analytics_dashboard, name="analytics"),
@@ -26,6 +29,8 @@ urlpatterns = [
     path("audits/<int:pk>/analytics/", views.audit_analytics, name="audit_analytics"),
     # Odpytywany przez stronę szczegółów, dopóki audyt wykonuje się w tle.
     path("audits/<int:pk>/status/", views.audit_status, name="status"),
+    # Holistyczna synteza: agenci zbierają dane ze wszystkich dostępnych modułów.
+    path("audits/<int:pk>/investigate/", views.audit_investigate_view, name="investigate"),
     # Dane GA4/GSC dla wybranego zakresu dat (AJAX z sekcji "Widoczność i Ruch").
     path("audits/<int:pk>/analytics-data/", views.analytics_data, name="analytics_data"),
     path("audits/<int:audit_id>/pdf/", views.download_pdf_report, name="download_pdf_report"),

@@ -1634,6 +1634,83 @@
         .hub-card-cta span { display: inline-block; transition: transform var(--transition); }
         .hub-card:hover .hub-card-cta span { transform: translateX(3px); }
 
+        /* Synteza na hubie: jeden rząd - lista, pole, przycisk. */
+        .hub-investigate { margin-top: 1.75rem; }
+        .hub-investigate-intro { margin-bottom: 1.1rem; }
+        .hub-investigate-heading {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            margin: 0 0 0.35rem;
+            font-size: 1.15rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        .hub-investigate-badge {
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            border: 1px solid rgba(129, 140, 248, 0.4);
+            background: rgba(99, 102, 241, 0.14);
+            color: #A5B4FC;
+            font-size: 0.7rem;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        .hub-investigate-text { margin: 0; color: var(--muted); font-size: 0.9rem; }
+        .hub-investigate-form {
+            display: flex;
+            align-items: flex-end;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .hub-investigate-field { display: flex; flex-direction: column; gap: 0.3rem; flex: 1 1 15rem; }
+        .hub-investigate-label {
+            color: var(--muted-dim);
+            font-size: 0.73rem;
+            font-weight: 650;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+        .hub-investigate-select,
+        .hub-investigate-input {
+            width: 100%;
+            padding: 0.7rem 0.8rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border-strong);
+            background: var(--bg);
+            color: var(--text);
+            font: inherit;
+            font-size: 0.9rem;
+        }
+        /* Lista wyłączona przez skrypt: wpisany adres przejął pierwszeństwo. */
+        .hub-investigate-select:disabled { opacity: 0.45; cursor: not-allowed; }
+        .hub-investigate-separator {
+            padding-bottom: 0.75rem;
+            color: var(--muted-dim);
+            font-size: 0.8rem;
+        }
+        /* `.investigate-button` pisany był dla <a> - <button> bez tego wziąłby
+           domyślny font systemowy. */
+        .hub-investigate-submit {
+            flex: 0 0 auto;
+            border: 0;
+            cursor: pointer;
+            font-family: inherit;
+        }
+        .hub-investigate-note {
+            margin: 0.9rem 0 0;
+            color: var(--muted-dim);
+            font-size: 0.8rem;
+            line-height: 1.5;
+        }
+        @media (max-width: 720px) {
+            .hub-investigate-form { flex-direction: column; align-items: stretch; }
+            .hub-investigate-separator { padding: 0; text-align: center; }
+            .hub-investigate-submit { justify-content: center; }
+        }
+
         /* ---------- Panel analityki ---------- */
         .tool-panel-intro { color: var(--muted); font-size: 0.92rem; margin: 0.3rem 0 1.25rem; }
         .tool-panel-hint { color: var(--muted-dim); font-size: 0.85rem; margin: 0 0 0.85rem; }
@@ -2387,6 +2464,84 @@
         .analytics-mismatch-icon { font-size: 1.3rem; line-height: 1.3; flex-shrink: 0; }
         .analytics-mismatch-title { margin: 0 0 0.3rem; font-weight: 650; color: var(--warning); }
         .analytics-mismatch-text { margin: 0; color: var(--muted); font-size: 0.88rem; line-height: 1.6; }
+
+        /* Przycisk holistycznej syntezy w raporcie audytu. */
+        .investigate-row {
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+            flex-wrap: wrap;
+            margin-top: 1rem;
+        }
+        .investigate-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.7rem 1.2rem;
+            border-radius: var(--radius-sm);
+            background: linear-gradient(180deg, #818CF8 0%, var(--indigo) 100%);
+            color: #F8FAFC;
+            text-decoration: none;
+            font-weight: 700;
+            font-size: 0.9rem;
+            transition: transform var(--transition), box-shadow var(--transition);
+        }
+        .investigate-button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 20px -10px rgba(99, 102, 241, 0.8);
+        }
+        /* Po kliknięciu przycisk przestaje zapraszać do kolejnego kliknięcia. */
+        .investigate-button-busy { pointer-events: none; opacity: 0.75; transform: none; }
+        .investigate-hint { color: var(--muted-dim); font-size: 0.82rem; }
+
+        /* Wynik syntezy - raport z modelu w czytelnej karcie. */
+        .investigation-report { font-size: 0.95rem; line-height: 1.7; color: #E2E8F0; }
+        .investigation-report h4 {
+            margin: 1.6rem 0 0.6rem;
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: -0.01em;
+            color: var(--text);
+        }
+        .investigation-report h4:first-child { margin-top: 0; }
+        .investigation-report p { margin: 0 0 0.9rem; }
+        .investigation-report ul { margin: 0 0 1rem; padding-left: 1.2rem; }
+        .investigation-report li { margin-bottom: 0.35rem; }
+
+        /* Odznaki źródeł - widać, z ilu modułów powstała synteza. */
+        .source-badges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+        @media (max-width: 760px) { .source-badges { grid-template-columns: 1fr; } }
+        .source-badge {
+            display: flex;
+            align-items: center;
+            gap: 0.7rem;
+            padding: 0.8rem 1rem;
+            border-radius: var(--radius-md);
+            border: 1px solid var(--border);
+            background: var(--surface-inset);
+        }
+        .source-badge-on { border-color: rgba(16, 185, 129, 0.35); background: rgba(16, 185, 129, 0.07); }
+        .source-badge-off { opacity: 0.72; }
+        .source-badge-mark {
+            flex-shrink: 0;
+            width: 26px;
+            height: 26px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.85rem;
+        }
+        .source-badge-on .source-badge-mark { color: #04130A; background: #34D399; }
+        .source-badge-off .source-badge-mark { color: var(--muted); background: rgba(255, 255, 255, 0.07); }
+        .source-badge-text { display: flex; flex-direction: column; gap: 0.1rem; min-width: 0; }
+        .source-badge-label { font-weight: 650; font-size: 0.87rem; }
+        .source-badge-hint { color: var(--muted-dim); font-size: 0.75rem; }
+
+        .investigation-errors { margin: 0.4rem 0 0.8rem; padding-left: 1.1rem; color: var(--muted); font-size: 0.85rem; }
+        .investigation-findings { display: flex; flex-direction: column; gap: 0.5rem; }
+        .investigation-list { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.87rem; color: var(--muted); }
 
         /* Ekran wejściowy analityki - jedno pole w centrum uwagi. */
         .analytics-search { text-align: center; padding: 2.5rem 1.5rem; }

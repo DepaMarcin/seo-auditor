@@ -8,12 +8,16 @@ Ani sieć, ani OpenAI nie są tu prawdziwe.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from io import StringIO
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import AnonymousUser
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
+from django.urls import reverse
 
 from auditor.agents.orchestrator import run_seo_investigation
 from auditor.agents.specialists import (
@@ -26,9 +30,23 @@ from auditor.agents.specialists import (
 )
 from auditor.agents.state import SEOInvestigatorState
 from auditor.agents.tools import find_audit_for_domain, get_technical_health
+from auditor.services.domains import recent_domains_for
 from auditor.models import Audit, AuditMetric, GeoQuery, GeoRun, GeoStudy
 
 User = get_user_model()
+
+
+def _przesun_w_czasie(obiekt, minut_temu: int):
+    """Ustawia `created_at` wprost - `auto_now_add` ignoruje wartość przy tworzeniu.
+
+    Testy kolejności nie mogą opierać się na rozdzielczości zegara: dwa rekordy
+    założone w tej samej mikrosekundzie dałyby remis, a stabilny sort rozstrzygnąłby
+    go kolejnością tabel, nie czasem.
+    """
+    moment = timezone.now() - timedelta(minutes=minut_temu)
+    type(obiekt).objects.filter(pk=obiekt.pk).update(created_at=moment)
+    obiekt.refresh_from_db()
+    return obiekt
 
 
 class _Reporter:
@@ -681,3 +699,557 @@ class CommandTests(TestCase):
             call_command("run_investigator", "--domain", "enova.pl", "--no-llm", stdout=wyjscie)
 
         klient.assert_not_called()
+
+
+class SourceTrackingTests(TestCase):
+    """Stan zapamiętuje, które źródła wniosły dane - stąd odznaki w interfejsie."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="zrodla@przyklad.pl",
+            email="zrodla@przyklad.pl",
+            password="haslo-kontrolne-1",
+        )
+        cls.audit = Audit.objects.create(url="https://enova.pl/", owner=cls.user, score=66)
+        AuditMetric.objects.create(
+            audit=cls.audit, category="seo", key="meta_description",
+            value={"note": "Brak meta description."}, status="error",
+        )
+
+    def test_technical_source_is_marked_available(self):
+        state = SEOInvestigatorState(domain="enova.pl")
+
+        TechnicalAgent().run(state, owner=self.user)
+
+        self.assertTrue(state.has_source("technical"))
+
+    def test_failed_agent_leaves_its_source_unavailable(self):
+        state = SEOInvestigatorState(domain="enova.pl")
+
+        with patch(
+            "auditor.agents.specialists.get_technical_health",
+            side_effect=RuntimeError("skaner padł"),
+        ):
+            TechnicalAgent().run(state, owner=self.user)
+
+        self.assertFalse(state.has_source("technical"))
+
+    def test_unauthorized_analytics_is_not_a_source(self):
+        # Agent wpisuje do ustaleń zdanie o braku autoryzacji, więc niepusta lista
+        # nie znaczy, że źródło było dostępne - stąd osobne pole `sources`.
+        state = SEOInvestigatorState(domain="enova.pl")
+
+        with patch(
+            "auditor.agents.specialists.get_traffic_trends",
+            return_value={"authorized": False, "ga4": None, "gsc": None, "error": ""},
+        ):
+            AnalyticsAgent().run(state, owner=self.user)
+
+        self.assertTrue(state.analytics_insights)
+        self.assertFalse(state.has_source("analytics"))
+
+    def test_authorized_analytics_with_data_is_a_source(self):
+        trendy = {
+            "authorized": True,
+            "ga4": {"property_id": "1", "sessions": 100, "window_days": 30,
+                    "channels": {}, "error": ""},
+            "gsc": None,
+            "error": "",
+        }
+        state = SEOInvestigatorState(domain="enova.pl")
+
+        with patch("auditor.agents.specialists.get_traffic_trends", return_value=trendy):
+            AnalyticsAgent().run(state, owner=self.user)
+
+        self.assertTrue(state.has_source("analytics"))
+
+    def test_unmeasured_geo_is_not_a_source(self):
+        state = SEOInvestigatorState(domain="enova.pl")
+
+        GeoAgent().run(state, owner=self.user)
+
+        self.assertTrue(state.geo_visibility_notes)
+        self.assertFalse(state.has_source("geo"))
+
+    def test_source_count_reflects_available_sources(self):
+        state = SEOInvestigatorState(domain="enova.pl")
+        state.mark_source("technical", True)
+        state.mark_source("analytics", True)
+        state.mark_source("geo", False)
+
+        self.assertEqual(state.source_count, 2)
+
+
+class InvestigateViewTests(TestCase):
+    """Widok `/audits/<pk>/investigate/`."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="widok@przyklad.pl",
+            email="widok@przyklad.pl",
+            password="haslo-kontrolne-1",
+        )
+        cls.audit = Audit.objects.create(
+            url="https://www.enova.pl/cennik", owner=cls.user, score=66,
+            status=Audit.Status.COMPLETED,
+        )
+        AuditMetric.objects.create(
+            audit=cls.audit, category="seo", key="meta_description",
+            value={"note": "Brak meta description."}, status="error",
+        )
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+    def _open(self, authorized=True):
+        """Otwiera syntezę z atrapami: analityka dostępna, GEO nie - czyli 2 z 3."""
+        trendy = {
+            "authorized": authorized,
+            "ga4": {
+                "property_id": "316375346",
+                "sessions": 14284,
+                "window_days": 30,
+                "channels": {"current": {"Organic Search": 14257},
+                             "previous": {"Organic Search": 38756}},
+                "error": "",
+            },
+            "gsc": None,
+            "error": "",
+        }
+        if not authorized:
+            trendy = {"authorized": False, "ga4": None, "gsc": None, "error": ""}
+
+        with patch("auditor.agents.specialists.get_traffic_trends", return_value=trendy), patch(
+            "auditor.agents.specialists.ReporterAgent.run",
+            side_effect=lambda state: _Reporter().run(state),
+        ):
+            return self.client.get(reverse("auditor:investigate", args=[self.audit.pk]))
+
+    def test_view_returns_200_with_two_of_three_sources(self):
+        response = self._open()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "auditor/audit_investigation.html")
+        state = response.context["state"]
+        self.assertEqual(state.source_count, 2)
+        self.assertTrue(state.has_source("technical"))
+        self.assertTrue(state.has_source("analytics"))
+        self.assertFalse(state.has_source("geo"))
+
+    def test_report_is_rendered(self):
+        response = self._open()
+
+        self.assertTrue(response.context["report_html"])
+        self.assertContains(response, "Brak meta description")
+        self.assertContains(response, "14284")
+
+    def test_badges_show_which_sources_were_used(self):
+        response = self._open()
+        html = response.content.decode()
+
+        self.assertIn("Audyt Techniczny", html)
+        self.assertIn("Analityka GA4/GSC", html)
+        self.assertIn("Widoczność w AI (GEO)", html)
+        # Dwie odznaki włączone, jedna wyłączona. Liczymy pełny atrybut `class`,
+        # bo same nazwy klas występują też w arkuszu stylów w base.html.
+        self.assertEqual(html.count('"source-badge source-badge-on"'), 2)
+        self.assertEqual(html.count('"source-badge source-badge-off"'), 1)
+
+    def test_header_states_how_many_sources(self):
+        response = self._open()
+
+        self.assertContains(response, "źródła: 2 z 3")
+
+    def test_limitations_section_appears_when_something_failed(self):
+        response = self._open(authorized=False)
+
+        self.assertContains(response, "Ewentualne ograniczenia badania")
+        self.assertContains(response, "Brak autoryzacji")
+
+    def test_single_source_still_renders(self):
+        # Jedno źródło to nadal użyteczna synteza - raport powstaje.
+        response = self._open(authorized=False)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["state"].source_count, 1)
+        self.assertTrue(response.context["report_html"])
+
+    def test_domain_is_taken_from_the_audit_url(self):
+        # Model trzyma pełny adres; agenci pracują na domenie, bo analityka i GEO
+        # opisują cały serwis, nie jedną podstronę.
+        response = self._open()
+
+        self.assertEqual(response.context["state"].domain, "enova.pl")
+
+    def test_back_link_returns_to_the_report(self):
+        response = self._open()
+
+        self.assertContains(response, f'href="/audits/{self.audit.pk}/"')
+        self.assertContains(response, "Powrót do raportu technicznego")
+
+    def test_findings_are_listed_under_the_report(self):
+        html = self._open().content.decode()
+
+        self.assertIn("Zebrane ustalenia", html)
+        self.assertIn("Techniczne (", html)
+
+    def test_foreign_audit_returns_404(self):
+        obcy = User.objects.create_user(
+            username="obcy7@przyklad.pl",
+            email="obcy7@przyklad.pl",
+            password="haslo-kontrolne-2",
+        )
+        cudzy = Audit.objects.create(url="https://cudzy.pl/", owner=obcy)
+
+        response = self.client.get(reverse("auditor:investigate", args=[cudzy.pk]))
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_view_requires_login(self):
+        self.client.logout()
+
+        response = self.client.get(reverse("auditor:investigate", args=[self.audit.pk]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)
+
+
+class InvestigateButtonTests(TestCase):
+    """Przycisk w raporcie audytu."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="przycisk@przyklad.pl",
+            email="przycisk@przyklad.pl",
+            password="haslo-kontrolne-1",
+        )
+        cls.gotowy = Audit.objects.create(
+            url="https://enova.pl/", owner=cls.user, status=Audit.Status.COMPLETED, score=66
+        )
+        cls.w_toku = Audit.objects.create(
+            url="https://inna.pl/", owner=cls.user, status=Audit.Status.PROCESSING
+        )
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+    def test_button_is_present_in_a_finished_report(self):
+        html = self.client.get(reverse("auditor:detail", args=[self.gotowy.pk])).content.decode()
+
+        self.assertIn("🤖 Podsumuj dane witryny", html)
+        self.assertIn(f'href="/audits/{self.gotowy.pk}/investigate/"', html)
+
+    def test_button_links_to_its_own_audit(self):
+        html = self.client.get(reverse("auditor:detail", args=[self.gotowy.pk])).content.decode()
+
+        self.assertNotIn(f'href="/audits/{self.w_toku.pk}/investigate/"', html)
+
+    def test_unfinished_audit_has_no_button(self):
+        # Bez metryk synteza nie miałaby z czego powstać.
+        html = self.client.get(reverse("auditor:detail", args=[self.w_toku.pk])).content.decode()
+
+        self.assertNotIn("Podsumuj dane witryny", html)
+
+    def test_loading_state_is_wired_up(self):
+        html = self.client.get(reverse("auditor:detail", args=[self.gotowy.pk])).content.decode()
+
+        self.assertIn('id="investigate-link"', html)
+        self.assertIn("Agenci badają domenę", html)
+
+
+class RecentDomainsTests(TestCase):
+    """Lista ostatnich domen - wspólna dla trzech narzędzi."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="domeny@przyklad.pl",
+            email="domeny@przyklad.pl",
+            password="haslo-kontrolne-1",
+        )
+        cls.obcy = User.objects.create_user(
+            username="obcy9@przyklad.pl",
+            email="obcy9@przyklad.pl",
+            password="haslo-kontrolne-2",
+        )
+
+    def test_empty_without_any_research(self):
+        self.assertEqual(recent_domains_for(self.user), [])
+
+    def test_anonymous_user_gets_nothing(self):
+        self.assertEqual(recent_domains_for(AnonymousUser()), [])
+        self.assertEqual(recent_domains_for(None), [])
+
+    def test_audit_url_is_reduced_to_a_domain(self):
+        Audit.objects.create(url="https://www.enova.pl/cennik", owner=self.user)
+
+        self.assertEqual(
+            recent_domains_for(self.user), [{"domain": "enova.pl", "sources": ["audyt"]}]
+        )
+
+    def test_same_domain_from_two_audits_appears_once(self):
+        Audit.objects.create(url="https://enova.pl/", owner=self.user)
+        Audit.objects.create(url="https://enova.pl/kontakt", owner=self.user)
+
+        self.assertEqual([wpis["domain"] for wpis in recent_domains_for(self.user)], ["enova.pl"])
+
+    def test_analytics_record_is_labelled_separately(self):
+        # Rekordy analityczne i skany leżą w tej samej tabeli - różni je flaga.
+        Audit.objects.create(url="https://enova.pl/", owner=self.user, analytics_only=True)
+
+        self.assertEqual(recent_domains_for(self.user), [
+            {"domain": "enova.pl", "sources": ["analityka"]},
+        ])
+
+    def test_geo_study_counts_as_research(self):
+        GeoStudy.objects.create(domain="enova.pl", owner=self.user)
+
+        self.assertEqual(recent_domains_for(self.user), [
+            {"domain": "enova.pl", "sources": ["GEO"]},
+        ])
+
+    def test_all_three_sources_merge_into_one_entry(self):
+        Audit.objects.create(url="https://enova.pl/", owner=self.user)
+        Audit.objects.create(url="https://enova.pl/", owner=self.user, analytics_only=True)
+        GeoStudy.objects.create(domain="enova.pl", owner=self.user)
+
+        self.assertEqual(recent_domains_for(self.user), [
+            {"domain": "enova.pl", "sources": ["audyt", "analityka", "GEO"]},
+        ])
+
+    def test_labels_keep_a_stable_order(self):
+        # Kolejność etykiet nie może zależeć od tego, które badanie było świeższe.
+        GeoStudy.objects.create(domain="enova.pl", owner=self.user)
+        Audit.objects.create(url="https://enova.pl/", owner=self.user)
+
+        self.assertEqual(recent_domains_for(self.user)[0]["sources"], ["audyt", "GEO"])
+
+    def test_newest_activity_comes_first_across_modules(self):
+        # Badanie GEO jest nowsze od audytu, więc jego domena jest wyżej - inaczej
+        # domena znana tylko z GEO spadłaby pod stare skany.
+        _przesun_w_czasie(Audit.objects.create(url="https://stara.pl/", owner=self.user), 60)
+        _przesun_w_czasie(GeoStudy.objects.create(domain="nowa.pl", owner=self.user), 1)
+
+        self.assertEqual(
+            [wpis["domain"] for wpis in recent_domains_for(self.user)], ["nowa.pl", "stara.pl"]
+        )
+
+    def test_other_users_domains_are_invisible(self):
+        Audit.objects.create(url="https://cudza.pl/", owner=self.obcy)
+        GeoStudy.objects.create(domain="cudza-geo.pl", owner=self.obcy)
+
+        self.assertEqual(recent_domains_for(self.user), [])
+
+    def test_list_is_capped_at_ten(self):
+        for numer in range(14):
+            Audit.objects.create(url=f"https://sklep{numer}.pl/", owner=self.user)
+
+        self.assertEqual(len(recent_domains_for(self.user)), 10)
+
+    def test_cap_keeps_the_newest(self):
+        for numer in range(12):
+            _przesun_w_czasie(
+                Audit.objects.create(url=f"https://sklep{numer}.pl/", owner=self.user),
+                12 - numer,
+            )
+
+        domeny = [wpis["domain"] for wpis in recent_domains_for(self.user)]
+
+        self.assertEqual(domeny[0], "sklep11.pl")
+        self.assertNotIn("sklep0.pl", domeny)
+
+
+class HubInvestigateSectionTests(TestCase):
+    """Sekcja "Holistyczne podsumowanie AI" na ekranie głównym."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="hub@przyklad.pl",
+            email="hub@przyklad.pl",
+            password="haslo-kontrolne-1",
+        )
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+    def test_section_is_rendered(self):
+        response = self.client.get(reverse("auditor:hub"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Holistyczne podsumowanie AI")
+        self.assertContains(response, "3 w 1")
+        self.assertContains(
+            response,
+            "Połącz dane techniczne, analityczne i widoczność w AI dla swojej witryny.",
+        )
+
+    def test_form_points_at_the_domain_route(self):
+        response = self.client.get(reverse("auditor:hub"))
+
+        self.assertContains(response, 'action="/investigate/"')
+        self.assertContains(response, 'name="custom"')
+
+    def test_recent_domains_land_in_the_context(self):
+        _przesun_w_czasie(Audit.objects.create(url="https://enova.pl/", owner=self.user), 60)
+        _przesun_w_czasie(GeoStudy.objects.create(domain="inna.pl", owner=self.user), 1)
+
+        response = self.client.get(reverse("auditor:hub"))
+
+        self.assertEqual(
+            [wpis["domain"] for wpis in response.context["recent_domains"]],
+            ["inna.pl", "enova.pl"],
+        )
+
+    def test_dropdown_lists_domains_with_their_sources(self):
+        Audit.objects.create(url="https://enova.pl/", owner=self.user)
+
+        response = self.client.get(reverse("auditor:hub"))
+
+        self.assertContains(response, 'name="domain"')
+        self.assertContains(response, '<option value="enova.pl">enova.pl · audyt</option>', html=True)
+
+    def test_without_history_there_is_no_dropdown(self):
+        # Pusta lista byłaby polem, z którego nie da się nic wybrać.
+        response = self.client.get(reverse("auditor:hub"))
+
+        self.assertNotContains(response, 'name="domain"')
+        self.assertContains(response, "required")
+        self.assertContains(response, "Nie masz jeszcze żadnych badań")
+
+    def test_tool_tiles_still_render(self):
+        response = self.client.get(reverse("auditor:hub"))
+
+        self.assertContains(response, "Audyt Techniczny")
+        self.assertContains(response, "Analityka i Ruch")
+        self.assertContains(response, "Widoczność w AI")
+
+    def test_hub_requires_login(self):
+        self.client.logout()
+
+        response = self.client.get(reverse("auditor:hub"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)
+
+
+class InvestigateDomainViewTests(TestCase):
+    """`/investigate/?domain=` - synteza bez pośrednictwa audytu."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user(
+            username="synteza@przyklad.pl",
+            email="synteza@przyklad.pl",
+            password="haslo-kontrolne-1",
+        )
+        cls.audit = Audit.objects.create(
+            url="https://www.enova.pl/cennik", owner=cls.user, score=66,
+            status=Audit.Status.COMPLETED,
+        )
+        AuditMetric.objects.create(
+            audit=cls.audit, category="seo", key="meta_description",
+            value={"note": "Brak meta description."}, status="error",
+        )
+
+    def setUp(self):
+        self.client.force_login(self.user)
+
+    def _open(self, **params):
+        brak_analityki = {"authorized": False, "ga4": None, "gsc": None, "error": ""}
+        with patch(
+            "auditor.agents.specialists.get_traffic_trends", return_value=brak_analityki
+        ), patch(
+            "auditor.agents.specialists.ReporterAgent.run",
+            side_effect=lambda state: _Reporter().run(state),
+        ):
+            return self.client.get(reverse("auditor:investigate_domain"), params)
+
+    def test_selected_domain_is_investigated(self):
+        response = self._open(domain="enova.pl")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, "auditor/audit_investigation.html")
+        self.assertEqual(response.context["state"].domain, "enova.pl")
+
+    def test_data_of_an_existing_audit_is_reused(self):
+        # Wejście z hubu ma trafiać w te same dane co wejście z raportu - inaczej
+        # użytkownik dostawałby dwa różne podsumowania tej samej witryny.
+        response = self._open(domain="enova.pl")
+
+        self.assertTrue(response.context["state"].has_source("technical"))
+        self.assertContains(response, "Brak meta description")
+
+    def test_typed_address_is_reduced_to_a_domain(self):
+        response = self._open(custom="https://www.enova.pl/cennik?x=1")
+
+        self.assertEqual(response.context["state"].domain, "enova.pl")
+
+    def test_typed_address_wins_over_the_dropdown(self):
+        Audit.objects.create(url="https://inna.pl/", owner=self.user)
+
+        response = self._open(domain="inna.pl", custom="enova.pl")
+
+        self.assertEqual(response.context["state"].domain, "enova.pl")
+
+    def test_back_link_goes_to_the_hub_without_an_audit(self):
+        response = self._open(domain="enova.pl")
+
+        self.assertIsNone(response.context["audit"])
+        self.assertContains(response, "Powrót do ekranu głównego")
+        self.assertNotContains(response, "Powrót do raportu technicznego")
+
+    def test_empty_domain_returns_to_the_hub(self):
+        response = self.client.get(reverse("auditor:investigate_domain"))
+
+        self.assertRedirects(response, reverse("auditor:hub"))
+
+    def test_address_without_a_dot_is_rejected(self):
+        # "localhost" nie jest adresem witryny, a agent próbowałby go pobrać.
+        response = self.client.get(reverse("auditor:investigate_domain"), {"custom": "localhost"})
+
+        self.assertRedirects(response, reverse("auditor:hub"))
+
+    def test_rejection_explains_itself(self):
+        response = self.client.get(
+            reverse("auditor:investigate_domain"), {"custom": "localhost"}, follow=True
+        )
+
+        self.assertContains(response, "Podaj adres witryny")
+
+    def test_other_users_data_is_not_reachable_by_domain(self):
+        # Domena jest publiczna, więc samo jej wpisanie nie może odsłonić cudzych
+        # audytów - izolacja musi działać po właścicielu, nie po adresie.
+        obcy = User.objects.create_user(
+            username="obcy11@przyklad.pl",
+            email="obcy11@przyklad.pl",
+            password="haslo-kontrolne-2",
+        )
+        cudzy = Audit.objects.create(
+            url="https://cudza.pl/", owner=obcy, score=12, status=Audit.Status.COMPLETED
+        )
+        AuditMetric.objects.create(
+            audit=cudzy, category="seo", key="title",
+            value={"note": "Sekret z cudzego audytu."}, status="error",
+        )
+
+        with patch(
+            "auditor.agents.tools._scan_technical_health",
+            return_value={"source": "scan", "audit_id": None, "score": None,
+                          "problems": [], "error": "pominięto skan w teście"},
+        ):
+            response = self._open(domain="cudza.pl")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Sekret z cudzego audytu")
+
+    def test_view_requires_login(self):
+        self.client.logout()
+
+        response = self.client.get(reverse("auditor:investigate_domain"), {"domain": "enova.pl"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("/login/", response.url)

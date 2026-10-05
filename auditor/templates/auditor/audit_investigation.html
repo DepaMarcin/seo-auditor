@@ -1,0 +1,127 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Synteza danych — {{ state.domain }}{% endblock %}
+
+{% block content %}
+{% comment %}
+Wynik badania prowadzonego przez agentów.
+
+Odznaki u góry mówią, z ilu źródeł powstała synteza. Jest to istotne, bo raport
+z dwóch źródeł czyta się tak samo jak z trzech - bez tej informacji użytkownik nie
+wiedziałby, że czegoś w nim brakuje.
+{% endcomment %}
+
+<div class="panel geo-dashboard-header">
+    <div class="geo-header-text">
+        <h1 class="geo-header-title">🤖 Synteza danych witryny</h1>
+        <p class="geo-header-subtitle">
+            <strong>{{ state.domain }}</strong>
+            · źródła: {{ state.source_count }} z {{ source_badges|length }}
+        </p>
+    </div>
+    <div class="geo-header-actions">
+        {% if audit %}
+        <a class="geo-button-secondary" href="{% url 'auditor:detail' audit.pk %}">
+            <span aria-hidden="true">←</span> Powrót do raportu technicznego
+        </a>
+        {% else %}
+        <a class="geo-button-secondary" href="{% url 'auditor:hub' %}">
+            <span aria-hidden="true">←</span> Powrót do ekranu głównego
+        </a>
+        {% endif %}
+    </div>
+</div>
+
+<div class="panel">
+    <h2 class="geo-card-heading">Uwzględnione źródła danych</h2>
+    <div class="source-badges">
+        {% for badge in source_badges %}
+        <div class="source-badge{% if badge.available %} source-badge-on{% else %} source-badge-off{% endif %}">
+            <span class="source-badge-mark" aria-hidden="true">{% if badge.available %}✓{% else %}✗{% endif %}</span>
+            <span class="source-badge-text">
+                <span class="source-badge-label">{{ badge.label }}</span>
+                <span class="source-badge-hint">{{ badge.hint }}</span>
+            </span>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+{% if report_html %}
+<div class="panel investigation-report">
+    {{ report_html }}
+</div>
+{% else %}
+<div class="panel">
+    <p class="priority-empty">
+        Nie udało się zebrać danych dla tej domeny — żadne ze źródeł nie odpowiedziało.
+    </p>
+</div>
+{% endif %}
+
+{% if state.errors %}
+<div class="panel analytics-mismatch">
+    <span class="analytics-mismatch-icon" aria-hidden="true">⚠️</span>
+    <div>
+        <p class="analytics-mismatch-title">Ewentualne ograniczenia badania</p>
+        <ul class="investigation-errors">
+            {% for blad in state.errors %}
+            <li>{{ blad }}</li>
+            {% endfor %}
+        </ul>
+        <p class="analytics-mismatch-text">
+            Raport powstał z pozostałych źródeł — brakujące dane nie oznaczają,
+            że po tej stronie wszystko jest w porządku.
+        </p>
+    </div>
+</div>
+{% endif %}
+
+<div class="panel">
+    <h2 class="geo-card-heading">Zebrane ustalenia</h2>
+    <p class="geo-card-hint">
+        Surowe wnioski agentów, z których powstała synteza.
+    </p>
+
+    <div class="investigation-findings">
+        {% if state.technical_issues %}
+        <details class="geo-questions">
+            <summary class="geo-questions-summary">
+                Techniczne ({{ state.technical_issues|length }})
+            </summary>
+            <div class="geo-questions-body">
+                <ul class="investigation-list">
+                    {% for wpis in state.technical_issues %}<li>{{ wpis }}</li>{% endfor %}
+                </ul>
+            </div>
+        </details>
+        {% endif %}
+
+        {% if state.analytics_insights %}
+        <details class="geo-questions">
+            <summary class="geo-questions-summary">
+                Analityka GA4/GSC ({{ state.analytics_insights|length }})
+            </summary>
+            <div class="geo-questions-body">
+                <ul class="investigation-list">
+                    {% for wpis in state.analytics_insights %}<li>{{ wpis }}</li>{% endfor %}
+                </ul>
+            </div>
+        </details>
+        {% endif %}
+
+        {% if state.geo_visibility_notes %}
+        <details class="geo-questions">
+            <summary class="geo-questions-summary">
+                Widoczność w AI ({{ state.geo_visibility_notes|length }})
+            </summary>
+            <div class="geo-questions-body">
+                <ul class="investigation-list">
+                    {% for wpis in state.geo_visibility_notes %}<li>{{ wpis }}</li>{% endfor %}
+                </ul>
+            </div>
+        </details>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

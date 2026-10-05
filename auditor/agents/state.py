@@ -23,6 +23,11 @@ class SEOInvestigatorState:
 
     final_synthesis_report: str = ""
 
+    # Które źródła faktycznie dostarczyły dane. Nie da się tego wywnioskować z samych
+    # list ustaleń: agent bez danych wpisuje tam zdanie o ich braku, więc niepusta
+    # lista nie znaczy, że źródło było dostępne.
+    sources: dict = field(default_factory=dict)
+
     # Awarie pojedynczych agentów. Badanie trwa dalej, ale raport ma o nich wiedzieć -
     # inaczej brak wniosków wyglądałby jak "wszystko w porządku".
     errors: list[str] = field(default_factory=list)
@@ -33,6 +38,18 @@ class SEOInvestigatorState:
         return bool(
             self.technical_issues or self.analytics_insights or self.geo_visibility_notes
         )
+
+    def mark_source(self, name: str, available: bool) -> None:
+        """Odnotowuje, czy dane źródło wniosło dane do badania."""
+        self.sources[name] = available
+
+    def has_source(self, name: str) -> bool:
+        return bool(self.sources.get(name))
+
+    @property
+    def source_count(self) -> int:
+        """Ile źródeł dostarczyło dane - "2 z 3" w nagłówku syntezy."""
+        return sum(1 for dostepne in self.sources.values() if dostepne)
 
     def record_error(self, agent: str, exc: Exception | str) -> None:
         """Zapisuje awarię agenta w formie czytelnej w raporcie i w logach."""
@@ -48,5 +65,6 @@ class SEOInvestigatorState:
             "analytics_insights": list(self.analytics_insights),
             "geo_visibility_notes": list(self.geo_visibility_notes),
             "final_synthesis_report": self.final_synthesis_report,
+            "sources": dict(self.sources),
             "errors": list(self.errors),
         }
