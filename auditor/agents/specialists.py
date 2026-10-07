@@ -49,8 +49,19 @@ OGRANICZENIA BADANIA:
 ZADANIE:
 Napisz zwięzły raport w języku polskim, w formacie Markdown, o strukturze:
 
-## Podsumowanie
-Dwa, trzy zdania: co jest najważniejsze dla biznesu.
+## Główne Wnioski (Executive Summary)
+Ta sekcja jest OBOWIĄZKOWA i zawsze pierwsza. Napisz 1-2 mocne akapity, w których
+ŁĄCZYSZ dane z różnych sekcji ustaleń w jedną diagnozę - nie streszczaj ich po kolei.
+Szukaj korelacji i pisz o nich wprost:
+- Jeśli widzisz spadek sesji albo kliknięć, podaj jego skalę i WYMIEŃ z nazwy frazy,
+  które straciły najwięcej, a następnie wskaż prawdopodobne przyczyny techniczne
+  z ustaleń technicznych (na przykład: "Spadki na frazy X i Y mogą wynikać ze słabego
+  LCP i braku nagłówka H1 na stronach ofertowych").
+- Jeśli widzisz wzrosty, napisz, co zadziałało, i na których frazach to widać.
+- Jeśli danych z któregoś źródła nie ma, powiedz, czego w związku z tym nie wiadomo -
+  zamiast milczeć o luce.
+Przyczyny podawaj jako hipotezy ("może wynikać z", "wskazuje na"), nigdy jako pewniki:
+korelacja w tych danych nie dowodzi związku przyczynowego.
 
 ## Co wymaga uwagi
 Lista priorytetów - od najpilniejszego. Przy każdym jedno zdanie uzasadnienia.
@@ -90,6 +101,10 @@ class TechnicalAgent:
 
         if zdrowie.get("audit_id"):
             state.audit_id = zdrowie["audit_id"]
+        if zdrowie.get("score") is not None:
+            state.metrics["technical_score"] = zdrowie["score"]
+        if zdrowie.get("as_of"):
+            state.data_timestamps[SOURCE_TECHNICAL] = zdrowie["as_of"]
 
         problemy = zdrowie.get("problems") or []
         if not problemy:
@@ -98,6 +113,15 @@ class TechnicalAgent:
                 f"Nie znaleziono błędów technicznych wymagających uwagi (na podstawie {zrodlo})."
             )
             return state
+
+        # Liczniki bierzemy ze statusów metryk, a nie z tekstów wniosków: zdania są
+        # dla czytelnika, a karta KPI potrzebuje liczby.
+        state.metrics["technical_errors"] = sum(
+            1 for problem in problemy if problem["status"] == "error"
+        )
+        state.metrics["technical_warnings"] = sum(
+            1 for problem in problemy if problem["status"] == "warning"
+        )
 
         # Błędy przed ostrzeżeniami: raport ma zaczynać się od tego, co boli najbardziej.
         kolejnosc = {"error": 0, "warning": 1}
@@ -136,19 +160,27 @@ class AnalyticsAgent:
             state.record_error(self.name, exc)
             return state
 
-        if not trendy.get("authorized"):
+        ma_dane = bool(trendy.get("ga4") or trendy.get("gsc"))
+        if not trendy.get("authorized") and not ma_dane:
             # Brak autoryzacji to normalny stan, nie awaria - zapisujemy go jako
-            # ograniczenie badania, żeby raport nie udawał kompletnego.
+            # ograniczenie badania, żeby raport nie udawał kompletnego. Warunek
+            # obejmuje też dane: zapisane liczby przychodzą bez żywego tokena,
+            # więc sam brak autoryzacji nie znaczy, że nie ma czego opisać.
             powod = trendy.get("error") or "Brak autoryzacji GA4/GSC."
             state.analytics_insights.append(f"Brak autoryzacji GA4/GSC - {powod}")
             state.record_error(self.name, powod)
             return state
 
-        # Autoryzacja sama nie wystarcza: liczy się, czy którekolwiek API oddało dane.
-        przed = len(state.analytics_insights)
-        self._describe_ga4(state, trendy.get("ga4"))
-        self._describe_gsc(state, trendy.get("gsc"))
-        state.mark_source(SOURCE_ANALYTICS, len(state.analytics_insights) > przed)
+        # Odznaka źródła zapala się TYLKO za twarde liczby. Zdanie o nieprzypisanej
+        # usłudze też jest wnioskiem wartym raportu, ale danymi nie jest - liczenie
+        # wpisów w liście zapalało ją na sam komunikat o braku danych.
+        z_bazy = trendy.get("source") == "db"
+        twarde_ga4 = self._describe_ga4(state, trendy.get("ga4"), z_bazy=z_bazy)
+        twarde_gsc = self._describe_gsc(state, trendy.get("gsc"))
+        state.mark_source(SOURCE_ANALYTICS, twarde_ga4 or twarde_gsc)
+
+        if twarde_ga4 or twarde_gsc:
+            self._record_age(state, trendy)
 
         if not state.analytics_insights:
             state.analytics_insights.append(
@@ -157,38 +189,75 @@ class AnalyticsAgent:
 
         return state
 
-    def _describe_ga4(self, state: SEOInvestigatorState, ga4: dict | None) -> None:
+    def _record_age(self, state: SEOInvestigatorState, trendy: dict) -> None:
+        """Zapisuje datę najstarszej liczby, jaka weszła do wniosków.
+
+        Karta jest tak świeża jak jej najstarsza składowa: GA4 i Search Console mogą
+        pochodzić z różnych rekordów, a ostrzeżenie ma reagować na gorszy przypadek.
+        """
+        daty = [
+            (zrodlo or {}).get("as_of")
+            for zrodlo in (trendy.get("ga4"), trendy.get("gsc"))
+        ]
+        istniejace = [data for data in daty if data]
+        if istniejace:
+            state.data_timestamps[SOURCE_ANALYTICS] = min(istniejace, key=_as_day)
+
+    def _describe_ga4(
+        self, state: SEOInvestigatorState, ga4: dict | None, z_bazy: bool = False
+    ) -> bool:
+        """Dopisuje wnioski o sesjach. Zwraca True tylko dla twardych liczb."""
         if ga4 is None:
             state.analytics_insights.append(
                 "Do tej domeny nie przypisano usługi Analytics 4 - brak danych o sesjach."
             )
-            return
+            return False
         if ga4.get("error"):
             state.record_error(self.name, f"GA4: {ga4['error']}")
-            return
+            return False
 
+        okno = ga4.get("window_days")
+        zakres = f"w ostatnich {okno} dniach" if okno else "w zapisanym okresie"
+        # Przy danych z bazy mówimy to wprost: liczby mogą być starsze niż dzisiejsze,
+        # a raport bez tej adnotacji przedstawiałby je jako stan na teraz.
+        przypis = " (dane zapisane w bazie)" if z_bazy else ""
         state.analytics_insights.append(
-            f"Sesje organiczne w ostatnich {ga4['window_days']} dniach: {ga4['sessions']}."
+            f"Sesje organiczne {zakres}: {ga4['sessions']}{przypis}."
         )
+        state.metrics["organic_sessions"] = ga4["sessions"]
+        state.metrics["analytics_from_database"] = z_bazy
 
-        kanaly = ga4.get("channels") or {}
-        biezace = (kanaly.get("current") or {}).get("Organic Search")
-        poprzednie = (kanaly.get("previous") or {}).get("Organic Search")
-        zmiana = _percent_change(biezace, poprzednie)
+        # Gotową zmianę procentową bierzemy od serwisu; przeliczamy sami tylko wtedy,
+        # gdy jej nie podał - dwa wyniki tej samej rzeczy musiałyby się rozjechać.
+        zmiana = ga4.get("organic_change_percent")
+        pary = ""
+        if zmiana is None:
+            kanaly = ga4.get("channels") or {}
+            biezace = (kanaly.get("current") or {}).get("Organic Search")
+            poprzednie = (kanaly.get("previous") or {}).get("Organic Search")
+            zmiana = _percent_change(biezace, poprzednie)
+            if zmiana is not None:
+                pary = f" ({poprzednie} → {biezace} sesji)"
+        else:
+            zmiana = round(zmiana)
+
         if zmiana is not None:
             kierunek = "wzrost" if zmiana > 0 else "spadek"
             waga = "istotny" if abs(zmiana) >= SIGNIFICANT_CHANGE_PERCENT else "nieznaczny"
             state.analytics_insights.append(
-                f"Ruch organiczny rok do roku: {waga} {kierunek} o {abs(zmiana)}% "
-                f"({poprzednie} → {biezace} sesji)."
+                f"Ruch organiczny rok do roku: {waga} {kierunek} o {abs(zmiana)}%{pary}."
             )
+            state.metrics["organic_change_percent"] = zmiana
 
-    def _describe_gsc(self, state: SEOInvestigatorState, gsc: dict | None) -> None:
+        return True
+
+    def _describe_gsc(self, state: SEOInvestigatorState, gsc: dict | None) -> bool:
+        """Dopisuje wnioski o kliknięciach. Zwraca True tylko dla twardych liczb."""
         if gsc is None:
-            return
+            return False
         if gsc.get("error"):
             state.record_error(self.name, f"Search Console: {gsc['error']}")
-            return
+            return False
 
         biezace = gsc.get("clicks_current")
         poprzednie = gsc.get("clicks_previous")
@@ -196,6 +265,7 @@ class AnalyticsAgent:
             state.analytics_insights.append(
                 f"Kliknięcia z wyszukiwarki: {biezace} (rok temu: {poprzednie})."
             )
+            state.metrics["search_clicks"] = biezace
 
         # Serwis sam liczy zmianę rok do roku - korzystamy z jego wyniku, zamiast
         # przeliczać drugi raz i ryzykować rozbieżność.
@@ -206,12 +276,27 @@ class AnalyticsAgent:
                 f"Kliknięcia rok do roku: {kierunek} o {abs(zmiana)}%."
             )
 
-        rosnace = [w.get("query") for w in (gsc.get("gainers") or [])[:3] if w.get("query")]
-        spadajace = [w.get("query") for w in (gsc.get("losers") or [])[:3] if w.get("query")]
+        rosnace = _query_names(gsc.get("gainers"))
         if rosnace:
-            state.analytics_insights.append(f"Frazy rosnące: {', '.join(rosnace)}.")
+            state.metrics["search_gainers"] = rosnace
+        spadajace = _query_names(gsc.get("losers"))
         if spadajace:
-            state.analytics_insights.append(f"Frazy spadające: {', '.join(spadajace)}.")
+            state.metrics["search_losers"] = spadajace
+
+        # Z wielkością zmiany, nie tylko z nazwą frazy: bez liczby model nie odróżni
+        # frazy, która straciła 3000 kliknięć, od tej, która straciła trzy - a od tego
+        # zależy, czy warto wiązać ją z usterką techniczną.
+        if rosnace:
+            state.analytics_insights.append(
+                f"Frazy rosnące: {_describe_queries(gsc.get('gainers'))}."
+            )
+        if spadajace:
+            state.analytics_insights.append(
+                f"Frazy spadające: {_describe_queries(gsc.get('losers'))}."
+            )
+
+        # Same frazy bez liczby kliknięć to jeszcze nie pomiar ruchu.
+        return bool(biezace)
 
 
 class GeoAgent:
@@ -240,8 +325,15 @@ class GeoAgent:
             return state
 
         state.mark_source(SOURCE_GEO, True)
+        if geo.get("measured_at"):
+            state.data_timestamps[SOURCE_GEO] = geo["measured_at"]
 
         sumy = geo.get("totals") or {}
+        state.metrics["geo_score"] = geo["overall_score"]
+        state.metrics["geo_visible"] = sumy.get("visible")
+        state.metrics["geo_total"] = sumy.get("total")
+        state.metrics["geo_linked"] = sumy.get("linked")
+        state.metrics["geo_mentions"] = sumy.get("mentions")
         state.geo_visibility_notes.append(
             f"Widoczność w wyszukiwarkach AI: {geo['overall_score']}% "
             f"(obecna w {sumy.get('visible', 0)} z {sumy.get('total', 0)} odpowiedzi)."
@@ -297,6 +389,39 @@ class ReporterAgent:
         # zebrane ustalenia same w sobie mają wartość.
         state.final_synthesis_report = raport or _fallback_report(state)
         return state
+
+
+def _query_names(wiersze, limit: int = 3) -> list[str]:
+    """Nazwy fraz z wierszy Search Console."""
+    return [
+        wiersz["query"]
+        for wiersz in (wiersze or [])[:limit]
+        if wiersz.get("query")
+    ]
+
+
+def _describe_queries(wiersze, limit: int = 3) -> str:
+    """Frazy wraz ze zmianą liczby kliknięć, na przykład "enova (-2708 kliknięć)"."""
+    opisy = []
+    for wiersz in (wiersze or [])[:limit]:
+        fraza = wiersz.get("query")
+        if not fraza:
+            continue
+        zmiana = wiersz.get("delta")
+        if zmiana:
+            opisy.append(f"{fraza} ({zmiana:+d} kliknięć)")
+        else:
+            opisy.append(fraza)
+    return ", ".join(opisy)
+
+
+def _as_day(wartosc):
+    """Dzień z daty lub znacznika czasu - do porównywania świeżości źródeł.
+
+    Źródła oddają raz `date` (koniec serii GA4), raz `datetime` (data rekordu), więc
+    porównanie bez tego sprowadzenia wywracałoby się na niezgodnych typach.
+    """
+    return wartosc.date() if hasattr(wartosc, "date") else wartosc
 
 
 def _percent_change(current, previous) -> int | None:

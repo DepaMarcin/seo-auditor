@@ -2494,19 +2494,317 @@
         .investigate-button-busy { pointer-events: none; opacity: 0.75; transform: none; }
         .investigate-hint { color: var(--muted-dim); font-size: 0.82rem; }
 
-        /* Wynik syntezy - raport z modelu w czytelnej karcie. */
-        .investigation-report { font-size: 0.95rem; line-height: 1.7; color: #E2E8F0; }
-        .investigation-report h4 {
-            margin: 1.6rem 0 0.6rem;
+        /* --- Ostrzezenie o nieaktualnych danych --- */
+        .stale-banner {
+            display: flex;
+            align-items: flex-start;
+            gap: 0.9rem;
+            margin-bottom: 1rem;
+            border: 1px solid rgba(245, 158, 11, 0.4);
+            border-left: 3px solid #FBBF24;
+            background:
+                linear-gradient(90deg, rgba(245, 158, 11, 0.12) 0%, transparent 55%),
+                var(--panel);
+        }
+        .stale-banner-icon { flex: 0 0 auto; font-size: 1.2rem; line-height: 1.4; }
+        .stale-banner-text { flex: 1 1 auto; min-width: 0; }
+        .stale-banner-title {
+            margin: 0 0 0.4rem;
+            font-size: 0.98rem;
+            font-weight: 700;
+            color: #FCD34D;
+        }
+        .stale-banner-list {
+            margin: 0 0 0.5rem;
+            padding-left: 1.15rem;
+            color: var(--text);
+            font-size: 0.87rem;
+            line-height: 1.6;
+        }
+        .stale-banner-note { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.55; }
+        .stale-banner-action {
+            flex: 0 0 auto;
+            align-self: center;
+            padding: 0.55rem 1rem;
+            border-radius: var(--radius-sm);
+            border: 1px solid rgba(245, 158, 11, 0.5);
+            background: rgba(245, 158, 11, 0.14);
+            color: #FCD34D;
+            text-decoration: none;
+            font-size: 0.85rem;
+            font-weight: 650;
+            white-space: nowrap;
+            transition: background var(--transition), border-color var(--transition);
+        }
+        .stale-banner-action:hover {
+            background: rgba(245, 158, 11, 0.22);
+            border-color: rgba(245, 158, 11, 0.7);
+        }
+        @media (max-width: 760px) {
+            .stale-banner { flex-wrap: wrap; }
+            .stale-banner-action { align-self: stretch; text-align: center; }
+        }
+
+        /* --- Karty KPI nad raportem syntezy ---
+           Prefiks `insight-` jest konieczny: raport techniczny ma własny komponent
+           o nazwach `.kpi-card` / `.kpi-card-ok` (patrz wyżej, `.kpi-grid`), który
+           układa treść w kolumnę i obcina przepełnienie. Wspólna nazwa sprawiała,
+           że te karty dziedziczyły `flex-direction: column`, `overflow: hidden`
+           i drugi `padding`, co rozsypywało układ. */
+        .insight-kpi-row {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 1rem;
+            margin-bottom: 1rem;
+        }
+        @media (max-width: 1040px) {
+            .insight-kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 700px) { .insight-kpi-row { grid-template-columns: 1fr; } }
+        .insight-kpi {
+            display: flex;
+            flex-direction: row;
+            align-items: center;
+            gap: 1rem;
+            /* Element siatki domyślnie nie kurczy się pod zawartość - bez tego
+               długie frazy rozpychają kartę zamiast zostać przyciętymi. */
+            min-width: 0;
+            margin: 0;
+            border-left: 3px solid var(--insight-kpi-accent, var(--border-strong));
+        }
+        .insight-kpi-ok { --insight-kpi-accent: #34D399; }
+        .insight-kpi-warning { --insight-kpi-accent: #FBBF24; }
+        .insight-kpi-error { --insight-kpi-accent: #F87171; }
+        .insight-kpi-neutral { --insight-kpi-accent: var(--info); }
+        /* Karta bez danych nie udaje pomiaru - zostaje bez akcentu. */
+        .insight-kpi-none { --insight-kpi-accent: var(--border-strong); opacity: 0.8; }
+        .insight-kpi-body {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .insight-kpi-label {
+            color: var(--muted-dim);
+            font-size: 0.72rem;
+            font-weight: 650;
+            letter-spacing: 0.05em;
+            line-height: 1.3;
+            text-transform: uppercase;
+        }
+        .insight-kpi-value {
+            display: flex;
+            align-items: baseline;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+            /* Pełny `line-height` przy tym stopniu pisma - przy 1.1 wysokie cyfry
+               wchodziły na etykietę powyżej. */
+            line-height: 1.25;
+            font-size: 1.7rem;
+            font-weight: 700;
+            letter-spacing: -0.03em;
+            font-variant-numeric: tabular-nums;
+            overflow-wrap: anywhere;
+        }
+        .insight-kpi-unit {
+            color: var(--muted);
+            font-size: 0.8rem;
+            font-weight: 600;
+            letter-spacing: 0;
+        }
+        .insight-kpi-hint { color: var(--muted); font-size: 0.78rem; line-height: 1.45; }
+        .insight-kpi-details {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            display: flex;
+            flex-direction: column;
+            gap: 0.2rem;
+            min-width: 0;
+        }
+        /* Frazy bywają długie i jest ich kilka - przycinamy do dwóch wierszy, żeby
+           jedna karta nie wyznaczała wysokości całego rzędu. */
+        .insight-kpi-details li {
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            max-width: 100%;
+            color: var(--muted);
+            font-size: 0.76rem;
+            line-height: 1.4;
+            overflow-wrap: anywhere;
+        }
+        /* Data danych karty - celowo najciszej na karcie, ale zawsze obecna. */
+        .insight-kpi-as-of { color: var(--muted-dim); font-size: 0.71rem; line-height: 1.3; }
+        /* Mniejszy wariant pierścienia oceny - ten sam zabieg co .score-ring,
+           ale w rozmiarze pasującym do wiersza kart. */
+        .insight-kpi-ring {
+            flex: 0 0 auto;
+            position: relative;
+            width: 68px;
+            height: 68px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background:
+                conic-gradient(from 180deg,
+                    var(--ring-from, var(--accent)) 0,
+                    var(--ring-to, #34D399) calc(var(--score) * 1%),
+                    rgba(255, 255, 255, 0.07) 0);
+        }
+        .insight-kpi-ring-ok { --ring-from: #059669; --ring-to: #34D399; }
+        .insight-kpi-ring-warning { --ring-from: #D97706; --ring-to: #FBBF24; }
+        .insight-kpi-ring-error { --ring-from: #DC2626; --ring-to: #F87171; }
+        .insight-kpi-ring-inner {
+            width: 54px;
+            height: 54px;
+            border-radius: 50%;
+            background: var(--panel);
+            border: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
             font-size: 1.05rem;
             font-weight: 700;
-            letter-spacing: -0.01em;
-            color: var(--text);
+            line-height: 1;
+            font-variant-numeric: tabular-nums;
         }
-        .investigation-report h4:first-child { margin-top: 0; }
-        .investigation-report p { margin: 0 0 0.9rem; }
-        .investigation-report ul { margin: 0 0 1rem; padding-left: 1.2rem; }
-        .investigation-report li { margin-bottom: 0.35rem; }
+
+        /* --- Sekcje raportu w kolorowych ramkach --- */
+        .callout {
+            margin: 0 0 1rem;
+            border-left: 3px solid var(--callout-accent, var(--border-strong));
+            background:
+                linear-gradient(90deg, var(--callout-wash, transparent) 0%, transparent 42%),
+                var(--panel);
+        }
+        .callout-attention {
+            --callout-accent: #F87171;
+            --callout-wash: rgba(239, 68, 68, 0.08);
+        }
+        .callout-good {
+            --callout-accent: #34D399;
+            --callout-wash: rgba(16, 185, 129, 0.08);
+        }
+        /* "Czego nie udalo sie zbadac" - stonowane, bo to nie wynik, tylko luka. */
+        .callout-muted {
+            --callout-accent: var(--border-strong);
+            --callout-wash: rgba(255, 255, 255, 0.03);
+        }
+        .callout-summary {
+            --callout-accent: #818CF8;
+            --callout-wash: rgba(99, 102, 241, 0.09);
+        }
+        /* Executive summary - jedyna sekcja, którą czyta się zawsze, więc jedyna
+           z pełnym tłem zamiast samego lewego akcentu. */
+        .callout-executive {
+            --callout-accent: #A78BFA;
+            --callout-wash: rgba(139, 92, 246, 0.14);
+            border: 1px solid rgba(167, 139, 250, 0.3);
+            border-left: 3px solid #A78BFA;
+            background:
+                linear-gradient(135deg, rgba(139, 92, 246, 0.14) 0%, rgba(99, 102, 241, 0.05) 60%),
+                var(--panel);
+        }
+        .callout-executive .callout-heading { font-size: 1.15rem; color: #DDD6FE; }
+        .callout-executive .callout-body p {
+            color: var(--text);
+            font-size: 1rem;
+            line-height: 1.7;
+        }
+        .callout-neutral { --callout-accent: var(--border-strong); }
+        .callout-heading {
+            display: flex;
+            align-items: center;
+            gap: 0.55rem;
+            margin: 0 0 0.6rem;
+            font-size: 1.05rem;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        .callout-mark {
+            flex: 0 0 auto;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--callout-accent, var(--border-strong));
+        }
+        .callout-body p { margin: 0 0 0.6rem; color: var(--muted); line-height: 1.65; }
+        .callout-body p:last-child { margin-bottom: 0; }
+        .callout-body .geo-answer-list { margin: 0; padding-left: 1.15rem; }
+        .callout-body .geo-answer-list li { margin-bottom: 0.4rem; line-height: 1.6; }
+        .callout-body .geo-answer-list li:last-child { margin-bottom: 0; }
+        .callout-body .geo-answer-heading {
+            margin: 0.8rem 0 0.4rem;
+            font-size: 0.92rem;
+            font-weight: 650;
+        }
+
+        /* --- Akordeony "Zebrane ustalenia" --- */
+        .investigation-findings { display: flex; flex-direction: column; gap: 0.6rem; }
+        .finding-group {
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: rgba(255, 255, 255, 0.015);
+            overflow: hidden;
+        }
+        .finding-group[open] { border-color: var(--border-strong); }
+        .finding-summary {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.75rem 0.9rem;
+            cursor: pointer;
+            list-style: none;
+            font-size: 0.9rem;
+            font-weight: 650;
+        }
+        .finding-summary::-webkit-details-marker { display: none; }
+        .finding-summary:hover { background: rgba(255, 255, 255, 0.03); }
+        .finding-name { flex: 1 1 auto; min-width: 0; }
+        .finding-count {
+            flex: 0 0 auto;
+            min-width: 1.6rem;
+            padding: 0.1rem 0.45rem;
+            border-radius: 999px;
+            border: 1px solid var(--group-accent-border, var(--border-strong));
+            background: var(--group-accent-bg, rgba(255, 255, 255, 0.05));
+            color: var(--group-accent-text, var(--muted));
+            text-align: center;
+            font-size: 0.75rem;
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+        .finding-group-technical {
+            --group-accent-border: rgba(0, 230, 118, 0.35);
+            --group-accent-bg: rgba(0, 230, 118, 0.1);
+            --group-accent-text: #6EE7B7;
+        }
+        .finding-group-analytics {
+            --group-accent-border: rgba(56, 189, 248, 0.35);
+            --group-accent-bg: rgba(56, 189, 248, 0.1);
+            --group-accent-text: #7DD3FC;
+        }
+        .finding-group-geo {
+            --group-accent-border: rgba(129, 140, 248, 0.4);
+            --group-accent-bg: rgba(99, 102, 241, 0.14);
+            --group-accent-text: #A5B4FC;
+        }
+        .finding-chevron {
+            flex: 0 0 auto;
+            color: var(--muted-dim);
+            font-size: 0.75rem;
+            transition: transform var(--transition);
+        }
+        .finding-group[open] .finding-chevron { transform: rotate(180deg); }
+
+        /* Wynik syntezy - raport z modelu w czytelnej karcie. */
+        /* Sam kontener sekcji - typografia nalezy do .callout-body, wiec reguly
+           potomne zostaly usuniete: dwa zestawy biloby sie o te same elementy. */
+        .investigation-report { font-size: 0.95rem; line-height: 1.7; color: #E2E8F0; }
 
         /* Odznaki źródeł - widać, z ilu modułów powstała synteza. */
         .source-badges { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }

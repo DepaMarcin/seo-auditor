@@ -850,16 +850,28 @@ def _render_investigation(request: HttpRequest, domain: str, audit=None) -> Http
     """Uruchamia agentów i rysuje raport - wspólne dla wejścia z audytu i z hubu."""
     from auditor.agents.orchestrator import run_seo_investigation
     from auditor.agents.specialists import SOURCE_ANALYTICS, SOURCE_GEO, SOURCE_TECHNICAL
-    from auditor.presentation import render_ai_answer
+    from auditor.presentation import (
+        build_investigation_kpis,
+        build_investigation_sections,
+        build_stale_data_warnings,
+    )
 
     state = run_seo_investigation(domain, owner=request.user)
+    # Ostrzeżenie o starych danych rozstrzyga się tutaj, a nie w szablonie: wymaga
+    # porównania z zegarem, a szablon nie ma czym liczyć różnicy dat.
+    nieaktualne = build_stale_data_warnings(state)
 
     return render(request, "auditor/audit_investigation.html", {
         "audit": audit,
         "state": state,
-        # Raport przechodzi przez ten sam parser co rekomendacje RAG: treść pochodzi
-        # od modelu, więc najpierw escape, potem własne znaczniki.
-        "report_html": render_ai_answer(state.final_synthesis_report),
+        "kpis": build_investigation_kpis(state),
+        "has_stale_data": bool(nieaktualne),
+        "stale_data": nieaktualne,
+        # Raport dzielimy na sekcje i każdą renderujemy tym samym parserem co
+        # rekomendacje RAG: treść pochodzi od modelu, więc najpierw escape, potem
+        # własne znaczniki. Podział daje kolorowe ramki - jeden blok tekstu
+        # pokazywałby problemy i sukcesy identycznie.
+        "report_sections": build_investigation_sections(state.final_synthesis_report),
         "source_badges": [
             {
                 "label": "Audyt Techniczny",

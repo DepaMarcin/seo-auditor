@@ -28,6 +28,16 @@ class SEOInvestigatorState:
     # lista nie znaczy, że źródło było dostępne.
     sources: dict = field(default_factory=dict)
 
+    # Surowe liczby do kart KPI: wynik techniczny, sesje, zmiana R/R, wynik GEO.
+    # Trzymamy je obok zdań, bo zdanie jest dla czytelnika, a liczba dla wykresu -
+    # wyciąganie jej z powrotem z tekstu byłoby parsowaniem własnego raportu.
+    metrics: dict = field(default_factory=dict)
+
+    # Z kiedy pochodzą dane każdego źródła (klucze jak w `sources`). Raport złożony
+    # z zapisów sprzed miesiąca czyta się identycznie jak ze świeżych, więc bez tych
+    # dat użytkownik nie miałby jak odróżnić diagnozy od archiwum.
+    data_timestamps: dict = field(default_factory=dict)
+
     # Awarie pojedynczych agentów. Badanie trwa dalej, ale raport ma o nich wiedzieć -
     # inaczej brak wniosków wyglądałby jak "wszystko w porządku".
     errors: list[str] = field(default_factory=list)
@@ -66,5 +76,10 @@ class SEOInvestigatorState:
             "geo_visibility_notes": list(self.geo_visibility_notes),
             "final_synthesis_report": self.final_synthesis_report,
             "sources": dict(self.sources),
+            "metrics": dict(self.metrics),
+            "data_timestamps": {
+                nazwa: data.isoformat() if hasattr(data, "isoformat") else data
+                for nazwa, data in self.data_timestamps.items()
+            },
             "errors": list(self.errors),
         }

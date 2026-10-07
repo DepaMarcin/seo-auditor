@@ -6,9 +6,14 @@
 {% comment %}
 Wynik badania prowadzonego przez agentów.
 
-Odznaki u góry mówią, z ilu źródeł powstała synteza. Jest to istotne, bo raport
+Odznaki pod kartami mówią, z ilu źródeł powstała synteza. Jest to istotne, bo raport
 z dwóch źródeł czyta się tak samo jak z trzech - bez tej informacji użytkownik nie
 wiedziałby, że czegoś w nim brakuje.
+
+Karty KPI stoją nad raportem, a nie pod nim: liczba jest konkluzją, tekst - jej
+uzasadnieniem. Każda sekcja raportu dostaje ramkę w tonie wynikającym z nagłówka
+(auditor.presentation.section_tone), żeby "co wymaga uwagi" nie wyglądało tak samo
+jak "co działa dobrze".
 {% endcomment %}
 
 <div class="panel geo-dashboard-header">
@@ -32,6 +37,57 @@ wiedziałby, że czegoś w nim brakuje.
     </div>
 </div>
 
+{% if has_stale_data %}
+{% comment %}
+Banner stoi nad kartami, bo zmienia znaczenie wszystkiego pod nim: te same liczby
+czyta się inaczej, gdy wiadomo, że opisują stan sprzed kilku tygodni.
+{% endcomment %}
+<div class="panel stale-banner">
+    <span class="stale-banner-icon" aria-hidden="true">⚠️</span>
+    <div class="stale-banner-text">
+        <p class="stale-banner-title">Synteza opiera się na nieaktualnych danych</p>
+        <ul class="stale-banner-list">
+            {% for wpis in stale_data %}
+            <li>{{ wpis.message }}</li>
+            {% endfor %}
+        </ul>
+        <p class="stale-banner-note">
+            Wnioski mogą opisywać stan, którego już nie ma — także problemy naprawione
+            w międzyczasie. Uruchom ponownie badanie, zanim podejmiesz na ich podstawie
+            decyzje.
+        </p>
+    </div>
+    <a class="stale-banner-action" href="{% url 'auditor:index' %}">
+        Przejdź do skanera
+    </a>
+</div>
+{% endif %}
+
+<div class="insight-kpi-row">
+    {% for karta in kpis %}
+    <div class="panel insight-kpi insight-kpi-{{ karta.tone }}">
+        {% if karta.ring is not None %}
+        <div class="insight-kpi-ring insight-kpi-ring-{{ karta.tone }}" style="--score: {{ karta.ring }};">
+            <span class="insight-kpi-ring-inner">{{ karta.ring }}</span>
+        </div>
+        {% endif %}
+        <div class="insight-kpi-body">
+            <span class="insight-kpi-label">{{ karta.label }}</span>
+            <span class="insight-kpi-value">{{ karta.value }}{% if karta.unit %}<span class="insight-kpi-unit">{{ karta.unit }}</span>{% endif %}</span>
+            <span class="insight-kpi-hint">{{ karta.hint }}</span>
+            {% if karta.details %}
+            <ul class="insight-kpi-details">
+                {% for wiersz in karta.details %}<li>{{ wiersz }}</li>{% endfor %}
+            </ul>
+            {% endif %}
+            {% if karta.as_of %}
+            <span class="insight-kpi-as-of">(z {{ karta.as_of|date:"d.m.Y" }})</span>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
 <div class="panel">
     <h2 class="geo-card-heading">Uwzględnione źródła danych</h2>
     <div class="source-badges">
@@ -47,9 +103,18 @@ wiedziałby, że czegoś w nim brakuje.
     </div>
 </div>
 
-{% if report_html %}
-<div class="panel investigation-report">
-    {{ report_html }}
+{% if report_sections %}
+<div class="investigation-report">
+    {% for sekcja in report_sections %}
+    <section class="panel callout callout-{{ sekcja.tone }}">
+        {% if sekcja.heading %}
+        <h2 class="callout-heading">
+            <span class="callout-mark" aria-hidden="true"></span>{{ sekcja.heading }}
+        </h2>
+        {% endif %}
+        <div class="callout-body">{{ sekcja.html }}</div>
+    </section>
+    {% endfor %}
 </div>
 {% else %}
 <div class="panel">
@@ -85,41 +150,41 @@ wiedziałby, że czegoś w nim brakuje.
 
     <div class="investigation-findings">
         {% if state.technical_issues %}
-        <details class="geo-questions">
-            <summary class="geo-questions-summary">
-                Techniczne ({{ state.technical_issues|length }})
+        <details class="finding-group finding-group-technical">
+            <summary class="finding-summary">
+                <span class="finding-name">Techniczne</span>
+                <span class="finding-count">{{ state.technical_issues|length }}</span>
+                <span class="finding-chevron" aria-hidden="true">▾</span>
             </summary>
-            <div class="geo-questions-body">
-                <ul class="investigation-list">
-                    {% for wpis in state.technical_issues %}<li>{{ wpis }}</li>{% endfor %}
-                </ul>
-            </div>
+            <ul class="investigation-list">
+                {% for wpis in state.technical_issues %}<li>{{ wpis }}</li>{% endfor %}
+            </ul>
         </details>
         {% endif %}
 
         {% if state.analytics_insights %}
-        <details class="geo-questions">
-            <summary class="geo-questions-summary">
-                Analityka GA4/GSC ({{ state.analytics_insights|length }})
+        <details class="finding-group finding-group-analytics">
+            <summary class="finding-summary">
+                <span class="finding-name">Analityka GA4/GSC</span>
+                <span class="finding-count">{{ state.analytics_insights|length }}</span>
+                <span class="finding-chevron" aria-hidden="true">▾</span>
             </summary>
-            <div class="geo-questions-body">
-                <ul class="investigation-list">
-                    {% for wpis in state.analytics_insights %}<li>{{ wpis }}</li>{% endfor %}
-                </ul>
-            </div>
+            <ul class="investigation-list">
+                {% for wpis in state.analytics_insights %}<li>{{ wpis }}</li>{% endfor %}
+            </ul>
         </details>
         {% endif %}
 
         {% if state.geo_visibility_notes %}
-        <details class="geo-questions">
-            <summary class="geo-questions-summary">
-                Widoczność w AI ({{ state.geo_visibility_notes|length }})
+        <details class="finding-group finding-group-geo">
+            <summary class="finding-summary">
+                <span class="finding-name">Widoczność w AI</span>
+                <span class="finding-count">{{ state.geo_visibility_notes|length }}</span>
+                <span class="finding-chevron" aria-hidden="true">▾</span>
             </summary>
-            <div class="geo-questions-body">
-                <ul class="investigation-list">
-                    {% for wpis in state.geo_visibility_notes %}<li>{{ wpis }}</li>{% endfor %}
-                </ul>
-            </div>
+            <ul class="investigation-list">
+                {% for wpis in state.geo_visibility_notes %}<li>{{ wpis }}</li>{% endfor %}
+            </ul>
         </details>
         {% endif %}
     </div>

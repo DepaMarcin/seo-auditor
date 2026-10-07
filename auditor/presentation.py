@@ -882,3 +882,354 @@ def build_geo_sources(study, queries) -> list[dict]:
         # Filtr w tabeli porównuje identyfikator pytania z tą listą.
         wpis["question_filter"] = " ".join(f"q{pk}" for pk in pytania)
     return zrodla
+
+
+# ----------------------------------------------------------------------
+# Synteza multi-agentowa: karty KPI i sekcje raportu
+# ----------------------------------------------------------------------
+# Nagłówek sekcji -> ton ramki. Dopasowanie po fragmencie, nie po całym tytule:
+# nagłówki pisze model i nie powtarza ich co do znaku. Kolejność ma znaczenie -
+# wygrywa pierwsze trafienie.
+_SECTION_TONES: tuple[tuple[str, str], ...] = (
+    # Executive summary przed pozostałymi wzorcami: jego nagłówek zawiera słowo
+    # "wnioski", które pasowałoby również do innych sekcji.
+    ("glowne wnioski", "executive"),
+    ("executive summary", "executive"),
+    ("wymaga uwagi", "attention"),
+    ("problem", "attention"),
+    ("priorytet", "attention"),
+    ("dziala dobrze", "good"),
+    ("mocne", "good"),
+    ("nie udalo sie", "muted"),
+    ("ograniczeni", "muted"),
+    ("podsumowanie", "summary"),
+)
+
+_INVESTIGATION_HEADING_RE = re.compile(r"^[ \t]{0,3}(#{1,4})[ \t]+(.+?)[ \t#]*$", re.MULTILINE)
+
+
+def _without_diacritics(text: str) -> str:
+    """Tekst bez znaków diakrytycznych - do dopasowywania nagłówków."""
+    import unicodedata
+
+    # "ł" jest jedyną polską literą bez dekompozycji kanonicznej - NFKD jej nie
+    # rozbije na "l" i znak łączony, więc trzeba ją podmienić wprost.
+    bez_l = (text or "").replace("ł", "l").replace("Ł", "L")
+    rozlozony = unicodedata.normalize("NFKD", bez_l)
+    return "".join(znak for znak in rozlozony if not unicodedata.combining(znak))
+
+
+def section_tone(heading: str) -> str:
+    """Ton ramki dla nagłówka sekcji raportu syntezy.
+
+    Dopasowujemy bez diakrytyków, bo nagłówki pisze model: "Co dziala dobrze" bez
+    ogonków to ta sama sekcja, a cały sens kolorowania ramek polega na tym, żeby
+    trafiała w zielone tło także wtedy.
+    """
+    tekst = _without_diacritics((heading or "").lower())
+    for fragment, ton in _SECTION_TONES:
+        if fragment in tekst:
+            return ton
+    return "neutral"
+
+
+def build_investigation_sections(report: str | None) -> list[dict]:
+    """Dzieli raport syntezy na sekcje z tonem - do kolorowych ramek.
+
+    Bez tego podziału cały raport renderuje się jako jeden blok tekstu, w którym
+    "co wymaga uwagi" wygląda dokładnie tak samo jak "co działa dobrze". Ton bierze
+    się z nagłówka, bo to jedyne, co o zawartości sekcji wiadomo pewnie.
+
+    Zwraca `[{"heading", "tone", "html"}]`; nagłówek bywa pusty, gdy raport zaczyna
+    się tekstem bez nagłówka.
+    """
+    tekst = (report or "").strip()
+    if not tekst:
+        return []
+
+    trafienia = list(_INVESTIGATION_HEADING_RE.finditer(tekst))
+    if not trafienia:
+        return [{"heading": "", "tone": "neutral", "html": render_ai_answer(tekst)}]
+
+    sekcje: list[dict] = []
+
+    wstep = tekst[: trafienia[0].start()].strip()
+    if wstep:
+        sekcje.append({"heading": "", "tone": "neutral", "html": render_ai_answer(wstep)})
+
+    for numer, trafienie in enumerate(trafienia):
+        koniec = trafienia[numer + 1].start() if numer + 1 < len(trafienia) else len(tekst)
+        naglowek = trafienie.group(2).strip()
+        tresc = tekst[trafienie.end():koniec].strip()
+
+        # Nagłówek pierwszego poziomu bez treści to tytuł dokumentu - strona ma już
+        # własny nagłówek z domeną, więc powtarzanie go byłoby szumem.
+        if not tresc and len(trafienie.group(1)) == 1:
+            continue
+
+        sekcje.append({
+            "heading": naglowek,
+            "tone": section_tone(naglowek),
+            "html": render_ai_answer(tresc),
+        })
+
+    return sekcje
+
+
+def build_investigation_kpis(state) -> list[dict]:
+    """Trzy karty KPI nad raportem: wynik techniczny, ruch organiczny, widoczność w AI.
+
+    Karty pojawiają się zawsze, także bez danych. "Brak danych" jest informacją
+    o witrynie - pominięcie karty kazałoby czytelnikowi zgadywać, czy czegoś nie
+    zmierzono, czy wyszło zero.
+
+    Zwraca `[{"label", "value", "unit", "hint", "details", "as_of", "tone", "ring"}]`.
+    `ring` to wypełnienie pierścienia w procentach albo None, gdy karta nie ma go
+    rysować; `details` to drobne wiersze pod główną liczbą; `as_of` - data danych,
+    którymi karta się posługuje.
+    """
+    liczby = getattr(state, "metrics", None) or {}
+    daty = getattr(state, "data_timestamps", None) or {}
+    return [
+        _kpi_technical(liczby, daty.get("technical")),
+        _kpi_traffic(liczby, daty.get("analytics")),
+        _kpi_geo(liczby, daty.get("geo")),
+    ]
+
+
+def _kpi_technical(liczby: dict, data=None) -> dict:
+    wynik = liczby.get("technical_score")
+    if wynik is None:
+        return {
+            "label": "Wynik techniczny",
+            "value": "—",
+            "unit": "",
+            "hint": "Brak audytu technicznego dla tej domeny",
+            "details": [],
+            "as_of": None,
+            "tone": "none",
+            "ring": None,
+        }
+
+    bledy = liczby.get("technical_errors")
+    ostrzezenia = liczby.get("technical_warnings")
+    szczegoly = []
+    if bledy is not None:
+        szczegoly.append(f"Krytyczne błędy: {bledy}")
+    if ostrzezenia is not None:
+        szczegoly.append(f"Ostrzeżenia: {ostrzezenia}")
+
+    return {
+        "label": "Wynik techniczny",
+        "value": str(wynik),
+        "unit": "/ 100",
+        "hint": _SCORE_HINTS[score_bucket(wynik)],
+        "details": szczegoly,
+        "as_of": data,
+        "tone": score_bucket(wynik),
+        "ring": wynik,
+    }
+
+
+_SCORE_HINTS = {
+    "ok": "Stan techniczny bez pilnych zastrzeżeń",
+    "warning": "Są błędy warte naprawy",
+    "error": "Technika wymaga pilnej uwagi",
+}
+
+
+def _kpi_traffic(liczby: dict, data=None) -> dict:
+    sesje = liczby.get("organic_sessions")
+    klikniecia = liczby.get("search_clicks")
+    if sesje is None and klikniecia is None:
+        return {
+            "label": "Ruch organiczny",
+            "value": "—",
+            "unit": "",
+            "hint": "Brak danych Analytics 4 i Search Console dla tej domeny",
+            "details": [],
+            "as_of": None,
+            "tone": "none",
+            "ring": None,
+        }
+
+    from django.contrib.humanize.templatetags.humanize import intcomma
+
+    zmiana = liczby.get("organic_change_percent")
+    zrodlo = "z bazy" if liczby.get("analytics_from_database") else "z API"
+    if sesje is None:
+        # Search Console bez Analytics: kliknięcia stają się główną liczbą karty,
+        # bo to jedyny pomiar ruchu, jaki mamy.
+        podpis = f"Kliknięcia z wyszukiwarki ({zrodlo}); brak danych o sesjach"
+        ton = "neutral"
+    elif zmiana is None:
+        podpis = f"Sesje z wyszukiwarki ({zrodlo}); brak porównania rok do roku"
+        ton = "neutral"
+    else:
+        kierunek = "wzrost" if zmiana > 0 else "spadek"
+        podpis = f"Rok do roku: {kierunek} o {abs(zmiana)}% ({zrodlo})"
+        ton = _traffic_tone(zmiana)
+
+    szczegoly = []
+    if sesje is not None and klikniecia is not None:
+        szczegoly.append(f"Kliknięcia GSC: {intcomma(klikniecia)}")
+
+    # Frazy pokazujemy w kierunku zgodnym z trendem karty. Lista fraz rosnących na
+    # karcie oznaczonej spadkiem mówiłaby o czymś innym niż jej własna liczba -
+    # przy spadku informatywne jest to, co ruch utraciło.
+    if zmiana is not None and zmiana < 0:
+        frazy, etykieta = liczby.get("search_losers"), "Spadające frazy"
+    else:
+        frazy, etykieta = liczby.get("search_gainers"), "Rosnące frazy"
+    if not frazy:
+        # Brak fraz w wybranym kierunku - pokazujemy te, które są.
+        frazy, etykieta = (
+            (liczby.get("search_gainers"), "Rosnące frazy")
+            if etykieta == "Spadające frazy"
+            else (liczby.get("search_losers"), "Spadające frazy")
+        )
+    if frazy:
+        szczegoly.append(f"{etykieta}: {', '.join(frazy[:3])}")
+
+    return {
+        "label": "Ruch organiczny",
+        "value": intcomma(sesje if sesje is not None else klikniecia),
+        "unit": "sesji" if sesje is not None else "kliknięć",
+        "hint": podpis,
+        "details": szczegoly,
+        "as_of": data,
+        "tone": ton,
+        "ring": None,
+    }
+
+
+def _traffic_tone(zmiana: int) -> str:
+    """Ton karty ruchu. Spadek poniżej progu istotności nie jest jeszcze alarmem."""
+    if zmiana <= -SIGNIFICANT_TRAFFIC_DROP_PERCENT:
+        return "error"
+    if zmiana < 0:
+        return "warning"
+    return "ok"
+
+
+# Próg, od którego spadek ruchu opisujemy jako istotny - ten sam, którym posługuje
+# się AnalyticsAgent (auditor.agents.specialists.SIGNIFICANT_CHANGE_PERCENT).
+SIGNIFICANT_TRAFFIC_DROP_PERCENT = 10
+
+
+def _kpi_geo(liczby: dict, data=None) -> dict:
+    wynik = liczby.get("geo_score")
+    if wynik is None:
+        return {
+            "label": "Widoczność w AI",
+            "value": "Brak danych",
+            "unit": "",
+            "hint": "Nie przeprowadzono badania GEO dla tej domeny",
+            "details": [],
+            "as_of": None,
+            "tone": "none",
+            "ring": None,
+        }
+
+    widoczne = liczby.get("geo_visible")
+    wszystkie = liczby.get("geo_total")
+    if widoczne is not None and wszystkie:
+        wartosc, jednostka = f"{widoczne}/{wszystkie}", "cytowań"
+    else:
+        wartosc, jednostka = f"{wynik}", "%"
+
+    szczegoly = []
+    z_odnosnikiem = liczby.get("geo_linked")
+    wzmianki = liczby.get("geo_mentions")
+    if z_odnosnikiem is not None:
+        szczegoly.append(f"Z odnośnikiem: {z_odnosnikiem}")
+    if wzmianki is not None:
+        szczegoly.append(f"Wzmianki bez linku: {wzmianki}")
+
+    return {
+        "label": "Widoczność w AI",
+        "value": wartosc,
+        "unit": jednostka,
+        "hint": f"Marka obecna w {wynik}% odpowiedzi modeli",
+        "details": szczegoly,
+        "as_of": data,
+        "tone": _GEO_TONES.get(_geo_score_bucket(wynik), "neutral"),
+        "ring": wynik,
+    }
+
+
+# ----------------------------------------------------------------------
+# Ostrzeżenie o nieaktualnych danych
+# ----------------------------------------------------------------------
+# Od ilu dni zapis uznajemy za nieaktualny. Dwa tygodnie, bo tyle wystarcza,
+# by wdrożenie albo zmiana w wyszukiwarce unieważniły wnioski.
+STALE_DATA_DAYS = 14
+
+# Etykiety w liczbie mnogiej - wchodzą do zdania "... pochodzą z ...".
+_TIMESTAMP_LABELS = {
+    "technical": "Dane techniczne",
+    "analytics": "Dane analityczne",
+    "geo": "Dane o widoczności w AI",
+}
+
+
+def _as_local_day(wartosc):
+    """Dzień z `date` albo `datetime` - w strefie czasowej aplikacji."""
+    from django.utils import timezone
+
+    if hasattr(wartosc, "date"):
+        if timezone.is_aware(wartosc):
+            wartosc = timezone.localtime(wartosc)
+        return wartosc.date()
+    return wartosc
+
+
+def data_age_in_days(wartosc) -> int | None:
+    """Ile dni ma ten zapis - albo None, gdy nie ma daty."""
+    from django.utils import timezone
+
+    if wartosc is None:
+        return None
+    return (timezone.localdate() - _as_local_day(wartosc)).days
+
+
+def build_stale_data_warnings(state) -> list[dict]:
+    """Źródła, których dane są starsze niż `STALE_DATA_DAYS` dni.
+
+    Raport złożony z zapisów sprzed miesiąca czyta się tak samo przekonująco jak ze
+    świeżych. Bez tego ostrzeżenia użytkownik podejmowałby decyzje na podstawie stanu,
+    który już nie istnieje - a najgroźniejsze jest to wtedy, gdy problem został
+    w międzyczasie naprawiony.
+
+    Zwraca `[{"label", "as_of", "days", "message"}]`, od najstarszego zapisu.
+    """
+    daty = getattr(state, "data_timestamps", None) or {}
+
+    stare = []
+    for nazwa, wartosc in daty.items():
+        wiek = data_age_in_days(wartosc)
+        if wiek is None or wiek <= STALE_DATA_DAYS:
+            continue
+
+        etykieta = _TIMESTAMP_LABELS.get(nazwa, nazwa)
+        dzien = _as_local_day(wartosc)
+        stare.append({
+            "label": etykieta,
+            "as_of": dzien,
+            "days": wiek,
+            "message": (
+                f"{etykieta} pochodzą z {dzien:%d.%m.%Y} — {_day_count(wiek)} temu."
+            ),
+        })
+
+    return sorted(stare, key=lambda wpis: wpis["days"], reverse=True)
+
+
+def _day_count(dni: int) -> str:
+    """Liczba dni po polsku - "1 dzień" kontra "14 dni"."""
+    return "1 dzień" if dni == 1 else f"{dni} dni"
+
+
+# Kubelki silnika GEO mowia o stabilnosci cytowan, karty KPI o kolorze. Mapujemy
+# jedno na drugie, zeby progi zostaly w jednym miejscu (auditor.services.geo).
+_GEO_TONES = {"stable": "ok", "volatile": "warning", "absent": "error"}
