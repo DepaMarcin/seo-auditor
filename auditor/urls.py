@@ -10,6 +10,18 @@ urlpatterns = [
 
     # Synteza dla domeny wskazanej na hubie - bez wymaganego audytu technicznego.
     path("investigate/", views.investigate_domain_view, name="investigate_domain"),
+    # Raport badania zleconego do kolejki - odtwarzany z bazy, bez pracy agentów.
+    path(
+        "investigate/<int:pk>/",
+        views.investigation_detail_view,
+        name="investigation_detail",
+    ),
+    # Odpytywany przez stronę oczekiwania, dopóki badanie trwa.
+    path(
+        "investigate/<int:pk>/status/",
+        views.investigation_status_view,
+        name="investigation_status",
+    ),
 
     # Panel analityki: wybór audytu, którego dane GA4/GSC chcemy oglądać.
     # Dashboard analityki bieżącej domeny - bez pośredniej listy wyboru.

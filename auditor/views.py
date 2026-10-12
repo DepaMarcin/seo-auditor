@@ -22,12 +22,14 @@ from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.views import View
 from django.views.decorators.http import require_GET, require_POST
 from google_auth_oauthlib.flow import Flow
 
+from .agents.state import SOURCE_KEYS
 from .models import Audit, AuditedPage, AuditMetric
 from .navigation import TOOLS
 from .presentation import (
@@ -807,13 +809,15 @@ def sitemap_suggestions(request: HttpRequest) -> JsonResponse:
 
 
 @login_required
+@require_POST
 def audit_investigate_view(request: HttpRequest, pk: int) -> HttpResponse:
-    """Holistyczna synteza danych o domenie - uruchamia agentów i pokazuje raport.
+    """Zleca syntezę danych witryny z poziomu raportu technicznego.
 
-    Badanie odpytuje trzy niezależne źródła i kończy się wywołaniem modelu, więc
-    żądanie trwa kilkanaście sekund. Nie uciekamy od tego w zadanie w tle: wynik jest
-    jednorazowy i nie ma go gdzie trzymać, a przycisk w raporcie pokazuje stan
-    ładowania, zanim przeglądarka przejdzie na tę stronę.
+    Badanie odpytuje trzy źródła i kończy się wywołaniem modelu, więc nie wykonuje
+    się już w wątku HTTP: trafia do kolejki, a użytkownik od razu idzie na stronę
+    oczekiwania. POST, a nie GET, bo zlecenie TWORZY rekord i kosztuje wywołanie
+    modelu - z adresem w linku wystarczyłoby jego podejrzenie przez przeglądarkę,
+    żeby zapłacić za badanie, którego nikt nie zamówił.
     """
     from auditor.services.google_api import audit_domain
 
@@ -821,12 +825,13 @@ def audit_investigate_view(request: HttpRequest, pk: int) -> HttpResponse:
 
     # Model `Audit` przechowuje pełny adres, nie domenę - agenci pracują na domenie,
     # bo analityka i GEO opisują cały serwis, nie jedną podstronę.
-    return _render_investigation(request, audit_domain(audit.url), audit=audit)
+    return _start_and_redirect(request, audit_domain(audit.url), audit=audit)
 
 
 @login_required
+@require_POST
 def investigate_domain_view(request: HttpRequest) -> HttpResponse:
-    """`/investigate/?domain=` - synteza dla domeny wskazanej na hubie.
+    """Zleca syntezę dla domeny wskazanej na hubie.
 
     Wejście po domenie, a nie po identyfikatorze audytu, bo badanie dotyczy witryny:
     domena może mieć podłączoną analitykę i badanie GEO, nigdy nie przechodząc skanu
@@ -834,7 +839,7 @@ def investigate_domain_view(request: HttpRequest) -> HttpResponse:
     """
     from auditor.services.geo import normalize_domain
 
-    domena = normalize_domain(request.GET.get("custom") or request.GET.get("domain") or "")
+    domena = normalize_domain(request.POST.get("custom") or request.POST.get("domain") or "")
 
     # Kropka jako jedyny warunek: cokolwiek bez niej nie jest adresem witryny,
     # a agenci próbowaliby to pobierać. Prywatne adresy odrzuca `url_guard`
@@ -843,53 +848,110 @@ def investigate_domain_view(request: HttpRequest) -> HttpResponse:
         messages.error(request, "Podaj adres witryny, na przykład enova.pl.")
         return redirect("auditor:hub")
 
-    return _render_investigation(request, domena)
+    return _start_and_redirect(request, domena)
 
 
-def _render_investigation(request: HttpRequest, domain: str, audit=None) -> HttpResponse:
-    """Uruchamia agentów i rysuje raport - wspólne dla wejścia z audytu i z hubu."""
-    from auditor.agents.orchestrator import run_seo_investigation
-    from auditor.agents.specialists import SOURCE_ANALYTICS, SOURCE_GEO, SOURCE_TECHNICAL
-    from auditor.presentation import (
-        build_investigation_kpis,
-        build_investigation_sections,
-        build_stale_data_warnings,
+def _start_and_redirect(request: HttpRequest, domain: str, audit=None) -> HttpResponse:
+    """Zleca badanie i odsyła na stronę wyniku - wspólne dla obu wejść."""
+    from auditor.agents.orchestrator import start_investigation
+    from auditor.models import InvestigationRun
+
+    # Dwa kliknięcia pod rząd nie mogą zamówić dwóch badań tej samej domeny: każde
+    # kosztuje wywołanie modelu, a wynik byłby ten sam. Trwające badanie przejmujemy.
+    trwajace = (
+        InvestigationRun.objects.filter(
+            owner=request.user,
+            domain=domain,
+            status__in=(
+                InvestigationRun.Status.PENDING,
+                InvestigationRun.Status.PROCESSING,
+            ),
+        )
+        .order_by("-created_at")
+        .first()
     )
+    if trwajace is not None:
+        return redirect("auditor:investigation_detail", pk=trwajace.pk)
 
-    state = run_seo_investigation(domain, owner=request.user)
-    # Ostrzeżenie o starych danych rozstrzyga się tutaj, a nie w szablonie: wymaga
-    # porównania z zegarem, a szablon nie ma czym liczyć różnicy dat.
-    nieaktualne = build_stale_data_warnings(state)
+    run_id, sciezka = start_investigation(
+        domain, owner_id=request.user.pk, audit_id=audit.pk if audit else None
+    )
+    logger.info("Zlecono badanie %s dla %s ścieżką %s.", run_id, domain, sciezka)
 
-    return render(request, "auditor/audit_investigation.html", {
-        "audit": audit,
-        "state": state,
-        "kpis": build_investigation_kpis(state),
-        "has_stale_data": bool(nieaktualne),
-        "stale_data": nieaktualne,
-        # Raport dzielimy na sekcje i każdą renderujemy tym samym parserem co
-        # rekomendacje RAG: treść pochodzi od modelu, więc najpierw escape, potem
-        # własne znaczniki. Podział daje kolorowe ramki - jeden blok tekstu
-        # pokazywałby problemy i sukcesy identycznie.
-        "report_sections": build_investigation_sections(state.final_synthesis_report),
-        "source_badges": [
-            {
-                "label": "Audyt Techniczny",
-                "available": state.has_source(SOURCE_TECHNICAL),
-                "hint": "Metryki ze skanu strony",
-            },
-            {
-                "label": "Analityka GA4/GSC",
-                "available": state.has_source(SOURCE_ANALYTICS),
-                "hint": "Sesje, kliknięcia, frazy",
-            },
-            {
-                "label": "Widoczność w AI (GEO)",
-                "available": state.has_source(SOURCE_GEO),
-                "hint": "Cytowania w wyszukiwarkach AI",
-            },
-        ],
-    })
+    return redirect("auditor:investigation_detail", pk=run_id)
+
+
+@login_required
+def investigation_detail_view(request: HttpRequest, pk: int) -> HttpResponse:
+    """Raport badania odtworzony z bazy - bez ponownego uruchamiania agentów.
+
+    To ta sama strona co synteza na żywo, tylko stan pochodzi z `InvestigationRun`.
+    Dzięki temu odświeżenie nie kosztuje trzech odczytów i płatnego wywołania modelu,
+    a link do raportu daje się wysłać.
+    """
+    from auditor.presentation import build_investigation_context, build_source_badges
+
+    run = _get_owned_run(request, pk)
+
+    if not run.finished:
+        # Badanie jeszcze trwa - strona oczekiwania sama odpytuje endpoint statusu.
+        # Odznaki służą tu tylko za etykiety; o tym, które się zapaliły, rozstrzyga
+        # odpowiedź endpointu, bo postęp zmienia się po wyrenderowaniu strony.
+        return render(request, "auditor/investigation_pending.html", {
+            "run": run,
+            "source_badges": build_source_badges(run.state_object),
+        })
+
+    # `audit` decyduje o przycisku powrotu: do raportu technicznego, gdy badanie
+    # zlecono z jego poziomu, albo na ekran główny.
+    kontekst = build_investigation_context(run.state_object, audit=run.audit)
+    kontekst["run"] = run
+    return render(request, "auditor/audit_investigation.html", kontekst)
+
+
+@login_required
+def investigation_status_view(request: HttpRequest, pk: int) -> JsonResponse:
+    """Stan badania w JSON - odpytywany przez stronę oczekiwania.
+
+    Status jest wyliczany, nie przepisywany z bazy: `SUCCESS` i `DEGRADED` to ocena
+    KOMPLETNOŚCI wyniku, a kolumna w bazie opisuje tylko cykl życia zadania. Trzymanie
+    obu w jednym polu kazałoby aktualizować je przy każdej zmianie reguły oceny.
+    """
+    run = _get_owned_run(request, pk)
+    stan = run.state or {}
+
+    odpowiedz = {
+        "run_id": run.pk,
+        "domain": run.domain,
+        "status": run.api_status,
+        "finished": run.finished,
+        # Które źródła już oddały dane. W trakcie badania to postęp cząstkowy
+        # (zadania zbierające odnotowują się po kolei), po zakończeniu - wynik.
+        "sources": run.reported_sources,
+        "source_count": sum(1 for dostepne in run.reported_sources.values() if dostepne),
+        "source_total": len(SOURCE_KEYS),
+    }
+
+    if run.finished:
+        odpowiedz["errors"] = list(stan.get("errors") or [])
+        odpowiedz["report_url"] = reverse("auditor:investigation_detail", args=[run.pk])
+
+    return JsonResponse(odpowiedz)
+
+
+def _get_owned_run(request: HttpRequest, pk: int):
+    """Badanie widoczne dla zalogowanego użytkownika albo 404.
+
+    Świadomie 404, a nie 403 - tak samo jak przy audytach: brak rekordu i brak
+    uprawnień muszą wyglądać identycznie, żeby po kodzie odpowiedzi nie dało się
+    ustalić, które identyfikatory istnieją.
+    """
+    from auditor.models import InvestigationRun
+
+    queryset = InvestigationRun.objects.all()
+    if not request.user.is_superuser:
+        queryset = queryset.filter(owner=request.user)
+    return get_object_or_404(queryset, pk=pk)
 
 
 @login_required

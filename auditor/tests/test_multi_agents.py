@@ -18,7 +18,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.core.management import call_command
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 from django.urls import reverse
 
@@ -48,7 +48,14 @@ from auditor.presentation import (
     section_tone,
 )
 from auditor.services.domains import recent_domains_for
-from auditor.models import Audit, AuditMetric, GeoQuery, GeoRun, GeoStudy
+from auditor.models import (
+    Audit,
+    AuditMetric,
+    GeoQuery,
+    GeoRun,
+    GeoStudy,
+    InvestigationRun,
+)
 
 User = get_user_model()
 
@@ -798,8 +805,14 @@ class SourceTrackingTests(TestCase):
         self.assertEqual(state.source_count, 2)
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class InvestigateViewTests(TestCase):
-    """Widok `/audits/<pk>/investigate/`."""
+    """Wejście `/audits/<pk>/investigate/` - zlecenie badania i jego wynik.
+
+    Zlecenie jest asynchroniczne: widok tworzy rekord, oddaje przekierowanie, a pracę
+    wykonują zadania. W trybie eager akord wykonuje się w miejscu, więc `follow=True`
+    dochodzi do gotowego raportu i asercje o jego treści mają co sprawdzać.
+    """
 
     @classmethod
     def setUpTestData(cls):
@@ -842,7 +855,46 @@ class InvestigateViewTests(TestCase):
             "auditor.agents.specialists.ReporterAgent.run",
             side_effect=lambda state: _Reporter().run(state),
         ):
-            return self.client.get(reverse("auditor:investigate", args=[self.audit.pk]))
+            return self.client.post(
+                reverse("auditor:investigate", args=[self.audit.pk]), follow=True
+            )
+
+    def test_request_is_answered_with_a_redirect_to_the_result(self):
+        # Badanie trwa kilkanaście sekund - widok nie może go trzymać w żądaniu HTTP.
+        with patch(
+            "auditor.agents.specialists.ReporterAgent.run",
+            side_effect=lambda state: _Reporter().run(state),
+        ):
+            response = self.client.post(
+                reverse("auditor:investigate", args=[self.audit.pk])
+            )
+
+        self.assertEqual(response.status_code, 302)
+        run = InvestigationRun.objects.get()
+        self.assertEqual(response.url, f"/investigate/{run.pk}/")
+        self.assertEqual(run.domain, "enova.pl")
+        self.assertEqual(run.audit, self.audit)
+        self.assertEqual(run.owner, self.user)
+
+    def test_get_does_not_start_a_study(self):
+        # Zlecenie tworzy rekord i kosztuje wywołanie modelu, więc nie może dać się
+        # wywołać samym otwarciem adresu - choćby przez podejrzenie linku.
+        response = self.client.get(reverse("auditor:investigate", args=[self.audit.pk]))
+
+        self.assertEqual(response.status_code, 405)
+        self.assertFalse(InvestigationRun.objects.exists())
+
+    def test_second_click_joins_the_running_study(self):
+        # Dwa kliknięcia pod rząd nie mogą zamówić dwóch badań tej samej domeny.
+        InvestigationRun.objects.create(
+            domain="enova.pl", owner=self.user,
+            status=InvestigationRun.Status.PROCESSING,
+        )
+
+        response = self.client.post(reverse("auditor:investigate", args=[self.audit.pk]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(InvestigationRun.objects.count(), 1)
 
     def test_view_returns_200_with_two_of_three_sources(self):
         response = self._open()
@@ -921,17 +973,19 @@ class InvestigateViewTests(TestCase):
         )
         cudzy = Audit.objects.create(url="https://cudzy.pl/", owner=obcy)
 
-        response = self.client.get(reverse("auditor:investigate", args=[cudzy.pk]))
+        response = self.client.post(reverse("auditor:investigate", args=[cudzy.pk]))
 
         self.assertEqual(response.status_code, 404)
+        self.assertFalse(InvestigationRun.objects.exists())
 
     def test_view_requires_login(self):
         self.client.logout()
 
-        response = self.client.get(reverse("auditor:investigate", args=[self.audit.pk]))
+        response = self.client.post(reverse("auditor:investigate", args=[self.audit.pk]))
 
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login/", response.url)
+        self.assertFalse(InvestigationRun.objects.exists())
 
 
 class InvestigateButtonTests(TestCase):
@@ -958,12 +1012,14 @@ class InvestigateButtonTests(TestCase):
         html = self.client.get(reverse("auditor:detail", args=[self.gotowy.pk])).content.decode()
 
         self.assertIn("🤖 Podsumuj dane witryny", html)
-        self.assertIn(f'href="/audits/{self.gotowy.pk}/investigate/"', html)
+        # Formularz POST, nie link: zlecenie tworzy rekord i kosztuje model.
+        self.assertIn(f'action="/audits/{self.gotowy.pk}/investigate/"', html)
+        self.assertIn("csrfmiddlewaretoken", html)
 
     def test_button_links_to_its_own_audit(self):
         html = self.client.get(reverse("auditor:detail", args=[self.gotowy.pk])).content.decode()
 
-        self.assertNotIn(f'href="/audits/{self.w_toku.pk}/investigate/"', html)
+        self.assertNotIn(f'action="/audits/{self.w_toku.pk}/investigate/"', html)
 
     def test_unfinished_audit_has_no_button(self):
         # Bez metryk synteza nie miałaby z czego powstać.
@@ -975,7 +1031,7 @@ class InvestigateButtonTests(TestCase):
         html = self.client.get(reverse("auditor:detail", args=[self.gotowy.pk])).content.decode()
 
         self.assertIn('id="investigate-link"', html)
-        self.assertIn("Agenci badają domenę", html)
+        self.assertIn("Zlecam badanie", html)
 
 
 class RecentDomainsTests(TestCase):
@@ -1154,8 +1210,9 @@ class HubInvestigateSectionTests(TestCase):
         self.assertIn("/login/", response.url)
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class InvestigateDomainViewTests(TestCase):
-    """`/investigate/?domain=` - synteza bez pośrednictwa audytu."""
+    """`/investigate/` - zlecenie badania domeny wskazanej na hubie."""
 
     @classmethod
     def setUpTestData(cls):
@@ -1184,7 +1241,9 @@ class InvestigateDomainViewTests(TestCase):
             "auditor.agents.specialists.ReporterAgent.run",
             side_effect=lambda state: _Reporter().run(state),
         ):
-            return self.client.get(reverse("auditor:investigate_domain"), params)
+            return self.client.post(
+                reverse("auditor:investigate_domain"), params, follow=True
+            )
 
     def test_selected_domain_is_investigated(self):
         response = self._open(domain="enova.pl")
@@ -1220,19 +1279,40 @@ class InvestigateDomainViewTests(TestCase):
         self.assertContains(response, "Powrót do ekranu głównego")
         self.assertNotContains(response, "Powrót do raportu technicznego")
 
+    def test_request_is_answered_with_a_redirect(self):
+        with patch(
+            "auditor.agents.specialists.ReporterAgent.run",
+            side_effect=lambda state: _Reporter().run(state),
+        ):
+            response = self.client.post(
+                reverse("auditor:investigate_domain"), {"domain": "enova.pl"}
+            )
+
+        self.assertEqual(response.status_code, 302)
+        run = InvestigationRun.objects.get()
+        self.assertEqual(response.url, f"/investigate/{run.pk}/")
+        # Wejście z hubu nie wiąże badania z audytem - domena może nie mieć skanu.
+        self.assertIsNone(run.audit)
+
+    def test_get_does_not_start_a_study(self):
+        response = self.client.get(reverse("auditor:investigate_domain"), {"domain": "enova.pl"})
+
+        self.assertEqual(response.status_code, 405)
+        self.assertFalse(InvestigationRun.objects.exists())
+
     def test_empty_domain_returns_to_the_hub(self):
-        response = self.client.get(reverse("auditor:investigate_domain"))
+        response = self.client.post(reverse("auditor:investigate_domain"))
 
         self.assertRedirects(response, reverse("auditor:hub"))
 
     def test_address_without_a_dot_is_rejected(self):
         # "localhost" nie jest adresem witryny, a agent próbowałby go pobrać.
-        response = self.client.get(reverse("auditor:investigate_domain"), {"custom": "localhost"})
+        response = self.client.post(reverse("auditor:investigate_domain"), {"custom": "localhost"})
 
         self.assertRedirects(response, reverse("auditor:hub"))
 
     def test_rejection_explains_itself(self):
-        response = self.client.get(
+        response = self.client.post(
             reverse("auditor:investigate_domain"), {"custom": "localhost"}, follow=True
         )
 
@@ -1267,7 +1347,7 @@ class InvestigateDomainViewTests(TestCase):
     def test_view_requires_login(self):
         self.client.logout()
 
-        response = self.client.get(reverse("auditor:investigate_domain"), {"domain": "enova.pl"})
+        response = self.client.post(reverse("auditor:investigate_domain"), {"domain": "enova.pl"})
 
         self.assertEqual(response.status_code, 302)
         self.assertIn("/login/", response.url)
@@ -1673,8 +1753,9 @@ class InvestigationSectionTests(SimpleTestCase):
         self.assertEqual(section_tone("Czego nie udalo sie zbadac"), "muted")
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class InvestigationLayoutTests(TestCase):
-    """Co widać na stronie syntezy."""
+    """Co widać na stronie syntezy - od zlecenia do wyrenderowanego raportu."""
 
     @classmethod
     def setUpTestData(cls):
@@ -1703,7 +1784,9 @@ class InvestigationLayoutTests(TestCase):
             "auditor.agents.specialists.ReporterAgent.run",
             side_effect=lambda state: _Reporter().run(state),
         ):
-            return self.client.get(reverse("auditor:investigate", args=[self.audit.pk]))
+            return self.client.post(
+                reverse("auditor:investigate", args=[self.audit.pk]), follow=True
+            )
 
     def test_kpi_cards_are_rendered(self):
         response = self._open()
@@ -2057,6 +2140,7 @@ class RichKpiTests(SimpleTestCase):
                 self.assertIsNone(karta["as_of"])
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class StaleBannerViewTests(TestCase):
     """Banner o nieaktualnych danych na stronie syntezy."""
 
@@ -2089,7 +2173,9 @@ class StaleBannerViewTests(TestCase):
             "auditor.agents.specialists.ReporterAgent.run",
             side_effect=lambda state: _Reporter().run(state),
         ):
-            return self.client.get(reverse("auditor:investigate", args=[audyt.pk]))
+            return self.client.post(
+                reverse("auditor:investigate", args=[audyt.pk]), follow=True
+            )
 
     def test_banner_appears_for_data_older_than_two_weeks(self):
         audyt = self._audyt(30)
@@ -2293,6 +2379,7 @@ class ExecutiveSummaryTests(SimpleTestCase):
         self.assertEqual(tony, ["executive", "attention", "good"])
 
 
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True)
 class KpiMarkupTests(TestCase):
     """Nazwy klas kart KPI na stronie syntezy."""
 
@@ -2324,7 +2411,9 @@ class KpiMarkupTests(TestCase):
             "auditor.agents.specialists.ReporterAgent.run",
             side_effect=lambda state: _Reporter().run(state),
         ):
-            response = self.client.get(reverse("auditor:investigate", args=[self.audit.pk]))
+            response = self.client.post(
+                reverse("auditor:investigate", args=[self.audit.pk]), follow=True
+            )
         self.assertEqual(response.status_code, 200)
         return response.content.decode()
 

@@ -1233,3 +1233,60 @@ def _day_count(dni: int) -> str:
 # Kubelki silnika GEO mowia o stabilnosci cytowan, karty KPI o kolorze. Mapujemy
 # jedno na drugie, zeby progi zostaly w jednym miejscu (auditor.services.geo).
 _GEO_TONES = {"stable": "ok", "volatile": "warning", "absent": "error"}
+
+
+# Odznaki źródeł. Kolejność i opisy są tu, a nie w widoku, bo decydują o tym, co
+# użytkownik czyta - a dwa widoki (synteza na żywo i raport z bazy) muszą pokazywać
+# dokładnie to samo.
+_SOURCE_BADGES: tuple[tuple[str, str, str], ...] = (
+    ("technical", "Audyt Techniczny", "Metryki ze skanu strony"),
+    ("analytics", "Analityka GA4/GSC", "Sesje, kliknięcia, frazy"),
+    ("geo", "Widoczność w AI (GEO)", "Cytowania w wyszukiwarkach AI"),
+)
+
+
+def build_source_badges(state) -> list[dict]:
+    """Odznaki "skąd pochodzą dane" - `[{"key", "label", "available", "hint"}]`."""
+    return [
+        {
+            "key": klucz,
+            "label": etykieta,
+            "available": state.has_source(klucz),
+            "hint": podpowiedz,
+        }
+        for klucz, etykieta, podpowiedz in _SOURCE_BADGES
+    ]
+
+
+def build_investigation_context(state, audit=None) -> dict:
+    """Komplet danych dla szablonu syntezy - z jednego stanu, niezależnie od źródła.
+
+    Stan może pochodzić z badania wykonanego w tym żądaniu albo zostać odtworzony
+    z `InvestigationRun.state`. Obie strony muszą wyglądać identycznie, więc kontekst
+    buduje się w jednym miejscu - inaczej zmiana karty KPI w jednym widoku
+    rozjechałaby drugi.
+
+    Poza danymi dla szablonu zwraca też nazwane wejścia opisane w API widoku:
+    `report_markdown`, `metrics`, `sources` i `warnings`.
+    """
+    nieaktualne = build_stale_data_warnings(state)
+
+    return {
+        "audit": audit,
+        "state": state,
+        "kpis": build_investigation_kpis(state),
+        "source_badges": build_source_badges(state),
+        # Raport dzielimy na sekcje i każdą renderujemy tym samym parserem co
+        # rekomendacje RAG: treść pochodzi od modelu, więc najpierw escape, potem
+        # własne znaczniki. Podział daje kolorowe ramki - jeden blok tekstu
+        # pokazywałby problemy i sukcesy identycznie.
+        "report_sections": build_investigation_sections(state.final_synthesis_report),
+        "has_stale_data": bool(nieaktualne),
+        "stale_data": nieaktualne,
+
+        # Surowe wejścia - przydatne poza szablonem (eksport, podgląd, testy).
+        "report_markdown": state.final_synthesis_report,
+        "metrics": dict(state.metrics),
+        "sources": dict(state.sources),
+        "warnings": nieaktualne,
+    }

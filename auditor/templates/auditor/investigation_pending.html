@@ -1,0 +1,102 @@
+{% extends "auditor/base.html" %}
+
+{% block title %}Badanie w toku — {{ run.domain }}{% endblock %}
+
+{% block content %}
+{% comment %}
+Strona oczekiwania na badanie zlecone do kolejki.
+
+Odpytuje endpoint statusu i pokazuje, które źródła już się odezwały. Sam pasek
+postępu bez tej listy nie mówiłby nic: badanie trwa tyle, ile najwolniejsze źródło,
+więc użytkownik ma widzieć, na co się czeka. Adres endpointu idzie przez atrybut
+`data-`, nie przez literał w JS - tak samo jak dane wykresów w raporcie.
+{% endcomment %}
+
+<div class="panel geo-dashboard-header">
+    <div class="geo-header-text">
+        <h1 class="geo-header-title">🤖 Badanie w toku</h1>
+        <p class="geo-header-subtitle"><strong>{{ run.domain }}</strong></p>
+    </div>
+    <div class="geo-header-actions">
+        <a class="geo-button-secondary" href="{% url 'auditor:hub' %}">
+            <span aria-hidden="true">←</span> Powrót do ekranu głównego
+        </a>
+    </div>
+</div>
+
+<div class="panel investigation-waiting"
+     id="investigation-waiting"
+     data-status-url="{% url 'auditor:investigation_status' run.pk %}"
+     data-report-url="{% url 'auditor:investigation_detail' run.pk %}">
+    <div class="investigation-waiting-head">
+        <span class="btn-spinner" aria-hidden="true"></span>
+        <div>
+            <p class="investigation-waiting-title" id="waiting-title">
+                Agenci zbierają dane…
+            </p>
+            <p class="investigation-waiting-text">
+                Trzech agentów pracuje równolegle: audyt techniczny, analityka
+                i widoczność w wyszukiwarkach AI. Strona odświeży się sama.
+            </p>
+        </div>
+    </div>
+
+    <ul class="investigation-progress" id="investigation-progress">
+        {% for badge in source_badges %}
+        <li class="investigation-progress-item" data-source="{{ badge.key }}">
+            <span class="investigation-progress-mark" aria-hidden="true">…</span>
+            <span>{{ badge.label }}</span>
+        </li>
+        {% endfor %}
+    </ul>
+
+    <noscript>
+        <p class="investigation-waiting-text">
+            Odśwież stronę, aby sprawdzić, czy badanie się zakończyło.
+        </p>
+    </noscript>
+</div>
+
+<script>
+(function () {
+    var panel = document.getElementById("investigation-waiting");
+    if (!panel) { return; }
+
+    var tytul = document.getElementById("waiting-title");
+    var pozycje = panel.querySelectorAll(".investigation-progress-item");
+    var ODSTEP_MS = 2000;
+
+    function oznacz(zrodla) {
+        pozycje.forEach(function (pozycja) {
+            var klucz = pozycja.getAttribute("data-source");
+            if (!(klucz in zrodla)) { return; }
+            var gotowe = Boolean(zrodla[klucz]);
+            pozycja.classList.add(gotowe ? "is-done" : "is-empty");
+            pozycja.querySelector(".investigation-progress-mark").textContent =
+                gotowe ? "✓" : "✗";
+        });
+    }
+
+    function sprawdz() {
+        fetch(panel.dataset.statusUrl, { headers: { "X-Requested-With": "fetch" } })
+            .then(function (odpowiedz) { return odpowiedz.json(); })
+            .then(function (dane) {
+                oznacz(dane.sources || {});
+                if (dane.finished) {
+                    tytul.textContent = "Raport gotowy — otwieram…";
+                    window.location.href = dane.report_url || panel.dataset.reportUrl;
+                    return;
+                }
+                window.setTimeout(sprawdz, ODSTEP_MS);
+            })
+            .catch(function () {
+                // Zerwana sieć nie może zatrzymać odpytywania na zawsze - badanie
+                // trwa dalej po stronie serwera, więc próbujemy ponownie.
+                window.setTimeout(sprawdz, ODSTEP_MS * 2);
+            });
+    }
+
+    window.setTimeout(sprawdz, ODSTEP_MS);
+})();
+</script>
+{% endblock %}

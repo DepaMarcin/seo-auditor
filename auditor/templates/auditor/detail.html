@@ -15,19 +15,21 @@
 
     {% if audit.status == "completed" %}
     {% comment %}
-    Badanie odpytuje trzy źródła i kończy się wywołaniem modelu, więc trwa
-    kilkanaście sekund. Spinner pojawia się od razu po kliknięciu - zanim
-    przeglądarka przejdzie na nową stronę - żeby nie wyglądało to na zawieszenie.
+    Zlecenie badania, nie jego wykonanie: POST tworzy rekord i oddaje przekierowanie
+    na stronę postępu. Formularz, a nie link, bo samo otwarcie adresu nie może
+    zamawiać płatnego badania. Spinner pojawia się od razu po wysłaniu, zanim
+    przeglądarka przejdzie dalej - żeby nie wyglądało to na zawieszenie.
     {% endcomment %}
-    <div class="investigate-row">
-        <a class="investigate-button" id="investigate-link"
-           href="{% url 'auditor:investigate' audit.pk %}">
+    <form class="investigate-row" method="post"
+          action="{% url 'auditor:investigate' audit.pk %}">
+        {% csrf_token %}
+        <button class="investigate-button" id="investigate-link" type="submit">
             🤖 Podsumuj dane witryny
-        </a>
+        </button>
         <span class="investigate-hint" id="investigate-hint">
             Agent zbierze dane techniczne, analityczne i widoczność w AI.
         </span>
-    </div>
+    </form>
     {% endif %}
 
     {% if audit_in_progress %}
@@ -683,11 +685,14 @@
     var hint = document.getElementById("investigate-hint");
     if (!link) { return; }
 
-    link.addEventListener("click", function () {
+    // Nasłuch na formularzu, a nie na przycisku: "submit" łapie też wysłanie
+    // klawiszem Enter, a kliknięcie w przycisk i tak je wywołuje.
+    var form = link.closest("form");
+    (form || link).addEventListener(form ? "submit" : "click", function () {
         link.classList.add("investigate-button-busy");
-        link.innerHTML = '<span class="btn-spinner"></span>Agenci badają domenę…';
+        link.innerHTML = '<span class="btn-spinner"></span>Zlecam badanie…';
         if (hint) {
-            hint.textContent = "Trwa odpytywanie źródeł i synteza. To potrwa kilkanaście sekund.";
+            hint.textContent = "Przechodzę na stronę postępu - agenci pracują w tle.";
         }
     });
 })();

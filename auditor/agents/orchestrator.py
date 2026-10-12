@@ -8,6 +8,15 @@ i jego ustalenia przepadają, co w raporcie wygląda jak brak problemów.
 
 `parallel=True` zostaje dla wdrożeń na bazie znoszącej współbieżność (PostgreSQL) -
 zysk to kilka sekund na wywołaniach GA4/GSC.
+
+Moduł ma dwa wejścia:
+
+* `start_investigation()` - ZLECENIE do kolejki, zwraca identyfikator rekordu.
+  Tą drogą idą oba wejścia z interfejsu: agenci pracują równolegle, każdy w osobnym
+  workerze, a wynik odkłada się na rekordzie `InvestigationRun` (patrz auditor.tasks).
+* `run_seo_investigation()` - wykonanie TU I TERAZ, zwraca gotowy stan. Zostaje dla
+  komendy CLI i dla ścieżki awaryjnej bez brokera - żadne żądanie HTTP już go nie
+  wywołuje, bo badanie trwa kilkanaście sekund.
 """
 from __future__ import annotations
 
@@ -66,6 +75,29 @@ def run_seo_investigation(
     return state
 
 
+def start_investigation(
+    domain: str, owner_id: int | None = None, audit_id: int | None = None
+) -> tuple[int, str]:
+    """Zleca badanie domeny do kolejki i od razu zwraca `(id rekordu, ścieżka)`.
+
+    W przeciwieństwie do `run_seo_investigation` nie czeka na wynik: agenci ruszają
+    równolegle jako osobne zadania Celery spięte akordem, a raport odkłada się na
+    rekordzie `InvestigationRun`. Dzwoniący dostaje identyfikator, którym może pytać
+    o postęp.
+
+    Zwracana ścieżka ("chord" / "eager" / "thread") mówi, jak badanie faktycznie
+    poszło - bez brokera albo bez backendu wyników schodzi ono na wykonanie
+    sekwencyjne, co jest wolniejsze, ale daje ten sam wynik.
+    """
+    from auditor.tasks import enqueue_investigation
+
+    czysta = _clean_domain(domain)
+    if not czysta:
+        raise ValueError("Nie podano domeny do zbadania.")
+
+    return enqueue_investigation(czysta, owner_id=owner_id, audit_id=audit_id)
+
+
 def _run_parallel(agenci: list, state: SEOInvestigatorState, owner, on_progress) -> None:
     """Uruchamia zbieraczy równolegle.
 
@@ -90,16 +122,10 @@ def _run_parallel(agenci: list, state: SEOInvestigatorState, owner, on_progress)
             if on_progress:
                 on_progress(agent.name, czastka)
 
+    # Jedna reguła scalania dla wątków i dla workerów Celery - patrz
+    # SEOInvestigatorState.absorb. Dwie kopie rozjechałyby się przy nowym polu.
     for czastka in czesciowe:
-        state.technical_issues.extend(czastka.technical_issues)
-        state.analytics_insights.extend(czastka.analytics_insights)
-        state.geo_visibility_notes.extend(czastka.geo_visibility_notes)
-        state.errors.extend(czastka.errors)
-        state.sources.update(czastka.sources)
-        state.metrics.update(czastka.metrics)
-        state.data_timestamps.update(czastka.data_timestamps)
-        if czastka.audit_id and state.audit_id is None:
-            state.audit_id = czastka.audit_id
+        state.absorb(czastka)
 
 
 def _run_one(agent, state: SEOInvestigatorState, owner, on_progress) -> None:

@@ -444,3 +444,113 @@ class GeoRun(models.Model):
     def __str__(self):
         return f"{self.query_id} / próba {self.attempt}"
 
+
+class InvestigationRun(models.Model):
+    """Jedno badanie multi-agentowe: zlecenie, jego stan i gotowy raport.
+
+    Do tej pory synteza liczyła się w wątku HTTP i znikała razem z odpowiedzią -
+    każde odświeżenie strony uruchamiało trzech agentów i płatne wywołanie modelu
+    od nowa. Zlecenie do kolejki wymaga rekordu z dwóch powodów: przeglądarka musi
+    mieć co odpytywać o postęp, a worker - gdzie odłożyć wynik.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Oczekujące"
+        PROCESSING = "processing", "W trakcie"
+        COMPLETED = "completed", "Zakończone"
+        FAILED = "failed", "Błąd"
+
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="investigation_runs",
+        null=True,
+        blank=True,
+    )
+    # Badanie dotyczy witryny, nie audytu: domena może mieć podłączoną analitykę
+    # i badanie GEO, nigdy nie przechodząc skanu technicznego.
+    domain = models.CharField(max_length=253, db_index=True)
+    # Audyt, z którego badanie zlecono - wyłącznie po to, żeby raport mógł oddać
+    # użytkownika tam, skąd przyszedł. Badanie nie wymaga audytu i bez niego działa.
+    audit = models.ForeignKey(
+        "Audit",
+        on_delete=models.SET_NULL,
+        related_name="investigation_runs",
+        null=True,
+        blank=True,
+    )
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+
+    # Raport z agenta syntezy, w Markdownie - tak, jak go napisał model.
+    report = models.TextField(blank=True, default="")
+    # Pełny `SEOInvestigatorState.as_dict()`. Bez niego strona wyniku musiałaby
+    # odtwarzać karty KPI, odznaki źródeł i daty danych z samego tekstu raportu.
+    state = models.JSONField(default=dict, blank=True)
+
+    # Które źródła zdążyły się odezwać, zanim powstał raport: {"technical": true}.
+    # Osobne pole od `state`, bo zapisują je RÓWNOLEGLE trzy zadania, każde swój
+    # klucz - podczas gdy `state` zapisuje raz, na końcu, zadanie syntezy.
+    progress = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Badanie multi-agentowe"
+        verbose_name_plural = "Badania multi-agentowe"
+
+    def __str__(self):
+        return f"{self.domain} ({self.status})"
+
+    @property
+    def finished(self) -> bool:
+        """Czy jest już co pokazywać - odpytywane przez stronę w trakcie badania."""
+        return self.status in (self.Status.COMPLETED, self.Status.FAILED)
+
+    @property
+    def state_object(self):
+        """Zapisany stan z powrotem jako `SEOInvestigatorState`.
+
+        Pole `state` to czysty JSON, więc daty leżą w nim jako napisy. Warstwa
+        prezentacji liczy na nich wiek danych, dlatego odtworzenie musi przejść
+        przez `from_dict`, a nie przez samo odczytanie słownika.
+        """
+        from auditor.agents.state import SEOInvestigatorState
+
+        return SEOInvestigatorState.from_dict(self.state or {})
+
+    @property
+    def reported_sources(self) -> dict:
+        """Źródła, o których wiadomo w tej chwili.
+
+        Po zakończeniu - te z gotowego stanu. W trakcie - postęp cząstkowy
+        odnotowany przez zadania zbierające, żeby strona oczekiwania mogła pokazać
+        coś więcej niż kręcące się kółko.
+        """
+        if self.finished:
+            return dict((self.state or {}).get("sources") or {})
+        return dict(self.progress or {})
+
+    @property
+    def api_status(self) -> str:
+        """Status dla interfejsu: PENDING, PROCESSING, SUCCESS, DEGRADED albo FAILED.
+
+        `SUCCESS` i `DEGRADED` to ocena KOMPLETNOŚCI wyniku, a nie etap cyklu życia -
+        dlatego liczy się ją tutaj, zamiast trzymać w kolumnie. Badanie, w którym
+        jedno źródło zawiodło, kończy się powodzeniem technicznym, ale raport opiera
+        się na węższych danych i użytkownik musi to wiedzieć.
+        """
+        from auditor.agents.state import SOURCE_KEYS
+
+        if self.status == self.Status.FAILED:
+            return "FAILED"
+        if self.status == self.Status.PENDING:
+            return "PENDING"
+        if self.status != self.Status.COMPLETED:
+            return "PROCESSING"
+
+        stan = self.state or {}
+        zrodla = stan.get("sources") or {}
+        komplet = all(zrodla.get(klucz) for klucz in SOURCE_KEYS)
+        return "SUCCESS" if komplet and not stan.get("errors") else "DEGRADED"

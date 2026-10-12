@@ -46,8 +46,13 @@ przystanki tabulatora na ten sam cel.
             </p>
         </div>
 
+        {% comment %}
+        POST, nie GET: zlecenie tworzy rekord badania i kosztuje wywołanie modelu.
+        Linkowalny jest dopiero wynik - /investigate/<id>/ - więc nic nie tracimy.
+        {% endcomment %}
         <form class="hub-investigate-form" id="hub-investigate-form"
-              method="get" action="{% url 'auditor:investigate_domain' %}">
+              method="post" action="{% url 'auditor:investigate_domain' %}">
+            {% csrf_token %}
             {% if recent_domains %}
             <div class="hub-investigate-field">
                 <label class="hub-investigate-label" for="hub-investigate-domain">
@@ -111,7 +116,7 @@ przystanki tabulatora na ten sam cel.
 
     form.addEventListener("submit", function () {
         przycisk.classList.add("investigate-button-busy");
-        przycisk.innerHTML = '<span class="btn-spinner"></span>Agenci badają domenę…';
+        przycisk.innerHTML = '<span class="btn-spinner"></span>Zlecam badanie…';
     });
 })();
 </script>

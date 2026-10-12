@@ -309,7 +309,16 @@ AUDIT_RATE_LIMIT_WINDOW_SECONDS = int(os.environ.get('AUDIT_RATE_LIMIT_WINDOW_SE
 # wykonuje audyt w wątku tła (tryb awaryjny dla developmentu - patrz auditor/tasks.py).
 # ----------------------------------------------------------------------
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', '')
+# Backend wyników jest WYMAGANY przez `chord` - badanie multi-agentowe spina trzech
+# agentów w grupę i musi mieć gdzie odłożyć ich wyniki, zanim uruchomi syntezę.
+# Osobna baza Redis (/1) oddziela wyniki od kolejki zadań. Gdy ta zmienna jest pusta,
+# `auditor.tasks.enqueue_investigation` schodzi na wykonanie sekwencyjne.
+CELERY_RESULT_BACKEND = os.environ.get(
+    'CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/1'
+)
+# Wyniki zadań zbierających to pełne stany badania - trzymanie ich tydzień nie ma
+# sensu, a zajmuje pamięć Redisa.
+CELERY_RESULT_EXPIRES = int(os.environ.get('CELERY_RESULT_EXPIRES', '3600'))
 CELERY_TASK_ALWAYS_EAGER = os.environ.get('CELERY_TASK_ALWAYS_EAGER', 'False').lower() == 'true'
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 # Audyt skanuje do 5 szablonów podstron (każdy: scraping + 2x PageSpeed), więc limit
