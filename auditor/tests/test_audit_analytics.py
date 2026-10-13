@@ -84,7 +84,12 @@ class AnalyticsBase(TestCase):
         ), patch(
             "auditor.services.ga4_service.GA4OAuthService.list_accessible_properties",
             return_value=[{"property_id": "222222", "display_name": "shell.pl", "account_name": "Konto"}],
-        ), patch("auditor.services.google_api.list_gsc_sites", return_value=[]):
+        ), patch("auditor.services.google_api.list_gsc_sites", return_value=[]), patch(
+            # Panel zawiera formularz celu konwersji, więc widok pyta GA4 o listę
+            # zdarzeń - bez atrapy test sięgałby do sieci.
+            "auditor.services.ga4_service.GA4OAuthService.get_available_events",
+            return_value=["generate_lead", "purchase"],
+        ):
             return self.client.get(reverse("auditor:audit_analytics", args=[audit.pk]))
 
 

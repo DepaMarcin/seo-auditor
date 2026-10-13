@@ -352,8 +352,12 @@ class AuditStatusEndpointTests(AuthenticatedTestCase):
         self.assertTrue(payload["finished"])
         self.assertEqual(payload["score"], 88)
 
-    def test_priority_panel_renders_inside_technical_tab(self):
-        """Panel priorytetów należy do zakładki technicznej, nie do widoku nad zakładkami."""
+    def test_priority_panel_sits_between_overview_and_accordions(self):
+        """Panel priorytetów idzie pod kafelkami podsumowania, nad akordeonami.
+
+        Zakładki zniknęły razem z sekcją widoczności, więc kolejność rozstrzyga się
+        teraz wprost: przegląd, potem to co wymaga uwagi, potem pełna lista testów.
+        """
         audit = Audit.objects.create(
             url="https://example.com", status=Audit.Status.COMPLETED, owner=self.user
         )
@@ -364,14 +368,27 @@ class AuditStatusEndpointTests(AuthenticatedTestCase):
 
         html = self.client.get(reverse("auditor:detail", kwargs={"pk": audit.pk})).content.decode()
 
-        panel = html.find("Krytyczne problemy i ostrzeżenia")
-        tabs = html.find('<div class="detail-tabs"')
-        technical_tab = html.find('<div id="tab-panel-technical"')
-        accordions = html.find('<div class="tech-accordion-list">')
+        pozycje = {
+            "kafelki podsumowania": html.find('<div class="kpi-grid">'),
+            "panel priorytetów": html.find("Krytyczne problemy i ostrzeżenia"),
+            "akordeony kategorii": html.find('<div class="tech-accordion-list">'),
+        }
 
-        self.assertGreater(panel, tabs, "panel nie może być nad zakładkami")
-        self.assertGreater(panel, technical_tab, "panel musi być wewnątrz zakładki technicznej")
-        self.assertLess(panel, accordions, "panel musi być nad akordeonami kategorii")
+        # Najpierw obecność, potem kolejność. `find` zwraca -1 dla nieobecnego
+        # fragmentu, więc porównanie pozycji bez tego sprawdzenia przechodziłoby
+        # także wtedy, gdy elementu w ogóle nie ma na stronie.
+        for nazwa, pozycja in pozycje.items():
+            with self.subTest(element=nazwa):
+                self.assertNotEqual(pozycja, -1, f"nie znaleziono: {nazwa}")
+
+        self.assertLess(
+            pozycje["kafelki podsumowania"], pozycje["panel priorytetów"],
+            "panel musi być pod kafelkami podsumowania",
+        )
+        self.assertLess(
+            pozycje["panel priorytetów"], pozycje["akordeony kategorii"],
+            "panel musi być nad akordeonami kategorii",
+        )
 
     def test_priority_panel_shows_empty_state_without_problems(self):
         audit = Audit.objects.create(

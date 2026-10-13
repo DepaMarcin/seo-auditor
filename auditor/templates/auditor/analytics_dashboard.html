@@ -162,19 +162,23 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
 <div class="geo-metrics-grid analytics-metrics-grid">
     <div class="panel geo-metric-card">
         <h2 class="geo-card-heading">Ruch organiczny (GA4)</h2>
-        <div class="analytics-big-number">{{ audit.ga4_organic_sessions }}</div>
-        <p class="geo-card-hint">sesji organicznych w ostatnim pobranym okresie</p>
+        <div class="analytics-big-number" id="analytics-sessions-value">{{ audit.ga4_organic_sessions }}</div>
+        <p class="geo-card-hint" id="analytics-sessions-period">
+            sesji organicznych w ostatnim pobranym okresie
+        </p>
         <div class="geo-metric-footnotes">
             <span>Usługa: {{ audit.ga4_property_id }}</span>
             {% if audit.ga4_selected_lead_event %}
-            <span>Konwersja: {{ audit.ga4_selected_lead_event }}</span>
+            <span>Konwersja: <strong>{{ audit.ga4_selected_lead_event }}</strong></span>
+            {% else %}
+            <span>Konwersja: nie śledzona</span>
             {% endif %}
         </div>
     </div>
 
     <div class="panel geo-metric-card">
         <h2 class="geo-card-heading">Kliknięcia (Search Console)</h2>
-        <div class="analytics-big-number">{{ audit.gsc_total_clicks_current }}</div>
+        <div class="analytics-big-number" id="analytics-clicks-value">{{ audit.gsc_total_clicks_current }}</div>
         <p class="geo-card-hint">
             rok temu: {{ audit.gsc_total_clicks_previous }}
             {% if audit.gsc_yoy_change_percent %}
@@ -234,6 +238,81 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
             </form>
         </details>
     </div>
+</div>
+
+
+{% comment %}
+Cel biznesowy i zakres dat - jedna sekcja, bo obie rzeczy odpowiadają na pytanie
+"co i za jaki okres liczymy". Konfiguracja konwersji przyszła tu z raportu
+technicznego: zdarzenie opisuje biznes, nie stan kodu strony.
+
+Zapis konwersji idzie POST-em na własny endpoint, bo panel renderują dwa adresy
+(`/analytics/?audit=` i `/audits/<pk>/analytics/`) - gałąź POST w jednym widoku
+działałaby tylko z jednej strony.
+{% endcomment %}
+<div class="panel" id="analytics-goal-panel"
+     data-analytics-url="{% url 'auditor:analytics_data' audit.pk %}">
+    <h2 class="geo-card-heading">🎯 Cel biznesowy i zakres danych</h2>
+
+    <div class="range-controls" id="analytics-range-picker" data-source="all">
+        <div class="range-quick">
+            <button type="button" class="range-quick-btn" data-range="7d">7 dni</button>
+            <button type="button" class="range-quick-btn" data-range="30d">30 dni</button>
+            <button type="button" class="range-quick-btn" data-range="90d">90 dni</button>
+            <button type="button" class="range-quick-btn" data-range="12m">12 miesięcy</button>
+        </div>
+        <div class="range-custom">
+            <label for="analytics-start-date">Od</label>
+            <input type="date" id="analytics-start-date" class="range-start" max="{{ today_iso }}">
+            <label for="analytics-end-date">Do</label>
+            <input type="date" id="analytics-end-date" class="range-end" max="{{ today_iso }}">
+            <button type="button" class="range-apply" id="analytics-range-apply">Pokaż</button>
+        </div>
+        <p class="range-status" id="analytics-range-status" aria-live="polite">Zakres z ostatniego odświeżenia danych</p>
+        <p class="range-error hidden" id="analytics-range-error" role="alert"></p>
+    </div>
+
+    <h3 class="ga4-subheading">Śledzenie leadów / konwersji</h3>
+    <p class="geo-card-hint">
+        Wskaż zdarzenie GA4, które oznacza realizację celu — na jego podstawie
+        liczone są wnioski o konwersjach.
+    </p>
+    <form method="post" class="ga4-select-form ga4-lead-form" id="ga4-lead-form"
+          action="{% url 'auditor:set_lead_event' audit.pk %}">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="analytics">
+        <select name="ga4_selected_lead_event" id="ga4-lead-select"
+                aria-label="Zdarzenie konwersji">
+            <option value="">— nie śledzę konwersji —</option>
+            {% for event_name in ga4_available_events %}
+            <option value="{{ event_name }}"
+                    {% if event_name == audit.ga4_selected_lead_event %}selected{% endif %}>
+                {{ event_name }}
+            </option>
+            {% endfor %}
+        </select>
+        <button type="submit" id="ga4-lead-form-submit">Zapisz cel</button>
+    </form>
+    <p id="ga4-lead-form-loading-note" class="priority-empty hidden">
+        Pobieranie i agregacja danych z Google Analytics w toku. To potrwa kilka sekund…
+    </p>
+    {% if not ga4_available_events %}
+    <p class="priority-empty">
+        Nie udało się pobrać listy zdarzeń z Google Analytics. Odśwież stronę albo
+        sprawdź połączenie konta.
+    </p>
+    {% endif %}
+
+    {% if ga4_lead_insights.summary_points %}
+    <div class="ga4-insights-box ga4-insights-leads" id="ga4-leads-insights-box">
+        <div class="ga4-insights-heading">🎯 Wnioski o konwersjach</div>
+        <ul class="ga4-insights-list" id="ga4-leads-insights-list">
+            {% for point in ga4_lead_insights.summary_points %}
+            <li>{{ point }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    {% endif %}
 </div>
 
 {% if audit.ga4_history.dates %}
@@ -317,6 +396,120 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
     </p>
 </div>
 {% endif %}
+
+
+<script>
+(function () {
+    // Stan ładowania przy zapisie celu: odświeżenie analityki pobiera dane z GA4,
+    // więc przekierowanie przychodzi po kilku sekundach - bez tej informacji
+    // wyglądałoby to na zawieszenie.
+    var form = document.getElementById("ga4-lead-form");
+    var submit = document.getElementById("ga4-lead-form-submit");
+    var note = document.getElementById("ga4-lead-form-loading-note");
+    if (!form || !submit) { return; }
+
+    form.addEventListener("submit", function () {
+        submit.disabled = true;
+        submit.innerHTML = '<span class="btn-spinner"></span>Zapisuję…';
+        if (note) { note.classList.remove("hidden"); }
+    });
+})();
+</script>
+
+<script>
+(function () {
+    // Przeliczenie zakresu dat bez przeładowania strony. Endpoint liczy dane na
+    // żywo z GA4/GSC, więc odpytujemy go tylko na wyraźne żądanie użytkownika.
+    var panel = document.getElementById("analytics-goal-panel");
+    if (!panel) { return; }
+
+    var start = document.getElementById("analytics-start-date");
+    var end = document.getElementById("analytics-end-date");
+    var apply = document.getElementById("analytics-range-apply");
+    var status = document.getElementById("analytics-range-status");
+    var error = document.getElementById("analytics-range-error");
+    var sessions = document.getElementById("analytics-sessions-value");
+    var okres = document.getElementById("analytics-sessions-period");
+    var clicks = document.getElementById("analytics-clicks-value");
+
+    function pokaz(tekst) {
+        if (status) { status.textContent = tekst; }
+        if (error) { error.classList.add("hidden"); }
+    }
+
+    function pokazBlad(tekst) {
+        if (!error) { return; }
+        error.textContent = tekst;
+        error.classList.remove("hidden");
+    }
+
+    function wczytaj(parametry) {
+        pokaz("Pobieram dane z Google…");
+        fetch(panel.dataset.analyticsUrl + "?" + parametry)
+            .then(function (odpowiedz) {
+                return odpowiedz.json().then(function (dane) {
+                    if (!odpowiedz.ok) { throw new Error(dane.error || "Błąd pobierania."); }
+                    return dane;
+                });
+            })
+            .then(function (dane) {
+                var etykieta = (dane.range && dane.range.label) || "";
+
+                if (dane.ga4 && dane.ga4.available) {
+                    if (sessions) { sessions.textContent = dane.ga4.organic_sessions; }
+                    if (okres) { okres.textContent = "sesji organicznych · " + etykieta; }
+                    odswiezWnioski(dane.ga4.lead_insights);
+                } else if (dane.ga4 && okres) {
+                    okres.textContent = dane.ga4.reason || "brak danych GA4";
+                }
+
+                if (dane.gsc && dane.gsc.available && clicks) {
+                    clicks.textContent = dane.gsc.clicks_current;
+                }
+
+                pokaz(etykieta ? "Okres: " + etykieta : "");
+            })
+            .catch(function (blad) {
+                if (status) { status.textContent = ""; }
+                pokazBlad(blad.message || "Nie udało się pobrać danych.");
+            });
+    }
+
+    function odswiezWnioski(wnioski) {
+        var lista = document.getElementById("ga4-leads-insights-list");
+        if (!lista || !wnioski || !wnioski.summary_points) { return; }
+        lista.innerHTML = "";
+        wnioski.summary_points.forEach(function (punkt) {
+            var pozycja = document.createElement("li");
+            pozycja.textContent = punkt;
+            lista.appendChild(pozycja);
+        });
+    }
+
+    panel.querySelectorAll(".range-quick-btn").forEach(function (przycisk) {
+        przycisk.addEventListener("click", function () {
+            panel.querySelectorAll(".range-quick-btn").forEach(function (inny) {
+                inny.classList.remove("active");
+            });
+            przycisk.classList.add("active");
+            wczytaj("range=" + encodeURIComponent(przycisk.dataset.range));
+        });
+    });
+
+    if (apply) {
+        apply.addEventListener("click", function () {
+            if (!start.value || !end.value) {
+                pokazBlad("Podaj obie daty zakresu.");
+                return;
+            }
+            wczytaj(
+                "start_date=" + encodeURIComponent(start.value) +
+                "&end_date=" + encodeURIComponent(end.value)
+            );
+        });
+    }
+})();
+</script>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script>

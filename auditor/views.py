@@ -316,6 +316,10 @@ def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> Htt
         "gsc_site_domain": gsc_site_domain(audit.gsc_site_url) if audit.gsc_site_url else "",
         "audit_domain": audit_domain(audit.url),
         "today_iso": timezone.localdate().isoformat(),
+        # Konfiguracja celu biznesowego mieszka w module analitycznym, nie w audycie
+        # technicznym: zdarzenie konwersji opisuje biznes, nie stan kodu strony.
+        "ga4_available_events": _fetch_ga4_available_events(audit),
+        "ga4_lead_insights": audit.ga4_insights.get("lead_insights") or {},
     })
 
 
@@ -671,6 +675,83 @@ def _has_access_to_property(request: HttpRequest, property_id: str) -> bool:
         return True
 
     return any(str(w.get("property_id")) == property_id for w in wlasciwosci)
+
+
+@login_required
+@require_POST
+def set_ga4_lead_event(request: HttpRequest, pk: int) -> HttpResponse:
+    """Zapisuje zdarzenie GA4 uznawane za lead/konwersję i odświeża analitykę.
+
+    Osobny endpoint, a nie gałąź POST w widoku panelu: panel renderują dwa adresy
+    (`/analytics/?audit=` i `/audits/<pk>/analytics/`), więc obsługa zapisu w jednym
+    z nich działałaby tylko z jednej strony.
+
+    Pusty wybór czyści zdarzenie - "nie śledzę konwersji" jest poprawnym stanem.
+    """
+    from .services.audit_service import AuditService
+
+    audit = _get_owned_audit(request, pk)
+    powrot = request.POST.get("next") or DEFAULT_RETURN_TARGET
+    event_name = (request.POST.get("ga4_selected_lead_event") or "").strip()
+
+    if not (audit.ga4_refresh_token and audit.ga4_property_id):
+        messages.error(request, "Połącz najpierw usługę Google Analytics, żeby wybrać zdarzenie.")
+        return _redirect_after_assignment(audit, powrot)
+
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
+        messages.error(request, "Sesja Google wygasła. Połącz konto ponownie.")
+        return _redirect_after_assignment(audit, powrot)
+
+    try:
+        AuditService().refresh_ga4_lead_event(audit, credentials, event_name or None)
+    except Exception:
+        # Awaria pobrania nie może zostawić użytkownika na stronie błędu - zapisane
+        # dane są spójne, bo serwis aktualizuje je w jednym przebiegu.
+        logger.exception("Nie udało się odświeżyć danych GA4 dla audytu %s.", audit.pk)
+        messages.error(request, "Nie udało się pobrać danych z Google Analytics. Spróbuj ponownie.")
+        return _redirect_after_assignment(audit, powrot)
+
+    if event_name:
+        messages.success(request, f"Zdarzenie „{event_name}” jest śledzone jako konwersja.")
+    else:
+        messages.success(request, "Przestano śledzić zdarzenie konwersji.")
+
+    return _redirect_after_assignment(audit, powrot)
+
+
+def _fetch_ga4_available_events(audit: Audit) -> list[str]:
+    """Lista zdarzeń GA4 do formularza wyboru leadu/konwersji.
+
+    Wynik jest cache'owany: bez tego każde wyświetlenie panelu oznaczałoby zapytanie
+    do GA4 o 90 dni danych, co dokłada kilkaset milisekund do renderu i zużywa dzienną
+    quotę przy zwykłym przeglądaniu. Błąd (np. wygasły token) nie blokuje reszty
+    strony - formularz po prostu nie pokaże wtedy żadnych opcji.
+    """
+    if not (audit.ga4_refresh_token and audit.ga4_property_id):
+        return []
+
+    cache_key = f"ga4_events:{audit.ga4_property_id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+
+    events: list[str] = []
+    try:
+        credentials = _build_credentials_from_refresh_token(audit)
+        events = GA4OAuthService().get_available_events(credentials, audit.ga4_property_id)
+    except Exception:
+        logger.exception(
+            "Nie udało się pobrać listy zdarzeń GA4 dla audytu %s.", audit.pk
+        )
+
+    # Pustą listę też zapisujemy, ale na krócej - żeby błąd API nie powodował
+    # odpytywania Google przy każdym odświeżeniu strony.
+    ttl = getattr(settings, "CACHE_TTL_GA4_EVENTS", 6 * 3600) if events else 300
+    cache.set(cache_key, events, ttl)
+    return events
 
 
 def _redirect_after_assignment(audit: Audit, target: str) -> HttpResponse:
@@ -1213,59 +1294,6 @@ def select_ga4_property(request: HttpRequest, pk: int) -> HttpResponse:
     )
 
 
-def _handle_ga4_lead_event_selection(request: HttpRequest, audit: Audit) -> None:
-    """Zapisuje wybrane przez użytkownika zdarzenie lead/konwersja GA4 i odświeża
-    pełną analitykę (dane wielokanałowe + automatyczne wnioski SEO) - wywoływane z
-    formularza POST w `audit_detail`. Pusty wybór czyści `ga4_selected_lead_event`."""
-    from .services.audit_service import AuditService
-
-    event_name = request.POST.get("ga4_selected_lead_event", "").strip()
-
-    if not audit.ga4_refresh_token or not audit.ga4_property_id:
-        messages.error(request, "Połącz najpierw konto Google Analytics, żeby wybrać zdarzenie.")
-        return
-
-    try:
-        credentials = _build_credentials_from_refresh_token(audit)
-    except (FileNotFoundError, KeyError, json.JSONDecodeError):
-        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s.", audit.pk)
-        messages.error(request, "Sesja Google wygasła. Połącz konto ponownie.")
-        return
-
-    AuditService().refresh_ga4_lead_event(audit, credentials, event_name or None)
-    messages.success(request, "Zaktualizowano analitykę GA4.")
-
-
-def _fetch_ga4_available_events(audit: Audit) -> list[str]:
-    """Lista zdarzeń GA4 do formularza wyboru leadu/konwersji.
-
-    Wynik jest cache'owany: wcześniej każde wyświetlenie strony szczegółów oznaczało
-    zapytanie do GA4 o 90 dni danych, co dokładało kilkaset milisekund do renderu i
-    zużywało dzienną quotę przy zwykłym przeglądaniu raportu. Błąd (np. wygasły token)
-    nie blokuje reszty strony - formularz po prostu nie pokaże wtedy żadnych opcji.
-    """
-    if not (audit.ga4_refresh_token and audit.ga4_property_id):
-        return []
-
-    cache_key = f"ga4_events:{audit.ga4_property_id}"
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
-
-    events: list[str] = []
-    try:
-        credentials = _build_credentials_from_refresh_token(audit)
-        events = GA4OAuthService().get_available_events(credentials, audit.ga4_property_id)
-    except (FileNotFoundError, KeyError, json.JSONDecodeError):
-        logger.exception("Nie udało się odtworzyć poświadczeń Google dla audytu %s (lista zdarzeń GA4).", audit.pk)
-
-    # Pustą listę też zapisujemy, ale na krócej - żeby błąd API nie powodował
-    # odpytywania Google przy każdym odświeżeniu strony.
-    ttl = getattr(settings, "CACHE_TTL_GA4_EVENTS", 6 * 3600) if events else 300
-    cache.set(cache_key, events, ttl)
-    return events
-
-
 def _resolve_requested_range(request: HttpRequest) -> tuple[date, date]:
     """Wyznacza zakres dat żądania: `range` (skrót) albo `start_date`/`end_date`.
 
@@ -1410,10 +1438,6 @@ def analytics_data(request: HttpRequest, pk: int) -> JsonResponse:
 def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
     audit = _get_owned_audit(request, pk)
 
-    if request.method == "POST" and "ga4_selected_lead_event" in request.POST:
-        _handle_ga4_lead_event_selection(request, audit)
-        return redirect("auditor:detail", pk=audit.pk)
-
     all_metrics = annotate_metric_labels(list(audit.metrics.all()))
 
     # W podsumowaniu pomijamy osobne metryki score per urządzenie - reprezentuje je
@@ -1436,7 +1460,7 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
         "total_count": len(summary_metrics),
     }
 
-    # Sekcja "Krytyczne problemy i ostrzeżenia" na szczycie zakładki technicznej:
+    # Sekcja "Krytyczne problemy i ostrzeżenia" pod kafelkami podsumowania:
     # wszystkie testy ze statusem ERROR/WARNING, błędy przed ostrzeżeniami.
     priority_findings = critical_errors + warnings
 
@@ -1445,15 +1469,6 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
     # przy błędzie/ostrzeżeniu pokazuje ją panel priorytetów, w pozostałych przypadkach
     # - panel PageSpeed. Sam panel PageSpeed zawsze rysuje wskaźniki punktowe.
     pagespeed_card_in_panel = bool(pagespeed_summary) and pagespeed_summary not in priority_findings
-
-    ga4_lead_insights = audit.ga4_insights.get("lead_insights") or {}
-    has_ga4 = bool(audit.ga4_refresh_token)
-    # Zbiorcza flaga: czy na stronie w ogóle trzeba wczytać Chart.js (Senuto i/lub GA4
-    # mają jakiekolwiek dane do narysowania). Liczona tutaj, a nie jako złożony warunek
-    # and/or w szablonie, żeby uniknąć pomyłek z precedencją operatorów w templatce.
-    # Przy połączonym GA4 Chart.js jest potrzebny zawsze - wykresy powstają nawet z
-    # pustymi danymi, żeby dynamiczna zmiana zakresu dat miała co aktualizować.
-    show_charts_js = bool(has_ga4 or audit.senuto_history.get("dates"))
 
     return render(
         request,
@@ -1465,14 +1480,14 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
             "passed_tests": passed_tests,
             "info_tests": info_tests,
             "stats": stats,
-            # Zakładka "Audyt Techniczny": 4 tematyczne akordeony (Progressive Disclosure)
+            # Główna treść strony: 4 tematyczne akordeony (Progressive Disclosure)
             # + dedykowana tabela statusów Schema.org, budowane z tych samych metryk.
             "priority_findings": priority_findings,
             "technical_accordions": group_technical_accordions(summary_metrics),
             "schema_status_table": build_schema_status_table(summary_metrics),
             "schema_cards": extract_schema_cards(summary_metrics),
-            # Dedykowany panel podsumowania PageSpeed na szczycie zakładki technicznej -
-            # metryka jest wyłączona z akordeonów, żeby nie dublować tej samej karty.
+            # Dedykowany panel podsumowania PageSpeed - metryka jest wyłączona
+            # z akordeonów, żeby nie dublować tej samej karty.
             "pagespeed_summary": pagespeed_summary,
             "pagespeed_card_in_panel": pagespeed_card_in_panel,
             # Zestawienie przebadanych szablonów podstron (auditor.models.AuditedPage).
@@ -1485,11 +1500,6 @@ def audit_detail(request: HttpRequest, pk: int) -> HttpResponse:
             ),
             "category_scores": compute_category_scores(all_metrics) if audit.status == "completed" else [],
             "score_bucket": score_bucket(audit.score),
-            "ga4_available_events": _fetch_ga4_available_events(audit),
-            "ga4_lead_insights": ga4_lead_insights,
-            "show_charts_js": show_charts_js,
-            # Górna granica pól <input type="date"> - nie ma danych z przyszłości.
-            "today_iso": timezone.localdate().isoformat(),
             "audit_in_progress": audit.status in (Audit.Status.PENDING, Audit.Status.PROCESSING),
         },
     )
