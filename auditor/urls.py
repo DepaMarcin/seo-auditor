@@ -41,6 +41,8 @@ urlpatterns = [
     path("audits/<int:pk>/analytics/", views.audit_analytics, name="audit_analytics"),
     # Zdarzenie GA4 śledzone jako konwersja - zapisywane z panelu analityki.
     path("audits/<int:pk>/lead-event/", views.set_ga4_lead_event, name="set_lead_event"),
+    # Wymuszone ponowne pobranie danych z Google dla przypisanych usług.
+    path("audits/<int:pk>/refresh/", views.refresh_google_data, name="refresh_google_data"),
     # Odpytywany przez stronę szczegółów, dopóki audyt wykonuje się w tle.
     path("audits/<int:pk>/status/", views.audit_status, name="status"),
     # Holistyczna synteza: agenci zbierają dane ze wszystkich dostępnych modułów.

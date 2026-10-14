@@ -1290,3 +1290,77 @@ def build_investigation_context(state, audit=None) -> dict:
         "sources": dict(state.sources),
         "warnings": nieaktualne,
     }
+
+
+# ----------------------------------------------------------------------
+# Tabele Search Console: frazy i podstrony rok do roku
+# ----------------------------------------------------------------------
+# Ile znaków etykiety adresu pokazujemy w komórce tabeli. Pełny adres zostaje
+# w atrybucie `title` - w wierszu rozpychałby kolumnę z liczbami.
+MAX_PAGE_LABEL_LENGTH = 64
+
+
+def page_label(url: str, domain: str = "") -> str:
+    """Adres podstrony w skróconej, czytelnej formie.
+
+    Pokazujemy ścieżkę, nie pełny adres: tabela porównuje podstrony JEDNEJ witryny,
+    więc schemat i host powtarzałyby się w każdym wierszu. Host zostaje wtedy, gdy
+    różni się od domeny audytu - wtedy nie jest szumem, a informacją, że ruch dotyczy
+    innej subdomeny (najczęstsza przyczyna zdziwienia przy czytaniu tych liczb).
+    """
+    from urllib.parse import urlparse
+
+    adres = (url or "").strip()
+    if not adres:
+        return ""
+
+    rozbity = urlparse(adres)
+    host = (rozbity.hostname or "").removeprefix("www.")
+    sciezka = rozbity.path or "/"
+    if rozbity.query:
+        sciezka += "?" + rozbity.query
+
+    inna_subdomena = bool(host) and bool(domain) and host != domain
+    etykieta = f"{host}{sciezka}" if inna_subdomena else sciezka
+    if not etykieta.strip("/"):
+        etykieta = host or adres
+
+    if len(etykieta) > MAX_PAGE_LABEL_LENGTH:
+        # Ucinamy ŚRODEK: koniec adresu bywa bardziej rozpoznawalny niż początek,
+        # bo tam siedzi nazwa artykułu albo produktu.
+        zapas = (MAX_PAGE_LABEL_LENGTH - 1) // 2
+        etykieta = etykieta[:zapas] + "…" + etykieta[-zapas:]
+    return etykieta
+
+
+def build_gsc_rows(rows: list, domain: str = "", limit: int = 10) -> list[dict]:
+    """Wiersze tabeli Search Console w kształcie gotowym do wyświetlenia.
+
+    `GSCService` zapisuje płaskie klucze (`clicks_current`, `clicks_previous`,
+    `delta`) razem z wyświetleniami, CTR i pozycją. Tabela pokazuje tylko kliknięcia
+    i różnicę, a wiersze bez nazwy frazy ani adresu pomijamy - nie da się ich opisać.
+
+    Zwraca `[{"label", "url", "current", "previous", "delta", "direction"}]`.
+    """
+    gotowe: list[dict] = []
+    for wiersz in (rows or [])[:limit]:
+        if not isinstance(wiersz, dict):
+            continue
+
+        adres = (wiersz.get("page") or "").strip()
+        nazwa = (wiersz.get("query") or "").strip()
+        if not (adres or nazwa):
+            continue
+
+        zmiana = wiersz.get("delta")
+        gotowe.append({
+            "label": nazwa or page_label(adres, domain),
+            "url": adres,
+            "current": wiersz.get("clicks_current") or 0,
+            "previous": wiersz.get("clicks_previous") or 0,
+            "delta": zmiana,
+            # Kierunek rozstrzyga o kolorze w szablonie - liczenie znaku w templatce
+            # wymagałoby filtra, a tu jest to jedno porównanie.
+            "direction": "" if not zmiana else ("up" if zmiana > 0 else "down"),
+        })
+    return gotowe

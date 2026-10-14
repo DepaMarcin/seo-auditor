@@ -1,0 +1,33 @@
+{% comment %}
+Tabela "rok do roku" dla Search Console - jedna budowa dla fraz i dla podstron.
+Wiersze przygotowuje `auditor.presentation.build_gsc_rows`.
+
+Parametry: `rows`, `heading`, `first_column`.
+{% endcomment %}
+<div>
+    <h3 class="ga4-subheading">{{ heading }}</h3>
+    <div class="table-scroll">
+        <table class="gsc-table">
+            <thead>
+                <tr>
+                    <th>{{ first_column }}</th>
+                    <th>Teraz</th>
+                    <th>Rok temu</th>
+                    <th>Różnica</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in rows %}
+                <tr>
+                    <td{% if row.url %} title="{{ row.url }}"{% endif %}>{{ row.label }}</td>
+                    <td>{{ row.current }}</td>
+                    <td>{{ row.previous }}</td>
+                    <td class="{% if row.direction == 'up' %}gsc-delta-positive{% elif row.direction == 'down' %}gsc-delta-negative{% endif %}">
+                        {% if row.delta %}{{ row.delta|stringformat:"+d" }}{% else %}0{% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>

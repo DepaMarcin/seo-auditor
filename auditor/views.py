@@ -33,6 +33,7 @@ from .agents.state import SOURCE_KEYS
 from .models import Audit, AuditedPage, AuditMetric
 from .navigation import TOOLS
 from .presentation import (
+    build_gsc_rows,
     MERGED_PAGESPEED_SCORE_KEYS,
     TEAM_BY_CATEGORY,
     annotate_metric_labels,
@@ -320,6 +321,21 @@ def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> Htt
         # technicznym: zdarzenie konwersji opisuje biznes, nie stan kodu strony.
         "ga4_available_events": _fetch_ga4_available_events(audit),
         "ga4_lead_insights": audit.ga4_insights.get("lead_insights") or {},
+        # Tabele Search Console. Kształt wiersza ustalamy tutaj, bo zapisane dane
+        # mają płaskie klucze (`clicks_current`), a szablon czytał `row.current` -
+        # Django renderuje brakujący klucz jako pustkę, więc kolumny z liczbami
+        # były puste, a nikt tego nie zauważył.
+        "gsc_query_gainers": build_gsc_rows(audit.gsc_top_gainers),
+        "gsc_query_losers": build_gsc_rows(audit.gsc_top_losers),
+        "gsc_page_gainers": build_gsc_rows(audit.gsc_top_page_gainers, audit_domain(audit.url)),
+        "gsc_page_losers": build_gsc_rows(audit.gsc_top_page_losers, audit_domain(audit.url)),
+        # Historia widoczności Senuto - wykres przeniesiony z raportu technicznego.
+        "senuto_metrics": [
+            {"key": "top3", "label": "TOP 3", "value": audit.senuto_top3},
+            {"key": "top10", "label": "TOP 10", "value": audit.senuto_top10},
+            {"key": "top50", "label": "TOP 50", "value": audit.senuto_top50},
+        ],
+        "has_senuto_history": bool((audit.senuto_history or {}).get("dates")),
     })
 
 
@@ -617,10 +633,15 @@ def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
         )
         return _redirect_after_assignment(audit, powrot)
 
-    # Witryny Search Console nie czytamy z formularza: dobiera ją automat po domenie
-    # audytu. Ręczny wybór produkował przypisania w poprzek projektów, których
-    # użytkownik nie miał jak zauważyć.
-    wynik = apply_google_services(audit, property_id)
+    # Witrynę Search Console można wskazać wprost albo zostawić automatowi.
+    # Dawniej pole było wyłącznie automatyczne, bo ręczny wybór produkował
+    # przypisania w poprzek projektów, których użytkownik nie miał jak zauważyć.
+    # Teraz ma: panel pokazuje ostrzeżenie "Niespójna konfiguracja" przy każdym
+    # wejściu, gdy domena witryny różni się od domeny audytu. Automat nadal nie
+    # radzi sobie z witrynami zarejestrowanymi pod inną nazwą ani z wyborem
+    # między subdomeną a domeną główną - i to jest powód tego pola.
+    witryna = (request.POST.get("gsc_site_url") or "").strip() or None
+    wynik = apply_google_services(audit, property_id, site_url=witryna)
 
     # Brak zmian nie wymaga komunikatu: użytkownik widzi te same ustawienia, a
     # powtarzane zapisy zostawiały za sobą kolejkę identycznych powiadomień.
@@ -636,6 +657,38 @@ def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
             f"Zapisano ustawienia dla {audit.url}, ale nie udało się pobrać danych "
             "z Google. Dane poprzedniej usługi zostały wyczyszczone - odśwież raport "
             "za chwilę.",
+        )
+
+    return _redirect_after_assignment(audit, powrot)
+
+
+@login_required
+@require_POST
+def refresh_google_data(request: HttpRequest, pk: int) -> HttpResponse:
+    """Wymusza ponowne pobranie danych GA4 i Search Console dla przypisanych usług.
+
+    Dane w panelu pochodzą z chwili przypisania usługi - po zmianie konfiguracji
+    albo po prostu po kilku dniach trzeba móc je odświeżyć bez przepinania usługi
+    od nowa. POST, bo to kilka wywołań API Google i zapis do bazy.
+    """
+    audit = _get_owned_audit(request, pk)
+    powrot = request.POST.get("next") or DEFAULT_RETURN_TARGET
+
+    if not audit.ga4_property_id:
+        messages.error(request, "Najpierw przypisz usługę Google Analytics do tej domeny.")
+        return _redirect_after_assignment(audit, powrot)
+
+    # Lista zdarzeń jest cache'owana per usługa - po odświeżeniu danych ma zostać
+    # pobrana na nowo, inaczej formularz celu pokazywałby stan sprzed zmiany.
+    cache.delete(f"ga4_events:{audit.ga4_property_id}")
+
+    if _refresh_google_data(audit, audit.ga4_property_id, audit.gsc_site_url):
+        messages.success(request, f"Pobrano świeże dane dla {audit.url}.")
+    else:
+        messages.warning(
+            request,
+            "Nie udało się pobrać danych z Google. Sprawdź połączenie konta "
+            "i uprawnienia do przypisanej usługi.",
         )
 
     return _redirect_after_assignment(audit, powrot)

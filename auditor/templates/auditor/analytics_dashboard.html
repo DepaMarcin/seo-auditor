@@ -45,6 +45,25 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
             Uruchom audyt techniczny
         </a>
         {% endif %}
+        {% if has_analytics %}
+        {% comment %}
+        Przepięcie usługi i odświeżenie danych w nagłówku, obok nazwy domeny:
+        obie czynności dotyczą TEGO, co widać poniżej, więc szukanie ich na dole
+        strony byłoby zgadywaniem. Zmiana usługi otwiera sekcję konfiguracji -
+        formularz zostaje w jednym miejscu, żeby nie istniał w dwóch wersjach.
+        {% endcomment %}
+        <a class="geo-button-secondary" href="#analytics-config" id="analytics-config-link">
+            ⚙️ Zmień usługę
+        </a>
+        <form method="post" action="{% url 'auditor:refresh_google_data' audit.pk %}"
+              class="analytics-refresh-form" id="analytics-refresh-form">
+            {% csrf_token %}
+            <input type="hidden" name="next" value="analytics">
+            <button type="submit" class="geo-button-secondary" id="analytics-refresh-submit">
+                ↻ Odśwież dane
+            </button>
+        </form>
+        {% endif %}
         <a class="geo-button-secondary" href="{% url 'auditor:analytics' %}">
             <span aria-hidden="true">←</span> Inna domena
         </a>
@@ -197,7 +216,7 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
         <p class="geo-card-hint">
             Dane pochodzą z usługi i witryny przypisanych do tej domeny.
         </p>
-        <details class="analytics-config analytics-config-inline">
+        <details class="analytics-config analytics-config-inline" id="analytics-config">
             <summary class="analytics-config-summary">⚙️ Zmień usługę / domenę</summary>
             <form method="post" action="{% url 'auditor:assign_google_services' audit.pk %}"
                   class="analytics-config-form analytics-config-form-stacked">
@@ -218,12 +237,28 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
                     </select>
                 </div>
 
+                <div class="analytics-config-field">
+                    <label for="gsc-change-{{ audit.pk }}">Witryna Search Console</label>
+                    <select name="gsc_site_url" id="gsc-change-{{ audit.pk }}">
+                        <option value="">— dopasuj automatycznie po domenie —</option>
+                        {% for option in selectors.gsc_options %}
+                        <option value="{{ option.value }}"
+                                {% if option.value == audit.gsc_site_url %}selected{% endif %}>
+                            {{ option.label }}{% if option.suggested %} (Sugerowana){% endif %}
+                        </option>
+                        {% endfor %}
+                    </select>
+                </div>
+
                 <p class="analytics-auto-gsc">
                     <span class="analytics-auto-gsc-icon" aria-hidden="true">🔎</span>
-                    Search Console: dopasowana po domenie
                     {% if audit.gsc_site_url %}
-                    (<strong>{{ audit.gsc_site_url }}</strong>)
+                    Obecnie: <strong>{{ audit.gsc_site_url }}</strong>
+                    {% else %}
+                    Automat nie dopasował jeszcze żadnej witryny.
                     {% endif %}
+                    Wskaż ją wprost, gdy jest zarejestrowana pod inną nazwą albo gdy
+                    automat wybrał subdomenę zamiast domeny głównej.
                 </p>
 
                 <div class="analytics-config-actions">
@@ -326,6 +361,34 @@ działałaby tylko z jednej strony.
 </div>
 {% endif %}
 
+
+{% if has_senuto_history %}
+{% comment %}
+Widoczność w wyszukiwarce z Senuto - wykres przeniesiony z raportu technicznego.
+Panel analityki jest jego miejscem: mówi o ruchu i widoczności domeny, nie o kodzie
+strony. Przełącznik TOP 3/10/50 korzysta z tych samych przycisków co wybór zakresu
+dat, więc nie wprowadza własnego słownika stylów.
+{% endcomment %}
+<div class="panel" id="senuto-panel">
+    <h2 class="geo-card-heading">Widoczność w wyszukiwarce (Senuto)</h2>
+    <div class="range-quick" id="senuto-metric-toggle">
+        {% for metryka in senuto_metrics %}
+        <button type="button" class="range-quick-btn{% if metryka.key == 'top10' %} active{% endif %}"
+                data-metric="{{ metryka.key }}" data-label="Widoczność w {{ metryka.label }}">
+            {{ metryka.label }}: {{ metryka.value }}
+        </button>
+        {% endfor %}
+    </div>
+    <div class="chart-wrapper">
+        <canvas id="senuto-visibility-chart"
+                data-dates="{{ audit.senuto_history.dates|join:"," }}"
+                data-top3="{{ audit.senuto_history.top3|join:"," }}"
+                data-top10="{{ audit.senuto_history.top10|join:"," }}"
+                data-top50="{{ audit.senuto_history.top50|join:"," }}"></canvas>
+    </div>
+</div>
+{% endif %}
+
 {% if audit.ga4_insights.summary or audit.gsc_query_commentary or audit.gsc_page_commentary %}
 <div class="panel">
     <h2 class="geo-card-heading">Automatyczne wnioski</h2>
@@ -341,61 +404,49 @@ działałaby tylko z jednej strony.
 </div>
 {% endif %}
 
-{% if audit.gsc_top_gainers or audit.gsc_top_losers %}
+{% comment %}
+Dwie tabele o tej samej budowie: frazy i podstrony. Wiersze przychodzą z
+`auditor.presentation.build_gsc_rows`, bo zapisane dane mają płaskie klucze
+(`clicks_current`), a szablon czytał wcześniej `row.current` - Django renderuje
+brakujący klucz jako pustkę, więc kolumny z liczbami były puste.
+{% endcomment %}
+{% if gsc_query_gainers or gsc_query_losers %}
 <div class="panel">
     <h2 class="geo-card-heading">Frazy kluczowe rok do roku</h2>
     <div class="gsc-tables-grid">
-        {% if audit.gsc_top_gainers %}
-        <div>
-            <h3 class="ga4-subheading">Największe wzrosty</h3>
-            <div class="table-scroll">
-                <table class="gsc-table">
-                    <thead><tr><th>Fraza</th><th>Teraz</th><th>Rok temu</th></tr></thead>
-                    <tbody>
-                        {% for row in audit.gsc_top_gainers|slice:":10" %}
-                        <tr>
-                            <td>{{ row.query }}</td>
-                            <td>{{ row.current }}</td>
-                            <td>{{ row.previous }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        {% if gsc_query_gainers %}
+        {% include "auditor/_gsc_delta_table.html" with rows=gsc_query_gainers heading="Największe wzrosty" first_column="Fraza" %}
         {% endif %}
-        {% if audit.gsc_top_losers %}
-        <div>
-            <h3 class="ga4-subheading">Największe spadki</h3>
-            <div class="table-scroll">
-                <table class="gsc-table">
-                    <thead><tr><th>Fraza</th><th>Teraz</th><th>Rok temu</th></tr></thead>
-                    <tbody>
-                        {% for row in audit.gsc_top_losers|slice:":10" %}
-                        <tr>
-                            <td>{{ row.query }}</td>
-                            <td>{{ row.current }}</td>
-                            <td>{{ row.previous }}</td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+        {% if gsc_query_losers %}
+        {% include "auditor/_gsc_delta_table.html" with rows=gsc_query_losers heading="Największe spadki" first_column="Fraza" %}
         {% endif %}
     </div>
 </div>
 {% endif %}
 
-{% if not audit.analytics_only %}
+{% if gsc_page_gainers or gsc_page_losers %}
 <div class="panel">
-    <p class="tool-panel-hint">
-        Wykresy z wyborem zakresu dat (ruch wg kanałów, konwersje, porównania okresów)
-        znajdują się w
-        <a class="link" href="{% url 'auditor:detail' audit.pk %}#analityka">raporcie audytu</a>.
+    <h2 class="geo-card-heading">Podstrony rok do roku (Search Console)</h2>
+    <p class="geo-card-hint">
+        Które adresy zyskały, a które straciły kliknięcia. Host pokazujemy tylko przy
+        innej subdomenie niż <strong>{{ audit_domain }}</strong> — wtedy jest to
+        informacja, a nie powtórzenie.
     </p>
+    <div class="gsc-tables-grid">
+        {% if gsc_page_gainers %}
+        {% include "auditor/_gsc_delta_table.html" with rows=gsc_page_gainers heading="Największe wzrosty" first_column="Adres URL" %}
+        {% endif %}
+        {% if gsc_page_losers %}
+        {% include "auditor/_gsc_delta_table.html" with rows=gsc_page_losers heading="Największe spadki" first_column="Adres URL" %}
+        {% endif %}
+    </div>
 </div>
 {% endif %}
+
+{% comment %}
+Notatka odsyłająca po wykresy do raportu audytu została usunięta: raport techniczny
+nie zawiera już sekcji analitycznej, więc kierowała w puste miejsce.
+{% endcomment %}
 
 
 <script>
@@ -512,6 +563,103 @@ działałaby tylko z jednej strony.
 </script>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+    // Odnośnik "Zmień usługę" ma otworzyć sekcję konfiguracji, nie tylko do niej
+    // przewinąć - zwinięty <details> wyglądałby jak brak formularza.
+    var link = document.getElementById("analytics-config-link");
+    var sekcja = document.getElementById("analytics-config");
+    if (!link || !sekcja) { return; }
+
+    link.addEventListener("click", function () {
+        sekcja.open = true;
+    });
+    if (window.location.hash === "#analytics-config") {
+        sekcja.open = true;
+    }
+})();
+</script>
+
+<script>
+(function () {
+    // Odświeżenie to kilka wywołań API Google - bez tej informacji przycisk
+    // wyglądałby na niedziałający przez kilka sekund.
+    var form = document.getElementById("analytics-refresh-form");
+    var przycisk = document.getElementById("analytics-refresh-submit");
+    if (!form || !przycisk) { return; }
+
+    form.addEventListener("submit", function () {
+        przycisk.disabled = true;
+        przycisk.innerHTML = '<span class="btn-spinner"></span>Pobieram…';
+    });
+})();
+</script>
+
+<script>
+(function () {
+    // Wykres widoczności Senuto z przełącznikiem TOP 3 / 10 / 50.
+    var canvas = document.getElementById("senuto-visibility-chart");
+    if (!canvas || typeof Chart === "undefined") { return; }
+
+    function serie(nazwa) {
+        return (canvas.dataset[nazwa] || "")
+            .split(",")
+            .filter(Boolean)
+            .map(Number);
+    }
+
+    var dane = { top3: serie("top3"), top10: serie("top10"), top50: serie("top50") };
+    var etykiety = (canvas.dataset.dates || "").split(",").filter(Boolean);
+    if (!etykiety.length) { return; }
+
+    var wykres = new Chart(canvas.getContext("2d"), {
+        type: "line",
+        data: {
+            labels: etykiety,
+            datasets: [{
+                label: "Widoczność w TOP 10",
+                data: dane.top10,
+                borderColor: "#38BDF8",
+                backgroundColor: "rgba(56, 189, 248, 0.14)",
+                borderWidth: 2,
+                fill: true,
+                tension: 0.3,
+                pointRadius: 0,
+            }],
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                x: { ticks: { color: "#94A3B8", maxTicksLimit: 8 }, grid: { display: false } },
+                y: {
+                    beginAtZero: true,
+                    ticks: { color: "#94A3B8", precision: 0 },
+                    grid: { color: "rgba(255, 255, 255, 0.06)" },
+                },
+            },
+        },
+    });
+
+    document.querySelectorAll("#senuto-metric-toggle .range-quick-btn").forEach(function (przycisk) {
+        przycisk.addEventListener("click", function () {
+            var metryka = przycisk.dataset.metric;
+            if (!dane[metryka]) { return; }
+
+            document.querySelectorAll("#senuto-metric-toggle .range-quick-btn").forEach(function (inny) {
+                inny.classList.remove("active");
+            });
+            przycisk.classList.add("active");
+
+            wykres.data.datasets[0].data = dane[metryka];
+            wykres.data.datasets[0].label = przycisk.dataset.label;
+            wykres.update();
+        });
+    });
+})();
+</script>
+
 <script>
 (function () {
     var canvas = document.getElementById("analytics-sessions-chart");
