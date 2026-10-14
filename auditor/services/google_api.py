@@ -74,19 +74,45 @@ def _gsc_label(site_url: str) -> str:
     return site_url
 
 
+def normalize_host(value: str) -> str:
+    """Dowolny zapis adresu sprowadzony do czystej nazwy hosta.
+
+    Jedno miejsce na tę regułę, bo porównania robią tu cztery funkcje, a ich
+    rozjechanie kończy się odmową dostępu do domeny, do której konto dostęp MA -
+    co użytkownik czyta jako wygaśnięcie tokena, choć token jest w porządku.
+
+    Rozumie wszystkie postacie, w jakich ta sama domena występuje w Google i w polu
+    formularza: "https://earlystage.pl/", "http://earlystage.pl", "www.earlystage.pl",
+    "earlystage.pl/blog", "earlystage.pl:8080", "sc-domain:earlystage.pl" oraz samo
+    "earlystage.pl".
+    """
+    tekst = (value or "").strip().lower()
+    if not tekst:
+        return ""
+
+    # Usługa domenowa Search Console: "sc-domain:" zdejmujemy przed resztą, bo
+    # inaczej dwukropek wyglądałby jak numer portu.
+    if tekst.startswith(DOMAIN_PROPERTY_PREFIX):
+        tekst = tekst[len(DOMAIN_PROPERTY_PREFIX):]
+
+    if "//" in tekst:
+        tekst = urlparse(tekst).hostname or tekst.split("//", 1)[1]
+
+    # Bez schematu `urlparse` nie rozpoznaje hosta, więc ścieżkę, zapytanie i port
+    # odcinamy sami - inaczej "earlystage.pl/blog" nie zrównałoby się z "earlystage.pl".
+    tekst = tekst.split("/")[0].split("?")[0].split("#")[0].split(":")[0]
+
+    return tekst.removeprefix("www.").strip(".")
+
+
 def gsc_site_domain(site_url: str) -> str:
     """Domena usługi Search Console - wspólna postać dla obu typów usług."""
-    if site_url.startswith(DOMAIN_PROPERTY_PREFIX):
-        domena = site_url[len(DOMAIN_PROPERTY_PREFIX):]
-    else:
-        domena = urlparse(site_url).hostname or site_url
-    return domena.lower().removeprefix("www.").rstrip("/")
+    return normalize_host(site_url)
 
 
 def audit_domain(audit_url: str) -> str:
     """Domena audytu w postaci porównywalnej z domenami usług Google."""
-    hostname = urlparse(audit_url).hostname or audit_url
-    return hostname.lower().removeprefix("www.").rstrip("/")
+    return normalize_host(audit_url)
 
 
 def mark_suggestions(
@@ -142,7 +168,9 @@ def property_domain(display_name: str) -> str:
     import re
 
     dopasowanie = re.search(r"\b([a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+)\b", (display_name or "").lower())
-    return dopasowanie.group(1).removeprefix("www.") if dopasowanie else ""
+    # Przez normalizator, bo w nazwie usługi bywa pełny adres ze schematem i ukośnikiem,
+    # a porównanie z listą domen odbywa się na czystym hoście.
+    return normalize_host(dopasowanie.group(1)) if dopasowanie else ""
 
 
 def list_authorized_domains(credentials) -> list[dict]:
@@ -182,13 +210,19 @@ def find_authorized_domain(domains: list[dict], wanted: str) -> dict | None:
     Dopasowanie obejmuje subdomeny w obie strony: usługa "sklep.przyklad.pl" obsługuje
     audyt "przyklad.pl" i odwrotnie - w Google jedno konto zwykle ma dostęp do całej
     rodziny adresów jednej firmy.
+
+    Oba porównywane adresy przechodzą przez `normalize_host`. Wcześniej szukana
+    wartość traciła tylko końcowy ukośnik, więc wpisanie "https://przyklad.pl/"
+    nigdy nie trafiało w "przyklad.pl" - schemat zostawał w ciągu.
     """
-    szukana = (wanted or "").lower().removeprefix("www.").strip().rstrip("/")
+    szukana = normalize_host(wanted)
     if not szukana:
         return None
 
     for wpis in domains:
-        domena = wpis["domain"]
+        domena = normalize_host(wpis.get("domain", ""))
+        if not domena:
+            continue
         if domena == szukana or szukana.endswith("." + domena) or domena.endswith("." + szukana):
             return wpis
     return None

@@ -222,41 +222,57 @@ def _open_domain_analytics(request: HttpRequest, wanted: str, google: dict, audi
     # wynik skanowania. Zakładamy lekki rekord, bo wybór usługi i pobrane liczby
     # muszą mieć gdzie leżeć - ale nie udajemy, że powstał audyt.
     if docelowy is None:
-        docelowy = _create_analytics_record(request, uprawnienie)
+        docelowy = Audit.objects.create(
+            url=f"https://{uprawnienie['domain']}/",
+            owner=request.user,
+            analytics_only=True,
+            status=Audit.Status.COMPLETED,
+        )
+        logger.info(
+            "Utworzono rekord analityczny dla %s (audyt techniczny nie jest wymagany).",
+            uprawnienie["domain"],
+        )
+
+    # Autoselekcja dotyczy też audytu, który już istniał: użytkownik z dostępem
+    # w Google trafiałby inaczej na ekran podłączenia, mimo że nie ma tam czego
+    # wybierać poza jedyną pasującą usługą.
+    _autoselect_google_services(docelowy, uprawnienie)
 
     return redirect("auditor:audit_analytics", pk=docelowy.pk)
 
 
-def _create_analytics_record(request: HttpRequest, uprawnienie: dict) -> Audit:
-    """Zakłada rekord analityczny dla domeny z konta Google.
+def _autoselect_google_services(audit: Audit, uprawnienie: dict) -> None:
+    """Przypisuje usługi, gdy dla tej domeny jest dokładnie jedna każdego rodzaju.
 
-    `analytics_only` odróżnia go od audytu technicznego: nie ma metryk, nie pojawia
-    się na liście skanera i nikt go nie zlecał. Istnieje wyłącznie jako miejsce na
-    przypisanie usługi GA4 i pobrane dane.
+    Nie ma o co pytać, skoro wybór jest jeden - a pytanie wyglądałoby jak brak
+    dostępu. Usługę już przypisaną zostawiamy: to świadoma decyzja użytkownika,
+    nawet gdy wskazuje subdomenę.
+
+    GA4 i Search Console rozstrzygają się niezależnie, bo dostęp do nich nadaje się
+    osobno - bywa jeden bez drugiego.
     """
     from auditor.services.google_services import apply_google_services
 
-    audit = Audit.objects.create(
-        url=f"https://{uprawnienie['domain']}/",
-        owner=request.user,
-        analytics_only=True,
-        status=Audit.Status.COMPLETED,
-    )
-
-    # Gdy konto ma dokładnie jedną usługę GA4 dla tej domeny, nie ma o co pytać -
-    # przypisujemy ją i pobieramy dane, żeby dashboard od razu coś pokazał.
     uslugi = uprawnienie.get("ga4") or []
-    if len(uslugi) == 1:
-        try:
-            apply_google_services(audit, str(uslugi[0].get("property_id", "")))
-        except Exception:  # noqa: BLE001 - brak danych nie może zablokować wejścia
-            logger.exception("Nie udało się pobrać danych dla nowego rekordu %s.", audit.pk)
+    witryny = uprawnienie.get("gsc") or []
 
-    logger.info(
-        "Utworzono rekord analityczny dla %s (audyt techniczny nie jest wymagany).",
-        uprawnienie["domain"],
-    )
-    return audit
+    usluga = audit.ga4_property_id or ""
+    if not usluga and len(uslugi) == 1:
+        usluga = str(uslugi[0].get("property_id", ""))
+
+    witryna = audit.gsc_site_url or ""
+    if not witryna and len(witryny) == 1:
+        witryna = witryny[0].get("site_url", "")
+
+    if usluga == (audit.ga4_property_id or "") and witryna == (audit.gsc_site_url or ""):
+        return
+
+    try:
+        # `site_url=""` zostawiłoby puste pole; przy braku jedynej witryny oddajemy
+        # decyzję automatowi dopasowującemu po domenie.
+        apply_google_services(audit, usluga, site_url=witryna or None)
+    except Exception:  # noqa: BLE001 - brak danych nie może zablokować wejścia
+        logger.exception("Nie udało się pobrać danych dla rekordu %s.", audit.pk)
 
 
 @login_required
@@ -640,7 +656,7 @@ def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
     # wejściu, gdy domena witryny różni się od domeny audytu. Automat nadal nie
     # radzi sobie z witrynami zarejestrowanymi pod inną nazwą ani z wyborem
     # między subdomeną a domeną główną - i to jest powód tego pola.
-    witryna = (request.POST.get("gsc_site_url") or "").strip() or None
+    witryna = _verified_gsc_site(request, (request.POST.get("gsc_site_url") or "").strip())
     wynik = apply_google_services(audit, property_id, site_url=witryna)
 
     # Brak zmian nie wymaga komunikatu: użytkownik widzi te same ustawienia, a
@@ -692,6 +708,54 @@ def refresh_google_data(request: HttpRequest, pk: int) -> HttpResponse:
         )
 
     return _redirect_after_assignment(audit, powrot)
+
+
+def _verified_gsc_site(request: HttpRequest, site_url: str) -> str | None:
+    """Wskazana witryna Search Console - albo None, czyli "dopasuj automatycznie".
+
+    Przyjmujemy WYŁĄCZNIE witrynę z listy dostępnej dla zalogowanego konta Google.
+    Pole w formularzu istnieje, bo automat nie odgadnie witryny zarejestrowanej pod
+    inną nazwą ani wyboru między subdomeną a domeną główną - ale podrzucona w POST
+    wartość nie może przypisać audytowi cudzej witryny, bo raport pokazywałby wtedy
+    liczby innego projektu pod właściwą nazwą domeny.
+
+    Gdy listy nie da się pobrać, wracamy do dopasowania automatycznego, a nie do
+    przyjęcia wartości na słowo: automat daje wtedy konfigurację działającą, więc
+    nikogo nie blokujemy - tracimy tylko ręczne nadpisanie.
+    """
+    if not site_url:
+        return None
+
+    from auditor.services.google_api import list_gsc_sites
+    from auditor.services.google_services import build_credentials_from_refresh_token
+
+    konto = _user_google_account(request)
+    if konto is None or not konto.is_connected:
+        return None
+
+    class _Nosnik:
+        def __init__(self, token, pk):
+            self.ga4_refresh_token = token
+            self.pk = pk
+
+    try:
+        credentials = build_credentials_from_refresh_token(
+            _Nosnik(konto.refresh_token, konto.pk)
+        )
+        dostepne = {w["site_url"] for w in list_gsc_sites(credentials)}
+    except Exception:  # noqa: BLE001
+        logger.exception("Nie udało się pobrać listy witryn Search Console konta %s.", konto.pk)
+        dostepne = set()
+
+    if site_url in dostepne:
+        return site_url
+
+    messages.warning(
+        request,
+        f"Witryna Search Console „{site_url}” nie jest dostępna na połączonym koncie "
+        "Google - dopasowano witrynę automatycznie po domenie.",
+    )
+    return None
 
 
 def _has_access_to_property(request: HttpRequest, property_id: str) -> bool:

@@ -321,39 +321,74 @@ class ServiceSwitchTests(AnalyticsPanelBase):
 
         self.assertRegex(html, r'value="sc-domain:earlystage\.pl"\s*\n?\s*selected')
 
-    def test_explicit_site_overrides_the_automatic_match(self):
-        # Automat nie odgadnie witryny zarejestrowanej pod inną nazwą ani wyboru
-        # między subdomeną a domeną główną - i to jest powód tego pola.
-        # Patchujemy nazwę w `views`, nie w serwisie: import na poziomie modułu
-        # skopiował referencję, więc podmiana w serwisie nie dotarłaby do widoku.
+    def _assign(self, dane):
+        """Zapis konfiguracji z atrapami Google - zwraca atrapę `apply_google_services`.
+
+        Patchujemy nazwę w `views`, nie w serwisie: import na poziomie modułu
+        skopiował referencję, więc podmiana w serwisie nie dotarłaby do widoku.
+        """
         with patch("auditor.views._has_access_to_property", return_value=True), patch(
-            "auditor.views.apply_google_services"
-        ) as zapis:
+            "auditor.views._build_credentials_from_refresh_token", return_value=MagicMock()
+        ), patch(
+            "auditor.services.google_services.build_credentials_from_refresh_token",
+            return_value=MagicMock(),
+        ), patch(
+            "auditor.services.google_api.list_gsc_sites", return_value=WITRYNY_GSC
+        ), patch("auditor.views.apply_google_services") as zapis:
             zapis.return_value = MagicMock(changed=True, fetched=True)
             self.client.post(
                 reverse("auditor:assign_google_services", args=[self.audit.pk]),
-                {
-                    "ga4_property_id": "316375346",
-                    "gsc_site_url": "https://materialy.earlystage.pl/",
-                    "next": "analytics",
-                },
+                {"ga4_property_id": "316375346", "next": "analytics", **dane},
             )
+        return zapis
+
+    def test_explicit_site_overrides_the_automatic_match(self):
+        # Automat nie odgadnie witryny zarejestrowanej pod inną nazwą ani wyboru
+        # między subdomeną a domeną główną - i to jest powód tego pola.
+        zapis = self._assign({"gsc_site_url": "https://materialy.earlystage.pl/"})
 
         self.assertEqual(
             zapis.call_args.kwargs["site_url"], "https://materialy.earlystage.pl/"
         )
 
-    def test_empty_choice_means_automatic_matching(self):
-        # Patchujemy nazwę w `views`, nie w serwisie: import na poziomie modułu
-        # skopiował referencję, więc podmiana w serwisie nie dotarłaby do widoku.
+    def test_site_outside_the_account_falls_back_to_matching(self):
+        # Podrzucone w POST pole nie może przypisać audytowi cudzej witryny -
+        # raport pokazywałby liczby innego projektu pod właściwą nazwą domeny.
+        zapis = self._assign({"gsc_site_url": "https://orlen.pl/"})
+
+        self.assertIsNone(zapis.call_args.kwargs["site_url"])
+
+    def test_rejected_site_is_explained(self):
+        self._assign({"gsc_site_url": "https://orlen.pl/"})
+
+        komunikaty = [
+            str(m) for m in self.client.get(reverse("auditor:hub")).context["messages"]
+        ]
+        self.assertTrue(any("nie jest dostępna" in m for m in komunikaty))
+
+    def test_unreachable_google_falls_back_to_matching(self):
+        # Awaria pobrania listy nie może oznaczać przyjęcia wartości na słowo,
+        # ale też nie może blokować zapisu - automat daje działającą konfigurację.
         with patch("auditor.views._has_access_to_property", return_value=True), patch(
-            "auditor.views.apply_google_services"
-        ) as zapis:
-            zapis.return_value = MagicMock(changed=False, fetched=False)
+            "auditor.services.google_services.build_credentials_from_refresh_token",
+            return_value=MagicMock(),
+        ), patch(
+            "auditor.services.google_api.list_gsc_sites", return_value=[]
+        ), patch("auditor.views.apply_google_services") as zapis:
+            zapis.return_value = MagicMock(changed=True, fetched=True)
             self.client.post(
                 reverse("auditor:assign_google_services", args=[self.audit.pk]),
-                {"ga4_property_id": "316375346", "gsc_site_url": "", "next": "analytics"},
+                {
+                    "ga4_property_id": "316375346",
+                    "gsc_site_url": "sc-domain:earlystage.pl",
+                    "next": "analytics",
+                },
             )
+
+        self.assertIsNone(zapis.call_args.kwargs["site_url"])
+
+    def test_empty_choice_means_automatic_matching(self):
+        zapis = self._assign({"gsc_site_url": ""})
 
         # None, nie pusty napis: `apply_google_services` rozróżnia "dopasuj sam"
         # od "zapisz pustą wartość".
