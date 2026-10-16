@@ -7,6 +7,7 @@ pilnują, żeby obie drogi kończyły się dokładnie tym samym stanem bazy.
 """
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
@@ -26,8 +27,24 @@ from auditor.services.google_services import (
 User = get_user_model()
 
 
-def _patch_fetching(ga4_side_effect=None, gsc_side_effect=None):
-    """Podmienia pobieranie danych z Google na potrzeby jednego wywołania."""
+@contextmanager
+def _patched_fetching(ga4_side_effect=None, gsc_side_effect=None):
+    """Podmienia pobieranie danych z Google na czas bloku.
+
+    Menedżer kontekstu, a nie krotka patchy startowanych ręcznie: wcześniej
+    `start()` i `stop()` dostawały DWA RÓŻNE zestawy obiektów, bo `_patch_fetching()`
+    tworzyło je na nowo przy każdym wywołaniu. Patche nigdy się nie kończyły, więc
+    `AuditService.sync_ga4_data` i `sync_gsc_data` zostawały podmienione do końca
+    procesu testowego - każdy późniejszy test polegający na ich prawdziwym działaniu
+    sprawdzał atrapę, nie kod.
+    """
+    with ExitStack() as stos:
+        yield [stos.enter_context(patcher) for patcher in _fetching_patchers(
+            ga4_side_effect, gsc_side_effect
+        )]
+
+
+def _fetching_patchers(ga4_side_effect=None, gsc_side_effect=None):
     return (
         patch(
             "auditor.services.google_services.build_credentials_from_refresh_token",
@@ -100,11 +117,8 @@ class ApplyServicesTests(GoogleServicesBase):
         # Audyt bez przypisanej usługi może mieć dane z automatycznego dopasowania.
         audit = self._audit(ga4_property_id=None, gsc_site_url="")
 
-        for p in _patch_fetching():
-            p.start()
-        apply_google_services(audit, "111111", "")
-        for p in _patch_fetching():
-            p.stop()
+        with _patched_fetching():
+            apply_google_services(audit, "111111", "")
 
         audit.refresh_from_db()
         self.assertEqual(audit.ga4_organic_sessions, 0)
@@ -155,11 +169,8 @@ class ApplyServicesTests(GoogleServicesBase):
         cache.set(f"ga4_properties:{audit.pk}", ["cokolwiek"], 300)
         cache.set("ga4_events:999999", ["stare_zdarzenie"], 300)
 
-        for p in _patch_fetching():
-            p.start()
-        apply_google_services(audit, "111111", "")
-        for p in _patch_fetching():
-            p.stop()
+        with _patched_fetching():
+            apply_google_services(audit, "111111", "")
 
         self.assertIsNone(cache.get(f"ga4_properties:{audit.pk}"))
         self.assertIsNone(cache.get("ga4_events:999999"))

@@ -553,6 +553,11 @@
         }
         .score { font-size: 2.5rem; font-weight: 700; }
         h2 { text-transform: capitalize; }
+        /* Nagłówki zawierające DANE (domena, adres) nie mogą być kapitalizowane:
+           reguła powyżej zamienia "earlystage.pl" w "Earlystage.Pl". Dotyczy to
+           każdego nagłówka z interpolowaną wartością - stąd osobna lista. */
+        .analytics-connect-title,
+        .analytics-empty-title { text-transform: none; }
         #tab-mobile:checked ~ label[for="tab-mobile"],
         #tab-desktop:checked ~ label[for="tab-desktop"] {
             background: var(--panel);
@@ -2085,6 +2090,14 @@
         }
         .analytics-auto-gsc strong { color: var(--text); overflow-wrap: anywhere; }
         .analytics-auto-gsc-icon { flex-shrink: 0; }
+        /* Brak dostępu to ostrzeżenie, nie neutralna informacja - szary dymek
+           czytałby się jak potwierdzenie, że wszystko jest w porządku. */
+        .analytics-auto-gsc-warning {
+            border-color: rgba(245, 158, 11, 0.4);
+            background: rgba(245, 158, 11, 0.1);
+            color: #FCD34D;
+        }
+        .analytics-auto-gsc-warning strong { color: #FDE68A; }
 
         /* Ostrzeżenie o niespójnym przypisaniu usługi. */
         .analytics-mismatch {
@@ -2635,6 +2648,8 @@
         /* Formularz z jednym przyciskiem w rzedzie akcji naglowka - bez tego
            byłby blokiem i zepchnąłby pozostałe przyciski do nowej linii. */
         .analytics-refresh-form { display: inline-flex; margin: 0; }
+        /* Zakres dat pod liczbą - czytelny, ale ciszej niż sama liczba. */
+        .analytics-period-dates { color: var(--muted-dim); font-variant-numeric: tabular-nums; }
         .analytics-domain-label {
             font-size: 0.72rem;
             text-transform: uppercase;

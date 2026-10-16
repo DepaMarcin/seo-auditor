@@ -8,7 +8,8 @@ from django.db import transaction
 
 from .accessibility import check_bot_accessibility
 from .ga4_insights import analyze_channel_trends
-from .ga4_service import GA4OAuthService
+from .date_ranges import last_n_full_months_range
+from .ga4_service import YOY_COMPARISON_MONTHS, GA4OAuthService
 from .gsc_insights import generate_page_commentary, generate_query_commentary
 from .gsc_service import GSCService
 from .pagespeed import PageSpeedService
@@ -502,9 +503,20 @@ class AuditService:
         do Search Console (domena niezarejestrowana, refresh_token sprzed dodania
         tego scope'u, błąd API) nie jest traktowany jak błąd audytu - pola GSC
         zostają przy wartościach domyślnych (0 / puste listy / pusty tekst)."""
-        query_stats = self.gsc_service.fetch_yoy_query_performance(credentials, audit.url)
-        page_stats = self.gsc_service.fetch_yoy_page_performance(credentials, audit.url)
+        # Zakres wyznaczamy JAWNIE, zamiast zdawać się na domyślny w serwisie:
+        # tylko wtedy wiemy, co dokładnie zapisać obok liczb. Bez tego podpis pod
+        # kafelkiem musiałby zgadywać okres przy każdym wyświetleniu strony.
+        okres_start, okres_koniec = last_n_full_months_range(YOY_COMPARISON_MONTHS)
 
+        query_stats = self.gsc_service.fetch_yoy_query_performance(
+            credentials, audit.url, okres_start, okres_koniec
+        )
+        page_stats = self.gsc_service.fetch_yoy_page_performance(
+            credentials, audit.url, okres_start, okres_koniec
+        )
+
+        audit.gsc_period_start = okres_start
+        audit.gsc_period_end = okres_koniec
         audit.gsc_total_clicks_current = query_stats["total_clicks_current"]
         audit.gsc_total_clicks_previous = query_stats["total_clicks_previous"]
         audit.gsc_yoy_change_percent = query_stats["yoy_change_percent"]
@@ -516,6 +528,8 @@ class AuditService:
         audit.gsc_page_commentary = generate_page_commentary(page_stats)
         audit.save(
             update_fields=[
+                "gsc_period_start",
+                "gsc_period_end",
                 "gsc_total_clicks_current",
                 "gsc_total_clicks_previous",
                 "gsc_yoy_change_percent",

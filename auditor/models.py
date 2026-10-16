@@ -109,6 +109,11 @@ class Audit(models.Model):
 
     # Analiza fraz kluczowych Google Search Console - 3 miesiące teraz vs 3 miesiące
     # rok temu (auditor.services.gsc_service.GSCService).
+    # Okres, z którego pochodzą zapisane liczby. GA4 ma go w `ga4_history["dates"]`,
+    # Search Console nie ma gdzie - a policzenie "ostatnich 3 pełnych miesięcy" dziś
+    # opisałoby dane pobrane tydzień temu innym zakresem, niż faktycznie objęły.
+    gsc_period_start = models.DateField(null=True, blank=True)
+    gsc_period_end = models.DateField(null=True, blank=True)
     gsc_total_clicks_current = models.IntegerField(default=0)
     gsc_total_clicks_previous = models.IntegerField(default=0)
     gsc_yoy_change_percent = models.FloatField(default=0.0)

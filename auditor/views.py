@@ -34,6 +34,7 @@ from .models import Audit, AuditedPage, AuditMetric
 from .navigation import TOOLS
 from .presentation import (
     build_gsc_rows,
+    build_period_labels,
     MERGED_PAGESPEED_SCORE_KEYS,
     TEAM_BY_CATEGORY,
     annotate_metric_labels,
@@ -352,6 +353,9 @@ def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> Htt
             {"key": "top50", "label": "TOP 50", "value": audit.senuto_top50},
         ],
         "has_senuto_history": bool((audit.senuto_history or {}).get("dates")),
+        # Zakres dat pod liczbami: "w ostatnim pobranym okresie" nie pozwalało
+        # odróżnić 8915 sesji z tygodnia od 8915 sesji z kwartału.
+        "periods": build_period_labels(audit),
     })
 
 
@@ -518,6 +522,14 @@ def _audit_with_selectors(audit, google: dict) -> dict:
         "match",
     )
 
+    # Czy na ZALOGOWANYM koncie jest witryna odpowiadająca domenie audytu.
+    # Bez tego formularz obiecywał "automatyczne dopasowanie" także po przełączeniu
+    # na konto, które tej domeny w ogóle nie widzi - a automat nie miał wtedy czego
+    # dopasować i zapis kończył się pustą analityką bez wyjaśnienia.
+    dopasowana_witryna = next(
+        (opcja["value"] for opcja in gsc_options if opcja.get("suggested")), ""
+    )
+
     return {
         "audit": audit,
         "domain": domena,
@@ -526,6 +538,14 @@ def _audit_with_selectors(audit, google: dict) -> dict:
         "audit_has_token": bool(audit.ga4_refresh_token_encrypted),
         "ga4_options": ga4_options,
         "gsc_options": gsc_options,
+        "gsc_matched": dopasowana_witryna,
+        # Czy cokolwiek na tym koncie odpowiada TEJ domenie. Rozstrzyga o tym, czy
+        # proponować przejście do domen konta: samo posiadanie usług nie pomaga,
+        # gdy wszystkie dotyczą innych firm (typowe dla konta agencyjnego).
+        "has_match": bool(
+            dopasowana_witryna or any(o.get("suggested") for o in ga4_options)
+        ),
+        "has_any_option": bool(ga4_options or gsc_options),
     }
 
 

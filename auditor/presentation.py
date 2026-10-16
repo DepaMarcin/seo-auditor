@@ -1364,3 +1364,85 @@ def build_gsc_rows(rows: list, domain: str = "", limit: int = 10) -> list[dict]:
             "direction": "" if not zmiana else ("up" if zmiana > 0 else "down"),
         })
     return gotowe
+
+
+# ----------------------------------------------------------------------
+# Podpisy okresów pod liczbami w panelu analityki
+# ----------------------------------------------------------------------
+def _format_day(value) -> str:
+    """Dzień w zapisie DD.MM.RRRR - albo pusty ciąg, gdy daty nie ma."""
+    return value.strftime("%d.%m.%Y") if value else ""
+
+
+def _format_span(start, end, with_days: bool = True) -> str:
+    """Zakres w postaci "18.08.2026 – 15.09.2026 (29 dni)".
+
+    `with_days=False` pomija liczbę dni - używamy tego tam, gdzie podpis podaje ją
+    już w zdaniu ("w ostatnich 30 dniach"), żeby nie powtarzała się dwa razy.
+    """
+    if not (start and end):
+        return ""
+
+    zakres = f"{_format_day(start)} – {_format_day(end)}"
+    if not with_days:
+        return zakres
+
+    dni = (end - start).days + 1
+    return f"{zakres} ({dni} {_day_word(dni)})"
+
+
+def _day_word(dni: int) -> str:
+    """Odmiana słowa "dzień" przy liczbie."""
+    if dni == 1:
+        return "dzień"
+    return "dni"
+
+
+def ga4_period(audit) -> tuple:
+    """Zakres zapisanych liczb GA4 - z pierwszej i ostatniej daty historii sesji.
+
+    Historia dziennych sesji jest tu jedynym świadkiem okresu: model nie ma pól na
+    zakres, a liczba sesji sama nie mówi, ilu dni dotyczy. Zwraca `(start, koniec)`
+    albo `(None, None)`.
+    """
+    from datetime import date
+
+    dni = ((getattr(audit, "ga4_history", None) or {}).get("dates")) or []
+    daty = []
+    for wpis in (min(dni), max(dni)) if dni else ():
+        try:
+            daty.append(date.fromisoformat(wpis))
+        except (TypeError, ValueError):
+            return (None, None)
+    return (daty[0], daty[1]) if len(daty) == 2 else (None, None)
+
+
+def build_period_labels(audit) -> dict:
+    """Podpisy okresów dla kafelków GA4 i Search Console.
+
+    „W ostatnim pobranym okresie" nie mówi nic: 8915 sesji z siedmiu dni to inna
+    informacja niż 8915 sesji z trzech miesięcy. Pokazujemy zakres wprost, a gdy
+    go nie znamy - mówimy to, zamiast podawać okres zgadnięty.
+
+    Zwraca `{"ga4", "ga4_days", "gsc", "gsc_previous"}` - gotowe teksty.
+    """
+    from auditor.services.date_ranges import previous_year_range
+
+    ga4_start, ga4_koniec = ga4_period(audit)
+    ga4_dni = (ga4_koniec - ga4_start).days + 1 if ga4_start and ga4_koniec else 0
+
+    gsc_start = getattr(audit, "gsc_period_start", None)
+    gsc_koniec = getattr(audit, "gsc_period_end", None)
+    if gsc_start and gsc_koniec:
+        rok_start, rok_koniec = previous_year_range(gsc_start, gsc_koniec)
+        gsc_poprzedni = _format_span(rok_start, rok_koniec)
+    else:
+        gsc_poprzedni = ""
+
+    return {
+        # Bez liczby dni: szablon podaje ją osobno jako `ga4_days`.
+        "ga4": _format_span(ga4_start, ga4_koniec, with_days=False),
+        "ga4_days": ga4_dni,
+        "gsc": _format_span(gsc_start, gsc_koniec),
+        "gsc_previous": gsc_poprzedni,
+    }
