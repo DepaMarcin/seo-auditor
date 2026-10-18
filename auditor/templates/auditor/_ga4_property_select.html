@@ -1,0 +1,42 @@
+{% comment %}
+Lista usług GA4 podzielona na pasujące do domeny audytu i pozostałe. Konto agencyjne
+ma kilkadziesiąt usług, z których jedna dotyczy tej domeny - bez podziału trzeba jej
+szukać, a pomyłka kończyła się raportem mieszającym metryki jednej firmy z frazami
+drugiej. Pasująca usługa jest zaznaczona z góry, bo to jedyny wybór, który nie
+wymaga sprawdzania.
+
+Parametry: `matching`, `other`, `field_id`, `current` (obecnie przypisany identyfikator),
+`allow_empty` (czy dopuścić "nie przypisano").
+{% endcomment %}
+<select name="ga4_property_id" id="{{ field_id }}"{% if not allow_empty %} required{% endif %}>
+    {% if allow_empty %}
+    <option value="">— nie przypisano —</option>
+    {% elif not matching %}
+    <option value="">— wybierz usługę —</option>
+    {% endif %}
+
+    {% if matching %}
+    <optgroup label="Usługi pasujące do {{ audit_domain }}">
+        {% for option in matching %}
+        <option value="{{ option.value }}"
+                {% if option.value == current %}selected{% elif not current and forloop.first %}selected{% endif %}>
+            {% if option.account %}{{ option.account }} → {% endif %}{{ option.label }} (ID: {{ option.value }})
+        </option>
+        {% endfor %}
+    </optgroup>
+    {% endif %}
+
+    {% if other %}
+    <optgroup label="Pozostałe usługi na koncie (inne domeny)">
+        {% for option in other %}
+        <option value="{{ option.value }}" {% if option.value == current %}selected{% endif %}>
+            {% if option.account %}{{ option.account }} → {% endif %}{{ option.label }} (ID: {{ option.value }})
+        </option>
+        {% endfor %}
+    </optgroup>
+    {% endif %}
+
+    {% if not matching and not other %}
+    <option value="" disabled>Brak usług dostępnych na tym koncie</option>
+    {% endif %}
+</select>

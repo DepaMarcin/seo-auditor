@@ -550,7 +550,10 @@ class SelectorSuggestionTests(AnalyticsBase):
         self.assertTrue(opcje[0]["suggested"])
         self.assertEqual(opcje[0]["value"], "sc-domain:shell.pl")
 
-    def test_suggestion_is_labelled_in_the_markup(self):
+    def test_suggestion_is_a_separate_group_in_the_markup(self):
+        # Przypis "(Sugerowana)" przy opcji zastąpił nagłówek grupy: przy koncie
+        # agencyjnym z kilkudziesięcioma usługami podział listy mówi to samo, ale
+        # widać go przed rozwinięciem, a nie dopiero przy przewijaniu.
         audit = self._connect(self.shell)
 
         html = self._open_with(
@@ -559,7 +562,7 @@ class SelectorSuggestionTests(AnalyticsBase):
             [],
         ).content.decode()
 
-        self.assertIn("(Sugerowana)", html)
+        self.assertIn('<optgroup label="Usługi pasujące do shell.pl">', html)
         self.assertIn("Agencja", html)
 
     def test_account_email_is_cached_on_the_audit(self):

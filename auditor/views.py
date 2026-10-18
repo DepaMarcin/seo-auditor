@@ -530,6 +530,12 @@ def _audit_with_selectors(audit, google: dict) -> dict:
         (opcja["value"] for opcja in gsc_options if opcja.get("suggested")), ""
     )
 
+    # Podział na pasujące i pozostałe. Konto agencyjne ma kilkadziesiąt usług,
+    # z których jedna dotyczy tej domeny - lista bez podziału kazała jej szukać,
+    # a pomyłka kończyła się raportem mieszającym dane dwóch firm.
+    ga4_pasujace = [o for o in ga4_options if o.get("suggested")]
+    gsc_pasujace = [o for o in gsc_options if o.get("suggested")]
+
     return {
         "audit": audit,
         "domain": domena,
@@ -538,13 +544,17 @@ def _audit_with_selectors(audit, google: dict) -> dict:
         "audit_has_token": bool(audit.ga4_refresh_token_encrypted),
         "ga4_options": ga4_options,
         "gsc_options": gsc_options,
-        "gsc_matched": dopasowana_witryna,
+        "ga4_matching": ga4_pasujace,
+        "ga4_other": [o for o in ga4_options if not o.get("suggested")],
+        # Jedna pasująca witryna to wybór oczywisty; kilka - do rozstrzygnięcia
+        # przez użytkownika. Search Console trzyma zwykle tę samą witrynę jako
+        # usługę domenową I prefiksową, więc kilka trafień to norma, nie wyjątek.
+        "gsc_matching": gsc_pasujace,
+        "gsc_matched": dopasowana_witryna if len(gsc_pasujace) == 1 else "",
         # Czy cokolwiek na tym koncie odpowiada TEJ domenie. Rozstrzyga o tym, czy
         # proponować przejście do domen konta: samo posiadanie usług nie pomaga,
         # gdy wszystkie dotyczą innych firm (typowe dla konta agencyjnego).
-        "has_match": bool(
-            dopasowana_witryna or any(o.get("suggested") for o in ga4_options)
-        ),
+        "has_match": bool(gsc_pasujace or ga4_pasujace),
         "has_any_option": bool(ga4_options or gsc_options),
     }
 
@@ -677,6 +687,12 @@ def assign_google_services(request: HttpRequest, pk: int) -> HttpResponse:
     # radzi sobie z witrynami zarejestrowanymi pod inną nazwą ani z wyborem
     # między subdomeną a domeną główną - i to jest powód tego pola.
     witryna = _verified_gsc_site(request, (request.POST.get("gsc_site_url") or "").strip())
+
+    niezgodnosc = _service_mismatch_reason(request, audit, property_id, witryna)
+    if niezgodnosc:
+        messages.error(request, niezgodnosc)
+        return _redirect_after_assignment(audit, powrot)
+
     wynik = apply_google_services(audit, property_id, site_url=witryna)
 
     # Brak zmian nie wymaga komunikatu: użytkownik widzi te same ustawienia, a
@@ -728,6 +744,86 @@ def refresh_google_data(request: HttpRequest, pk: int) -> HttpResponse:
         )
 
     return _redirect_after_assignment(audit, powrot)
+
+
+def _service_mismatch_reason(
+    request: HttpRequest, audit: Audit, property_id: str, site_url: str | None
+) -> str:
+    """Powód odmowy przypisania - albo pusty ciąg, gdy domeny się zgadzają.
+
+    Zmieszanie metryk GA4 jednej firmy z frazami Search Console innej daje raport,
+    którego NIE DA SIĘ rozpoznać jako błędnego: wszystkie liczby są prawdziwe, tylko
+    opisują dwie różne witryny. Dlatego to twarda odmowa zapisu, a nie ostrzeżenie
+    do przeczytania obok.
+
+    Walidacja jest tutaj, a nie w `apply_google_services`: serwis dostaje sam
+    identyfikator usługi, a domenę GA4 da się odczytać wyłącznie z jej nazwy, którą
+    zna lista z konta Google. Przeniesienie tego do serwisu znaczyłoby dodatkowe
+    odpytanie Google w warstwie, która dziś z nim nie rozmawia.
+
+    Nazwa usługi GA4 to dowolny tekst nadany przez właściciela, więc czasem nie
+    zawiera domeny ("Early Stage", "Klient 3"). Wtedy NIE blokujemy: nie mamy podstaw
+    twierdzić, że usługa jest niewłaściwa, a odmowa uniemożliwiłaby przypisanie takiej
+    usługi na zawsze.
+    """
+    from auditor.services.google_api import audit_domain, property_domain, same_site
+
+    domena_audytu = audit_domain(audit.url)
+    if not domena_audytu:
+        return ""
+
+    # Witryna Search Console nosi prawdziwy adres, więc jej niezgodność jest pewna.
+    if site_url and not same_site(site_url, domena_audytu):
+        return (
+            f"Wybrana witryna Search Console ({site_url}) nie pasuje do badanej "
+            f"domeny ({domena_audytu}). Wybierz witrynę powiązaną z tą domeną."
+        )
+
+    if not property_id:
+        return ""
+
+    nazwa = _ga4_property_name(request, property_id)
+    domena_uslugi = property_domain(nazwa)
+    if domena_uslugi and not same_site(domena_uslugi, domena_audytu):
+        return (
+            f"Wybrana usługa GA4 ({domena_uslugi}) nie pasuje do badanej domeny "
+            f"({domena_audytu}). Wybierz usługę powiązaną z tą domeną."
+        )
+
+    return ""
+
+
+def _ga4_property_name(request: HttpRequest, property_id: str) -> str:
+    """Nazwa usługi GA4 o tym identyfikatorze - albo pusty ciąg.
+
+    Pusty wynik znaczy "nie wiem", nie "brak dopasowania": gdy Google nie odpowie,
+    walidacja nie ma na czym się oprzeć i musi przepuścić zapis.
+    """
+    from auditor.services.google_api import list_ga4_properties
+    from auditor.services.google_services import build_credentials_from_refresh_token
+
+    konto = _user_google_account(request)
+    if konto is None or not konto.is_connected:
+        return ""
+
+    class _Nosnik:
+        def __init__(self, token, pk):
+            self.ga4_refresh_token = token
+            self.pk = pk
+
+    try:
+        credentials = build_credentials_from_refresh_token(
+            _Nosnik(konto.refresh_token, konto.pk)
+        )
+        wlasciwosci = list_ga4_properties(credentials)
+    except Exception:  # noqa: BLE001
+        logger.exception("Nie udało się pobrać listy usług GA4 konta %s.", konto.pk)
+        return ""
+
+    for wlasciwosc in wlasciwosci:
+        if str(wlasciwosc.get("property_id")) == property_id:
+            return wlasciwosc.get("display_name") or ""
+    return ""
 
 
 def _verified_gsc_site(request: HttpRequest, site_url: str) -> str | None:

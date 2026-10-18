@@ -117,17 +117,7 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
 
         <div class="analytics-config-field">
             <label for="ga4-{{ audit.pk }}">Usługa Google Analytics 4</label>
-            <select name="ga4_property_id" id="ga4-{{ audit.pk }}" required>
-                <option value="">— wybierz usługę —</option>
-                {% for option in selectors.ga4_options %}
-                <option value="{{ option.value }}" {% if option.suggested %}selected{% endif %}>
-                    {% if option.account %}{{ option.account }} → {% endif %}{{ option.label }}
-                    (ID: {{ option.value }}){% if option.suggested %} (Sugerowana){% endif %}
-                </option>
-                {% empty %}
-                <option value="" disabled>Brak usług dostępnych na tym koncie</option>
-                {% endfor %}
-            </select>
+            {% include "auditor/_ga4_property_select.html" with matching=selectors.ga4_matching other=selectors.ga4_other field_id="ga4-"|add:audit.pk|stringformat:"s" current="" allow_empty=False %}
         </div>
 
         {% comment %}
@@ -137,31 +127,47 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
         miał czego dopasować, a użytkownik dowiadywał się o tym dopiero po zapisie,
         patrząc na pustą analitykę.
         {% endcomment %}
+{% comment %}
+        Trzy stany, zależne od liczby witryn pasujących do domeny audytu:
+        jedna - przypisujemy bez pytania; kilka - użytkownik wybiera (Search Console
+        trzyma zwykle tę samą witrynę jako usługę domenową I prefiksową); zero -
+        nie ma czego proponować, bo witryna innej domeny zostanie odrzucona przy
+        zapisie, żeby raport nie mieszał danych dwóch firm.
+        {% endcomment %}
         {% if selectors.gsc_matched %}
         <p class="analytics-auto-gsc">
             <span class="analytics-auto-gsc-icon" aria-hidden="true">🔎</span>
-            Search Console: dopasowano <strong>{{ selectors.gsc_matched }}</strong>
-            do domeny {{ audit_domain }}
+            <span class="analytics-auto-gsc-text">
+                Search Console: dopasowano
+                <strong>{{ selectors.gsc_matched }}</strong> do domeny {{ audit_domain }}
+            </span>
         </p>
-        {% elif selectors.gsc_options %}
+        {% elif selectors.gsc_matching %}
         <div class="analytics-config-field">
             <label for="gsc-{{ audit.pk }}">Witryna Search Console</label>
             <select name="gsc_site_url" id="gsc-{{ audit.pk }}">
-                <option value="">— nie przypisuj witryny —</option>
-                {% for option in selectors.gsc_options %}
-                <option value="{{ option.value }}">{{ option.label }}</option>
+                {% for option in selectors.gsc_matching %}
+                <option value="{{ option.value }}" {% if forloop.first %}selected{% endif %}>
+                    {{ option.label }}
+                </option>
                 {% endfor %}
             </select>
         </div>
-        <p class="analytics-auto-gsc analytics-auto-gsc-warning">
-            <span class="analytics-auto-gsc-icon" aria-hidden="true">⚠️</span>
-            Zalogowane konto nie ma dostępu do witryny <strong>{{ audit_domain }}</strong>
-            w Search Console. Wybierz inną usługę z listy lub przełącz konto Google.
+        <p class="analytics-auto-gsc">
+            <span class="analytics-auto-gsc-icon" aria-hidden="true">🔎</span>
+            <span class="analytics-auto-gsc-text">
+                Kilka witryn tego konta pasuje do domeny {{ audit_domain }}
+                — wskaż tę, z której mamy liczyć dane.
+            </span>
         </p>
         {% else %}
         <p class="analytics-auto-gsc analytics-auto-gsc-warning">
             <span class="analytics-auto-gsc-icon" aria-hidden="true">⚠️</span>
-            Zalogowane konto nie ma dostępu do żadnej witryny w Search Console.
+            <span class="analytics-auto-gsc-text">
+                Zalogowane konto nie ma dostępu do witryny
+                <strong>{{ audit_domain }}</strong> w Search Console. Przełącz konto
+                Google albo wybierz domenę, do której to konto ma dostęp.
+            </span>
         </p>
         {% endif %}
 
@@ -299,26 +305,22 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
 
                 <div class="analytics-config-field">
                     <label for="ga4-change-{{ audit.pk }}">Usługa GA4</label>
-                    <select name="ga4_property_id" id="ga4-change-{{ audit.pk }}">
-                        <option value="">— nie przypisano —</option>
-                        {% for option in selectors.ga4_options %}
-                        <option value="{{ option.value }}"
-                                {% if option.value == audit.ga4_property_id %}selected{% endif %}>
-                            {% if option.account %}{{ option.account }} → {% endif %}{{ option.label }}
-                            (ID: {{ option.value }}){% if option.suggested %} (Sugerowana){% endif %}
-                        </option>
-                        {% endfor %}
-                    </select>
+                    {% include "auditor/_ga4_property_select.html" with matching=selectors.ga4_matching other=selectors.ga4_other field_id="ga4-change-"|add:audit.pk|stringformat:"s" current=audit.ga4_property_id allow_empty=True %}
                 </div>
 
                 <div class="analytics-config-field">
                     <label for="gsc-change-{{ audit.pk }}">Witryna Search Console</label>
+                    {% comment %}
+                    Tylko witryny pasujące do domeny audytu: wybór innej zostanie
+                    odrzucony przy zapisie, więc pokazywanie go byłoby zaproszeniem
+                    do błędu, który i tak nie przejdzie.
+                    {% endcomment %}
                     <select name="gsc_site_url" id="gsc-change-{{ audit.pk }}">
                         <option value="">— dopasuj automatycznie po domenie —</option>
-                        {% for option in selectors.gsc_options %}
+                        {% for option in selectors.gsc_matching %}
                         <option value="{{ option.value }}"
                                 {% if option.value == audit.gsc_site_url %}selected{% endif %}>
-                            {{ option.label }}{% if option.suggested %} (Sugerowana){% endif %}
+                            {{ option.label }}
                         </option>
                         {% endfor %}
                     </select>

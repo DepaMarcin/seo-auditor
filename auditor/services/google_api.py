@@ -105,6 +105,23 @@ def normalize_host(value: str) -> str:
     return tekst.removeprefix("www.").strip(".")
 
 
+def same_site(first: str, second: str) -> bool:
+    """Czy dwa adresy opisują tę samą witrynę, z tolerancją na subdomeny.
+
+    Tolerancja jest potrzebna w obie strony: usługa "sklep.amso.eu" obsługuje audyt
+    "amso.eu", a audyt subdomeny bywa opisywany usługą domeny głównej. Puste wejście
+    nie jest dopasowaniem - "nie wiem" to nie "to samo".
+    """
+    pierwszy, drugi = normalize_host(first), normalize_host(second)
+    if not (pierwszy and drugi):
+        return False
+    return (
+        pierwszy == drugi
+        or pierwszy.endswith("." + drugi)
+        or drugi.endswith("." + pierwszy)
+    )
+
+
 def gsc_site_domain(site_url: str) -> str:
     """Domena usługi Search Console - wspólna postać dla obu typów usług."""
     return normalize_host(site_url)

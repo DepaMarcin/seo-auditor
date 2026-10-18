@@ -46,20 +46,30 @@ czyta się inaczej, gdy wiadomo, że opisują stan sprzed kilku tygodni.
     <span class="stale-banner-icon" aria-hidden="true">⚠️</span>
     <div class="stale-banner-text">
         <p class="stale-banner-title">Synteza opiera się na nieaktualnych danych</p>
+{% comment %}
+        Przycisk przy KAŻDYM źródle, a nie jeden na cały banner: nieaktualna
+        analityka wymaga innego narzędzia niż nieaktualny skan techniczny.
+        Wcześniej jeden przycisk prowadził zawsze do skanera, więc kliknięcie przy
+        ostrzeżeniu o danych GA4 otwierało audyt techniczny.
+        {% endcomment %}
         <ul class="stale-banner-list">
             {% for wpis in stale_data %}
-            <li>{{ wpis.message }}</li>
+            <li>
+                {{ wpis.message }}
+                {% if wpis.action_url %}
+                <a class="stale-banner-link" href="{{ wpis.action_url }}">
+                    {{ wpis.action_label }} <span aria-hidden="true">→</span>
+                </a>
+                {% endif %}
+            </li>
             {% endfor %}
         </ul>
         <p class="stale-banner-note">
             Wnioski mogą opisywać stan, którego już nie ma — także problemy naprawione
-            w międzyczasie. Uruchom ponownie badanie, zanim podejmiesz na ich podstawie
-            decyzje.
+            w międzyczasie. Odśwież dane źródła, którego dotyczy ostrzeżenie, i zleć
+            badanie ponownie.
         </p>
     </div>
-    <a class="stale-banner-action" href="{% url 'auditor:index' %}">
-        Przejdź do skanera
-    </a>
 </div>
 {% endif %}
 

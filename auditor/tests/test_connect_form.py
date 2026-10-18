@@ -153,7 +153,7 @@ class AutoMatchClaimTests(ConnectFormBase):
         self.assertIn(
             "nie ma dostępu do witryny <strong>earlystage.pl</strong>", html
         )
-        self.assertIn("przełącz konto Google", html)
+        self.assertIn("Przełącz konto Google", html)
 
     def test_missing_access_looks_like_a_warning(self):
         # Szary dymek czytałby się jak potwierdzenie, że wszystko w porządku.
@@ -169,49 +169,78 @@ class AutoMatchClaimTests(ConnectFormBase):
 
 
 class SiteSelectorTests(ConnectFormBase):
-    """Lista witryn Search Console, gdy dopasowania nie ma."""
+    """Lista witryn Search Console pokazuje WYŁĄCZNIE pasujące do domeny audytu.
 
-    def test_selector_appears_instead_of_the_false_claim(self):
+    Wcześniej oferowała wszystkie witryny konta, żeby użytkownik bez dopasowania miał
+    co wybrać. Okazało się to drogą do raportu mieszającego metryki GA4 jednej firmy
+    z frazami Search Console drugiej - takiego raportu nie da się rozpoznać jako
+    błędnego, bo wszystkie liczby są prawdziwe. Wybór obcej witryny jest teraz
+    odrzucany przy zapisie, więc pokazywanie go byłoby zaproszeniem do błędu,
+    który i tak nie przejdzie (patrz test_domain_consistency).
+    """
+
+    def test_foreign_sites_are_not_offered(self):
         html = self._html(wlasciwosci=[GA4_OBCA], witryny=[WITRYNA_OBCA])
 
-        self.assertIn('name="gsc_site_url"', html)
-        self.assertIn("sc-domain:innafirma.pl", html)
+        self.assertNotIn('name="gsc_site_url"', html)
+        self.assertNotIn("sc-domain:innafirma.pl", html)
 
-    def test_selector_allows_assigning_nothing(self):
-        # „Nie przypisuj" jest poprawnym wyborem: analityka GA4 działa bez GSC.
+    def test_no_match_explains_itself_instead(self):
         html = self._html(wlasciwosci=[GA4_OBCA], witryny=[WITRYNA_OBCA])
 
-        self.assertIn("nie przypisuj witryny", html)
+        self.assertIn(
+            "nie ma dostępu do witryny <strong>earlystage.pl</strong>", html
+        )
 
-    def test_no_selector_when_the_match_exists(self):
-        # Przy trafionym dopasowaniu lista byłaby zaproszeniem do pomyłki.
+    def test_no_selector_when_a_single_match_exists(self):
+        # Jedna pasująca witryna to wybór oczywisty - przypisujemy bez pytania.
         html = self._html(witryny=[WITRYNA_PASUJACA])
 
         self.assertNotIn('name="gsc_site_url"', html)
 
+    def test_several_matches_are_offered(self):
+        # Search Console trzyma zwykle tę samą witrynę jako usługę domenową
+        # I prefiksową - wtedy wybór należy do użytkownika.
+        html = self._html(
+            witryny=[
+                WITRYNA_PASUJACA,
+                {
+                    "site_url": "https://earlystage.pl/",
+                    "label": "https://earlystage.pl/",
+                    "domain": "earlystage.pl",
+                },
+            ]
+        )
+
+        self.assertIn('name="gsc_site_url"', html)
+
     def test_empty_account_says_there_is_nothing_to_choose(self):
         html = self._html()
 
-        self.assertIn("nie ma dostępu do żadnej witryny", html)
+        self.assertIn("nie ma dostępu do witryny", html)
         self.assertNotIn('name="gsc_site_url"', html)
 
-    def test_chosen_site_is_accepted_by_the_save(self):
+    def test_matching_site_is_accepted_by_the_save(self):
         # Pole musi faktycznie działać, nie tylko się wyświetlać.
         with patch("auditor.views._has_access_to_property", return_value=True), patch(
             "auditor.views._verified_gsc_site",
-            return_value="sc-domain:innafirma.pl",
-        ), patch("auditor.views.apply_google_services") as zapis:
+            return_value="sc-domain:earlystage.pl",
+        ), patch("auditor.views._ga4_property_name", return_value="earlystage.pl"), patch(
+            "auditor.views.apply_google_services"
+        ) as zapis:
             zapis.return_value = MagicMock(changed=True, fetched=True)
             self.client.post(
                 reverse("auditor:assign_google_services", args=[self.audit.pk]),
                 {
-                    "ga4_property_id": "777777",
-                    "gsc_site_url": "sc-domain:innafirma.pl",
+                    "ga4_property_id": "316375346",
+                    "gsc_site_url": "sc-domain:earlystage.pl",
                     "next": "analytics",
                 },
             )
 
-        self.assertEqual(zapis.call_args.kwargs["site_url"], "sc-domain:innafirma.pl")
+        self.assertEqual(
+            zapis.call_args.kwargs["site_url"], "sc-domain:earlystage.pl"
+        )
 
 
 class NoMatchExitTests(ConnectFormBase):

@@ -1214,6 +1214,10 @@ def build_stale_data_warnings(state) -> list[dict]:
         etykieta = _TIMESTAMP_LABELS.get(nazwa, nazwa)
         dzien = _as_local_day(wartosc)
         stare.append({
+            # Klucz źródła decyduje o tym, dokąd prowadzi przycisk odświeżenia.
+            # Wcześniej banner miał JEDEN przycisk do skanera technicznego, więc
+            # nieaktualna analityka odsyłała do narzędzia, które jej nie dotyczy.
+            "source": nazwa,
             "label": etykieta,
             "as_of": dzien,
             "days": wiek,
@@ -1258,6 +1262,46 @@ def build_source_badges(state) -> list[dict]:
     ]
 
 
+# Dokąd prowadzi przycisk odświeżenia danego źródła. Nazwa trasy, etykieta i to,
+# czy trasa potrzebuje numeru audytu - trzymane razem, bo rozjechanie ich daje
+# przycisk prowadzący do cudzego narzędzia, co użytkownik zauważa dopiero po kliknięciu.
+_STALE_ACTIONS: dict[str, tuple[str, str, bool]] = {
+    "technical": ("auditor:index", "Uruchom nowy audyt techniczny", False),
+    "analytics": ("auditor:audit_analytics", "Otwórz Analitykę i Ruch", True),
+    "geo": ("auditor:geo_dashboard", "Otwórz Widoczność w AI", False),
+}
+
+
+def attach_stale_actions(warnings: list[dict], audit=None, audit_id=None) -> list[dict]:
+    """Dokłada do każdego ostrzeżenia adres narzędzia, które odświeży TE dane.
+
+    Analityka ma własny ekran per domena, więc prowadzimy wprost do niego, gdy znamy
+    audyt. Bez niego zostaje wejście ogólne - lepsze niż odesłanie do skanera,
+    który analityki nie dotyka.
+    """
+    from django.urls import NoReverseMatch, reverse
+
+    numer = getattr(audit, "pk", None) or audit_id
+
+    for wpis in warnings:
+        nazwa, etykieta, potrzebuje_audytu = _STALE_ACTIONS.get(
+            wpis.get("source"), ("auditor:hub", "Wróć do ekranu głównego", False)
+        )
+        try:
+            if potrzebuje_audytu and numer:
+                wpis["action_url"] = reverse(nazwa, args=[numer])
+            elif potrzebuje_audytu:
+                wpis["action_url"] = reverse("auditor:analytics")
+            else:
+                wpis["action_url"] = reverse(nazwa)
+        except NoReverseMatch:
+            # Brak adresu nie może wywrócić strony wyniku - zostaje sam komunikat.
+            wpis["action_url"] = ""
+        wpis["action_label"] = etykieta
+
+    return warnings
+
+
 def build_investigation_context(state, audit=None) -> dict:
     """Komplet danych dla szablonu syntezy - z jednego stanu, niezależnie od źródła.
 
@@ -1269,7 +1313,9 @@ def build_investigation_context(state, audit=None) -> dict:
     Poza danymi dla szablonu zwraca też nazwane wejścia opisane w API widoku:
     `report_markdown`, `metrics`, `sources` i `warnings`.
     """
-    nieaktualne = build_stale_data_warnings(state)
+    nieaktualne = attach_stale_actions(
+        build_stale_data_warnings(state), audit=audit, audit_id=state.audit_id
+    )
 
     return {
         "audit": audit,

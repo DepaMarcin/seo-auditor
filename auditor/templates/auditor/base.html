@@ -2074,10 +2074,14 @@
             transform: translateY(-1px);
             box-shadow: 0 8px 20px -10px rgba(0, 230, 118, 0.7);
         }
-        /* Informacja o automatycznym dopasowaniu Search Console. */
+        /* Informacja o automatycznym dopasowaniu Search Console.
+           `flex-wrap` i opakowanie tekstu w JEDEN element są tu konieczne: wcześniej
+           akapit zawierał ikonę, tekst, <strong> i kolejny tekst, czyli CZTERY
+           elementy flex, które przy wąskiej karcie ściskały się w pionowe kolumny. */
         .analytics-auto-gsc {
             display: flex;
-            align-items: flex-start;
+            align-items: center;
+            flex-wrap: wrap;
             gap: 0.5rem;
             margin: 0;
             padding: 0.6rem 0.8rem;
@@ -2089,6 +2093,9 @@
             line-height: 1.5;
         }
         .analytics-auto-gsc strong { color: var(--text); overflow-wrap: anywhere; }
+        /* Cała treść jako jeden element flex - zdanie łamie się wtedy wewnątrz
+           siebie, a nie na kolumny wokół <strong>. */
+        .analytics-auto-gsc-text { flex: 1 1 14rem; min-width: 0; }
         .analytics-auto-gsc-icon { flex-shrink: 0; }
         /* Brak dostępu to ostrzeżenie, nie neutralna informacja - szary dymek
            czytałby się jak potwierdzenie, że wszystko jest w porządku. */
@@ -2238,27 +2245,28 @@
             line-height: 1.6;
         }
         .stale-banner-note { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.55; }
-        .stale-banner-action {
-            flex: 0 0 auto;
-            align-self: center;
-            padding: 0.55rem 1rem;
+        /* Odnośnik przy pojedynczym ostrzeżeniu - prowadzi do narzędzia, które
+           odświeża WŁAŚNIE te dane. Inline, bo należy do swojego wiersza listy. */
+        .stale-banner-link {
+            display: inline-block;
+            margin-left: 0.4rem;
+            padding: 0.1rem 0.5rem;
             border-radius: var(--radius-sm);
             border: 1px solid rgba(245, 158, 11, 0.5);
             background: rgba(245, 158, 11, 0.14);
             color: #FCD34D;
             text-decoration: none;
-            font-size: 0.85rem;
+            font-size: 0.8rem;
             font-weight: 650;
             white-space: nowrap;
             transition: background var(--transition), border-color var(--transition);
         }
-        .stale-banner-action:hover {
+        .stale-banner-link:hover {
             background: rgba(245, 158, 11, 0.22);
             border-color: rgba(245, 158, 11, 0.7);
         }
         @media (max-width: 760px) {
-            .stale-banner { flex-wrap: wrap; }
-            .stale-banner-action { align-self: stretch; text-align: center; }}
+            .stale-banner { flex-wrap: wrap; }}
 
         /* --- Karty KPI nad raportem syntezy ---
            Prefiks `insight-` jest konieczny: raport techniczny ma własny komponent
