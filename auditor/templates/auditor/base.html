@@ -2698,6 +2698,16 @@
         }
         .analytics-connect-form select { width: 100%; min-width: 0; }
         .analytics-connect-submit { margin-top: 0.3rem; padding: 0.8rem 1.2rem; font-weight: 700; }
+        /* Wyjścia pokazywane zamiast działającego zapisu, gdy konto nie obsługuje
+           tej domeny. Wiersz, bo to alternatywy, nie kroki po kolei. */
+        .analytics-connect-exits {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            margin-top: 1rem;
+            padding-top: 1rem;
+            border-top: 1px solid var(--border);
+        }
 
         /* Wykres sesji - stała wysokość, bo Chart.js skaluje się do kontenera. */
         .chart-wrapper { position: relative; height: 320px; margin-top: 0.5rem; }

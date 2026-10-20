@@ -356,7 +356,54 @@ def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> Htt
         # Zakres dat pod liczbami: "w ostatnim pobranym okresie" nie pozwalało
         # odróżnić 8915 sesji z tygodnia od 8915 sesji z kwartału.
         "periods": build_period_labels(audit),
+        # Gdy konto nie obsługuje tej domeny, ale obsługuje inną, dla której mamy
+        # audyt - proponujemy przejście wprost tam. Bez tego użytkownik widzi samą
+        # odmowę i musi sam zgadnąć, co dalej.
+        "account_domain_audit": _audit_for_account_domain(request, google, audit),
     })
+
+
+def _audit_for_account_domain(request: HttpRequest, google: dict, biezacy):
+    """Audyt innej domeny, którą to konto Google faktycznie obsługuje - albo None.
+
+    Szukamy tylko wtedy, gdy jest po co: przy koncie obsługującym bieżącą domenę
+    propozycja przejścia gdzie indziej byłaby myląca. Wybieramy jednoznaczny
+    przypadek - dokładnie jedna obca domena z audytem w bazie; przy kilku nie
+    zgadujemy, która jest tą właściwą, i zostaje ogólne wejście do analityki.
+    """
+    from auditor.services.google_api import audit_domain, property_domain
+
+    # Domeny składamy z list, które kontekst panelu już ma. `_google_account_context`
+    # nie zwraca gotowego zestawienia domen (robi to `_google_access_context`), więc
+    # sięgnięcie po nie wprost dałoby zawsze pustą listę i martwy przycisk.
+    domeny = {
+        property_domain(wlasciwosc.get("display_name", ""))
+        for wlasciwosc in google.get("ga4_properties") or []
+    }
+    domeny |= {
+        witryna.get("domain", "") for witryna in google.get("gsc_sites") or []
+    }
+    domeny.discard("")
+
+    biezaca = audit_domain(biezacy.url)
+    obce = [domena for domena in domeny if domena != biezaca]
+    if len(obce) != 1:
+        return None
+
+    kandydat = next(
+        (
+            a
+            for a in _visible_audits(request).order_by("-created_at")
+            if audit_domain(a.url) == obce[0]
+        ),
+        None,
+    )
+    if kandydat is None:
+        return None
+
+    # Szablon pokazuje nazwę domeny, a model trzyma pełny adres.
+    kandydat.domain = obce[0]
+    return kandydat
 
 
 def _user_google_account(request: HttpRequest):
@@ -790,7 +837,69 @@ def _service_mismatch_reason(
             f"({domena_audytu}). Wybierz usługę powiązaną z tą domeną."
         )
 
+    # Nazwa usługi bywa bez domeny ("Early Stage", "Klient 3") i wtedy sama w sobie
+    # niczego nie dowodzi. Rozstrzyga wtedy drugie pytanie: czy to konto ma dla tej
+    # domeny COKOLWIEK - usługę GA4 albo witrynę Search Console. Jeśli nie ma nic,
+    # to cokolwiek użytkownik wybrał, na pewno nie opisuje badanej witryny.
+    if not domena_uslugi and not _account_covers_domain(request, domena_audytu):
+        opis = f" ({nazwa})" if nazwa else ""
+        return (
+            f"Zalogowane konto Google nie ma dostępu do żadnej usługi ani witryny "
+            f"dla domeny {domena_audytu}. Wybrana usługa{opis} opisuje inną witrynę, "
+            "więc raport mieszałby dane dwóch firm. Przełącz konto Google."
+        )
+
     return ""
+
+
+def _account_covers_domain(request: HttpRequest, domain: str) -> bool:
+    """Czy konto Google ma dla tej domeny jakąkolwiek usługę GA4 lub witrynę GSC.
+
+    Gdy Google nie odpowie, zwracamy True: brak odpowiedzi to "nie wiem", a odmowa
+    zapisu przy awarii po ich stronie uniemożliwiałaby pracę. Ryzyko jest tu mniejsze
+    niż przy ślepym blokowaniu - niezgodność dowodliwą łapie sprawdzenie powyżej.
+    """
+    from auditor.services.google_api import (
+        list_ga4_properties,
+        list_gsc_sites,
+        property_domain,
+        same_site,
+    )
+    from auditor.services.google_services import build_credentials_from_refresh_token
+
+    konto = _user_google_account(request)
+    if konto is None or not konto.is_connected:
+        return True
+
+    class _Nosnik:
+        def __init__(self, token, pk):
+            self.ga4_refresh_token = token
+            self.pk = pk
+
+    try:
+        credentials = build_credentials_from_refresh_token(
+            _Nosnik(konto.refresh_token, konto.pk)
+        )
+        wlasciwosci = list_ga4_properties(credentials)
+        witryny = list_gsc_sites(credentials)
+    except Exception:  # noqa: BLE001
+        logger.exception("Nie udało się pobrać uprawnień konta Google %s.", konto.pk)
+        return True
+
+    # Surowe listy, a nie `list_authorized_domains`: tamta funkcja zwraca pustkę
+    # ZARÓWNO przy awarii API, JAK I wtedy, gdy konto ma usługi, z których nazw nie
+    # da się odczytać domeny. Te dwie sytuacje wymagają przeciwnych decyzji, więc
+    # muszą dać się rozróżnić - a po scaleniu wyglądają identycznie.
+    if not wlasciwosci and not witryny:
+        return True
+
+    if any(
+        same_site(property_domain(w.get("display_name", "")), domain)
+        for w in wlasciwosci
+    ):
+        return True
+
+    return any(same_site(w.get("site_url", ""), domain) for w in witryny)
 
 
 def _ga4_property_name(request: HttpRequest, property_id: str) -> str:

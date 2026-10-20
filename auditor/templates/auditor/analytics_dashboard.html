@@ -116,8 +116,13 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
         <input type="hidden" name="next" value="analytics">
 
         <div class="analytics-config-field">
-            <label for="ga4-{{ audit.pk }}">Usługa Google Analytics 4</label>
-            {% include "auditor/_ga4_property_select.html" with matching=selectors.ga4_matching other=selectors.ga4_other field_id="ga4-"|add:audit.pk|stringformat:"s" current="" allow_empty=False %}
+            <label for="ga4-connect">Usługa Google Analytics 4</label>
+            {% comment %}
+            Identyfikator jako stały napis, nie sklejany filtrem `add`: ten filtr
+            przy łączeniu tekstu z liczbą zwraca PUSTY ciąg, więc `id` znikało,
+            a `<label for>` wskazywał w próżnię.
+            {% endcomment %}
+            {% include "auditor/_ga4_property_select.html" with matching=selectors.ga4_matching other=selectors.ga4_other field_id="ga4-connect" current="" allow_empty=False %}
         </div>
 
         {% comment %}
@@ -171,8 +176,39 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
         </p>
         {% endif %}
 
+{% comment %}
+        Bez jednej pasującej usługi nie ma czego zapisać: każdy wybór opisywałby inną
+        witrynę, a backend i tak go odrzuci. Zamiast przycisku, który tylko wygląda
+        na działający, pokazujemy wyjścia prowadzące do rozwiązania.
+        {% endcomment %}
+        {% if selectors.has_match %}
         <button type="submit" class="analytics-connect-submit">Podłącz i pobierz dane</button>
+        {% else %}
+        <button type="submit" class="analytics-connect-submit" disabled
+                title="To konto nie ma usługi ani witryny dla domeny {{ audit_domain }}">
+            Podłącz i pobierz dane
+        </button>
+        {% endif %}
     </form>
+
+    {% if not selectors.has_match %}
+    <div class="analytics-connect-exits">
+        <a class="geo-button-secondary"
+           href="{% url 'auditor:start_ga4_auth' audit.pk %}?switch=1&amp;return_to=analytics">
+            Przełącz konto Google
+        </a>
+        {% if account_domain_audit %}
+        <a class="geo-button-secondary"
+           href="{% url 'auditor:audit_analytics' account_domain_audit.pk %}">
+            Przejdź do audytu domeny {{ account_domain_audit.domain }}
+        </a>
+        {% else %}
+        <a class="geo-button-secondary" href="{% url 'auditor:analytics' %}">
+            <span aria-hidden="true">←</span> Przejdź do domen dostępnych na tym koncie
+        </a>
+        {% endif %}
+    </div>
+    {% endif %}
 
     {% if not selectors.has_match %}
     {% comment %}
@@ -304,8 +340,8 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
                 <input type="hidden" name="next" value="analytics">
 
                 <div class="analytics-config-field">
-                    <label for="ga4-change-{{ audit.pk }}">Usługa GA4</label>
-                    {% include "auditor/_ga4_property_select.html" with matching=selectors.ga4_matching other=selectors.ga4_other field_id="ga4-change-"|add:audit.pk|stringformat:"s" current=audit.ga4_property_id allow_empty=True %}
+                    <label for="ga4-change">Usługa GA4</label>
+                    {% include "auditor/_ga4_property_select.html" with matching=selectors.ga4_matching other=selectors.ga4_other field_id="ga4-change" current=audit.ga4_property_id allow_empty=True %}
                 </div>
 
                 <div class="analytics-config-field">

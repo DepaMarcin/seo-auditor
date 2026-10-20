@@ -2,17 +2,19 @@
 Lista usług GA4 podzielona na pasujące do domeny audytu i pozostałe. Konto agencyjne
 ma kilkadziesiąt usług, z których jedna dotyczy tej domeny - bez podziału trzeba jej
 szukać, a pomyłka kończyła się raportem mieszającym metryki jednej firmy z frazami
-drugiej. Pasująca usługa jest zaznaczona z góry, bo to jedyny wybór, który nie
-wymaga sprawdzania.
+drugiej. Pasująca usługa jest zaznaczona z góry, bo to jedyny wybór, który nie wymaga
+sprawdzania. Gdy żadna nie pasuje, zaznaczona zostaje opcja PUSTA i zablokowana:
+wybór pierwszej obcej z brzegu kończył się raportem mieszającym dane dwóch firm,
+a wygląda dokładnie tak samo jak wybór świadomy.
 
 Parametry: `matching`, `other`, `field_id`, `current` (obecnie przypisany identyfikator),
 `allow_empty` (czy dopuścić "nie przypisano").
 {% endcomment %}
 <select name="ga4_property_id" id="{{ field_id }}"{% if not allow_empty %} required{% endif %}>
     {% if allow_empty %}
-    <option value="">— nie przypisano —</option>
+    <option value="" {% if not current %}selected{% endif %}>— nie przypisano —</option>
     {% elif not matching %}
-    <option value="">— wybierz usługę —</option>
+    <option value="" selected disabled>— brak usługi pasującej do tej domeny —</option>
     {% endif %}
 
     {% if matching %}
