@@ -1,0 +1,6 @@
+# Zależności wyłącznie dla obrazu kontenera, instalowane PO requirements.txt.
+#
+# `gunicorn` jest tu, a nie we wspólnym pliku, bo nie instaluje się na Windows
+# (wymaga modułu `fcntl`). Projekt rozwija się lokalnie na Windows, więc
+# `pip install -r requirements.txt` musi tam przechodzić bez błędu.
+gunicorn==23.0.0

@@ -38,6 +38,13 @@ if not SECRET_KEY:
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False').strip().lower() in ('1', 'true', 'yes')
 
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get('DJANGO_ALLOWED_HOSTS', '').split(',') if h.strip()]
+# Za odwrotnym proxy Django widzi adres kontenera, a nie ten, który wpisał
+# użytkownik - bez tej listy POST-y odpadają na sprawdzeniu pochodzenia.
+CSRF_TRUSTED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get('DJANGO_CSRF_TRUSTED_ORIGINS', '').split(',')
+    if o.strip()
+]
 if DEBUG and not ALLOWED_HOSTS:
     ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
 
@@ -140,6 +147,18 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
+# WhiteNoise serwuje pliki statyczne z procesu aplikacji - w kontenerze zastępuje
+# osobnego nginxa. Wpis jest WARUNKOWY, bo paczka nie jest potrzebna do pracy
+# lokalnej (w DEBUG robi to `runserver`), a jej brak nie może wywracać aplikacji.
+# Musi stać zaraz za SecurityMiddleware: odpowiedzi na pliki statyczne mają omijać
+# sesje i uwierzytelnianie.
+try:
+    import whitenoise  # noqa: F401
+except ImportError:
+    pass
+else:
+    MIDDLEWARE.insert(1, 'whitenoise.middleware.WhiteNoiseMiddleware')
+
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
@@ -167,12 +186,34 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+# Baza: SQLite lokalnie, PostgreSQL w kontenerze. Wybór sterujemy zmienną
+# POSTGRES_DB - jej obecność znaczy "jest z czym się łączyć". Bez niej zostaje
+# SQLite, więc uruchomienie bez Dockera nie wymaga żadnej konfiguracji.
+#
+# Przy PostgreSQL znika ograniczenie, przez które agenci badania pracują
+# sekwencyjnie: SQLite blokuje tabelę przy równoległym zapisie z wielu procesów
+# (patrz auditor.agents.orchestrator).
+if os.environ.get('POSTGRES_DB'):
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ['POSTGRES_DB'],
+            'USER': os.environ.get('POSTGRES_USER', 'seo_auditor'),
+            'PASSWORD': os.environ.get('POSTGRES_PASSWORD', ''),
+            'HOST': os.environ.get('POSTGRES_HOST', 'db'),
+            'PORT': os.environ.get('POSTGRES_PORT', '5432'),
+            # Połączenie trzymane między żądaniami - nawiązywanie go za każdym
+            # razem kosztuje więcej niż sam zapytanie przy krótkich widokach.
+            'CONN_MAX_AGE': int(os.environ.get('POSTGRES_CONN_MAX_AGE', '60')),
+        }
     }
-}
+else:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -210,6 +251,35 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+# `collectstatic` w obrazie zbiera tu pliki panelu administracyjnego. Własnych
+# plików statycznych projekt nie ma - style i skrypty są w szablonach - ale admin
+# bez tego katalogu wygląda jak nieostylowany HTML.
+STATIC_ROOT = Path(os.environ.get('DJANGO_STATIC_ROOT', BASE_DIR / 'staticfiles'))
+# WhiteNoise serwuje te pliki z procesu aplikacji, więc wdrożenie nie wymaga
+# osobnego nginxa. Przy ruchu produkcyjnym warto go dołożyć, ale to osobna decyzja.
+try:
+    import whitenoise  # noqa: F401
+except ImportError:
+    pass
+else:
+    # Kompresja oszczędza transfer bez udziału serwera WWW.
+    #
+    # Wariant z manifestem (nazwy z haszem, więc przeglądarka nie poda starej
+    # wersji po wdrożeniu) włącza się TYLKO wtedy, gdy manifest istnieje - czyli
+    # po `collectstatic`, co obraz robi przy budowaniu. Bezwarunkowo wywracałby
+    # panel administracyjny przy lokalnym uruchomieniu z DEBUG=False: każde
+    # `{% static %}` szuka wtedy wpisu w nieistniejącym pliku.
+    _manifest = STATIC_ROOT / 'staticfiles.json'
+    STORAGES = {
+        'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+        'staticfiles': {
+            'BACKEND': (
+                'whitenoise.storage.CompressedManifestStaticFilesStorage'
+                if _manifest.exists()
+                else 'whitenoise.storage.CompressedStaticFilesStorage'
+            )
+        },
+    }
 
 
 # RAG engine (auditor.services.rag.RAGEngine)
@@ -236,7 +306,11 @@ SENUTO_COUNTRY_ID = os.environ.get('SENUTO_COUNTRY_ID', '')
 
 # Google Analytics 4 - integracja OAuth 2.0 "Zaloguj się przez Google"
 # (auditor.services.ga4_service.GA4OAuthService, auditor.views.start_ga4_auth/ga4_callback).
-GA4_CLIENT_SECRETS_FILE = BASE_DIR / 'client_secret.json'
+# W kontenerze plik jest montowany, a nie kopiowany do obrazu - stąd ścieżka
+# z env. Obraz z sekretem w warstwie trafiłby do rejestru razem z nim.
+GA4_CLIENT_SECRETS_FILE = Path(
+    os.environ.get('GA4_CLIENT_SECRETS_FILE', BASE_DIR / 'client_secret.json')
+)
 # Zakres GA4 (Analytics Data API) + GSC (Search Console API, auditor.services.gsc_service.GSCService) -
 # oba proszone w jednym ekranie zgody Google, żeby nie wymagać osobnego logowania dla GSC.
 # UWAGA: dopisanie zakresu unieważnia zgodę udzieloną wcześniej - konta połączone

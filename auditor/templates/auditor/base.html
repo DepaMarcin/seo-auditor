@@ -212,7 +212,28 @@
         .range-quick-btn:hover,
         .export-button:hover,
         .copy-btn:hover { transform: none; box-shadow: none; }
-        button:disabled { opacity: 0.6; cursor: not-allowed; }
+        /* Zablokowany przycisk musi wyglądać na zablokowany. Samo `opacity: 0.6`
+           nie wystarczało: tło jest jaskrawozielonym gradientem, więc przygaszony
+           nadal czytał się jako aktywny. Dochodzi odbarwienie i zdjęcie cienia.
+
+           `button:hover` dopasowuje się TAKŻE do przycisków `disabled`, więc bez
+           osobnego resetu taki przycisk podnosił się i świecił pod kursorem -
+           czyli zachowywał się dokładnie jak działający.
+
+           Celowo BEZ `pointer-events: none`: wyłącza ono również kursor, więc
+           `cursor: not-allowed` przestałby się pokazywać, a to on niesie tu
+           informację. Zdarzeń i tak nie ma - blokuje je sam atrybut `disabled`. */
+        button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            filter: grayscale(1);
+            box-shadow: none;
+            transform: none;
+        }
+        button:disabled:hover {
+            box-shadow: none;
+            transform: none;
+        }
         input:disabled { opacity: 0.6; cursor: not-allowed; }
         .hidden { display: none; }
         .loading-container {

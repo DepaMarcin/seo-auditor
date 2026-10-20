@@ -4,6 +4,18 @@
 # Uwaga: to pełna, zamrożona lista (także zależności pośrednie), co gwarantuje
 # odtwarzalność środowiska. Przy większych zmianach warto przejść na pyproject.toml
 # z rozdziałem zależności produkcyjnych i deweloperskich.
+# ----------------------------------------------------------------------
+# Zależność OPCJONALNA - fallback przeglądarkowy scrapera (auditor.services.renderer).
+# Pozwala audytować strony renderowane po stronie klienta (React/Vue/Angular) oraz
+# witryny za WAF-em, które odrzucają zwykłego klienta HTTP. Nie jest instalowana
+# domyślnie, bo binarki przeglądarki ważą ok. 400 MB - bez niej audyt działa dalej,
+# tyle że wyłącznie na statycznym HTML-u.
+#
+#   pip install playwright
+#   playwright install chromium
+#
+# playwright==1.58.0
+
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
 aiosignal==1.4.0
@@ -22,15 +34,15 @@ certifi==2026.7.22
 cffi==2.1.1
 charset-normalizer==3.5.1
 chromadb==1.5.9
-click==8.4.2
 click-didyoumean==0.3.1
 click-plugins==1.1.1.2
 click-repl==0.3.0
+click==8.4.2
 colorama==0.4.6
 cryptography==50.0.1
 distro==1.9.0
-Django==6.1
 django-ninja==1.6.3
+Django==6.1
 durationpy==0.10
 et_xmlfile==2.0.0
 filelock==3.32.3
@@ -41,38 +53,38 @@ google-analytics-admin==0.30.1
 google-analytics-data==0.23.0
 google-api-core==2.34.0
 google-api-python-client==2.200.0
-google-auth==2.57.0
 google-auth-httplib2==0.4.2
 google-auth-oauthlib==1.4.1
+google-auth==2.57.0
 googleapis-common-protos==1.75.1
-grpcio==1.83.1
 grpcio-status==1.83.1
+grpcio==1.83.1
 h11==0.16.0
 hf-xet==1.6.0
-httpcore==1.0.9
 httpcore2==2.12.0
+httpcore==1.0.9
 httplib2==0.32.0
 httptools==0.8.0
-httpx==0.28.1
 httpx2==2.12.0
+httpx==0.28.1
 huggingface_hub==1.28.0
 idna==3.19
 importlib_resources==7.1.0
 jiter==0.16.0
 jsonpatch==1.33
 jsonpointer==3.1.1
-jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
+jsonschema==4.26.0
 kombu==5.6.2
 kubernetes==36.0.3
-langchain==1.3.15
 langchain-core==1.6.0
 langchain-openai==1.6.0
 langchain-protocol==0.0.18
-langgraph==1.2.11
+langchain==1.3.15
 langgraph-checkpoint==4.2.0
 langgraph-prebuilt==1.1.0
 langgraph-sdk==0.4.3
+langgraph==1.2.11
 langsmith==0.11.1
 markdown-it-py==4.2.0
 mdurl==0.1.2
@@ -97,12 +109,13 @@ prompt_toolkit==3.0.53
 propcache==0.5.2
 proto-plus==1.28.4
 protobuf==7.35.1
+psycopg[binary]==3.2.12
 pyasn1==0.6.4
 pyasn1_modules==0.4.2
 pybase64==1.5.0
 pycparser==3.0
-pydantic==2.13.4
 pydantic-settings==2.15.0
+pydantic==2.13.4
 pydantic_core==2.46.4
 Pygments==2.21.0
 pyparsing==3.3.2
@@ -114,9 +127,9 @@ PyYAML==6.0.3
 redis==8.1.0
 referencing==0.37.0
 regex==2026.7.19
-requests==2.34.2
 requests-oauthlib==2.0.0
 requests-toolbelt==1.0.0
+requests==2.34.2
 rich==15.0.0
 rpds-py==2026.6.3
 shellingham==1.5.4
@@ -143,18 +156,7 @@ watchfiles==1.2.0
 wcwidth==0.8.2
 websocket-client==1.9.0
 websockets==16.1.1
+whitenoise==6.11.0
 xxhash==4.0.1
 yarl==1.24.5
 zstandard==0.25.0
-
-# ----------------------------------------------------------------------
-# Zależność OPCJONALNA - fallback przeglądarkowy scrapera (auditor.services.renderer).
-# Pozwala audytować strony renderowane po stronie klienta (React/Vue/Angular) oraz
-# witryny za WAF-em, które odrzucają zwykłego klienta HTTP. Nie jest instalowana
-# domyślnie, bo binarki przeglądarki ważą ok. 400 MB - bez niej audyt działa dalej,
-# tyle że wyłącznie na statycznym HTML-u.
-#
-#   pip install playwright
-#   playwright install chromium
-#
-# playwright==1.58.0

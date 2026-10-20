@@ -2196,11 +2196,15 @@ class StaleBannerViewTests(TestCase):
         self.assertContains(response, oczekiwana)
         self.assertContains(response, "30 dni temu")
 
-    def test_banner_links_to_the_scanner(self):
+    def test_each_stale_source_links_to_its_own_tool(self):
+        # Jeden przycisk na cały banner prowadził zawsze do skanera technicznego,
+        # więc ostrzeżenie o danych GA4 otwierało narzędzie, które ich nie dotyka.
+        # Szczegóły mapowania źródło→narzędzie pokrywa test_stale_links.
         response = self._open(self._audyt(30))
 
-        self.assertContains(response, "Przejdź do skanera")
-        self.assertContains(response, f'href="{reverse("auditor:index")}"')
+        self.assertNotContains(response, "Przejdź do skanera")
+        self.assertContains(response, "Uruchom nowy audyt techniczny")
+        self.assertContains(response, 'class="stale-banner-link"')
 
     def test_fresh_data_shows_no_banner(self):
         audyt = self._audyt(2)

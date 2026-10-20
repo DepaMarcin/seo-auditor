@@ -852,6 +852,44 @@ def _service_mismatch_reason(
     return ""
 
 
+def _matching_gsc_site(request: HttpRequest, domain: str) -> str:
+    """Witryna Search Console konta odpowiadająca tej domenie - albo pusty ciąg.
+
+    Pusty wynik znaczy "nie widzimy takiej witryny", co obejmuje też awarię API.
+    Rozstrzyga o treści komunikatu, nie o dostępie, więc ta nieostrość jest tu
+    bezpieczna - byle komunikat nie twierdził więcej, niż wiadomo.
+    """
+    from auditor.services.google_api import list_gsc_sites, same_site
+    from auditor.services.google_services import build_credentials_from_refresh_token
+
+    konto = _user_google_account(request)
+    if konto is None or not konto.is_connected:
+        return ""
+
+    class _Nosnik:
+        def __init__(self, token, pk):
+            self.ga4_refresh_token = token
+            self.pk = pk
+
+    try:
+        credentials = build_credentials_from_refresh_token(
+            _Nosnik(konto.refresh_token, konto.pk)
+        )
+        witryny = list_gsc_sites(credentials)
+    except Exception:  # noqa: BLE001
+        logger.exception("Nie udało się pobrać witryn Search Console konta %s.", konto.pk)
+        return ""
+
+    return next(
+        (
+            w.get("site_url", "")
+            for w in witryny
+            if same_site(w.get("site_url", ""), domain)
+        ),
+        "",
+    )
+
+
 def _account_covers_domain(request: HttpRequest, domain: str) -> bool:
     """Czy konto Google ma dla tej domeny jakąkolwiek usługę GA4 lub witrynę GSC.
 
@@ -1580,21 +1618,68 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
         logger.exception("Nie udało się pobrać listy usług GA4 dla audytu %s.", audit.pk)
         properties = []
 
-    if not properties:
+    if properties:
+        cache.set(
+            _ga4_properties_cache_key(audit.pk),
+            properties,
+            getattr(settings, "CACHE_TTL_GA4_PROPERTIES", 3600),
+        )
+
+    return _redirect_after_oauth(request, audit, state, properties)
+
+
+def _redirect_after_oauth(
+    request: HttpRequest, audit: Audit, state: str, properties: list
+) -> HttpResponse:
+    """Dokąd odesłać użytkownika po udanej autoryzacji Google.
+
+    Jedno miejsce na tę decyzję, bo zależy ona od DWÓCH rzeczy naraz: skąd
+    użytkownik przyszedł (`return_to`) i co nowe konto faktycznie obsługuje.
+    Rozdzielenie tego na osobne gałęzie kończyło się tym, że brak usług GA4
+    odsyłał na raport techniczny, ignorując `return_to` - a przecież Search
+    Console nadaje się niezależnie od Analytics i sama wystarcza do analityki.
+
+    Jeden komunikat na jedno zdarzenie: wcześniej przy przełączaniu konta padały
+    dwa pod rząd, bo każda gałąź dokładała swój do wspólnego.
+    """
+    from auditor.services.google_api import audit_domain
+
+    domena = audit_domain(audit.url)
+    wraca_do_analityki = _return_target_from_state(state) == OAUTH_RETURN_ANALYTICS
+    obsluguje = _account_covers_domain(request, domena)
+
+    if not obsluguje:
+        # Powrót na panel domeny, której konto nie obsługuje, to ślepy zaułek:
+        # użytkownik widzi same ostrzeżenia i zablokowany formularz. Przełączał
+        # konto właśnie dlatego, że poprzednie nie miało dostępu.
         messages.warning(
             request,
-            "Połączono z Google Analytics, ale to konto nie ma dostępu do żadnej usługi GA4.",
+            f"Połączono konto Google, ale nie ma ono dostępu do domeny {domena}. "
+            "Wybierz domenę, którą to konto obsługuje.",
         )
-        return redirect("auditor:detail", pk=audit.pk)
+        return redirect("auditor:analytics")
 
-    cache.set(
-        _ga4_properties_cache_key(audit.pk),
-        properties,
-        getattr(settings, "CACHE_TTL_GA4_PROPERTIES", 3600),
-    )
-    # Jeden komunikat na jedno zdarzenie. Wcześniej przy przełączaniu konta padały
-    # dwa pod rząd, bo każda gałąź dokładała swój do wspólnego.
-    if _return_target_from_state(state) == OAUTH_RETURN_ANALYTICS:
+    if not properties:
+        # Bez usług GA4 ekran wyboru usługi nie ma czego pokazać, więc w obu
+        # przypadkach prowadzimy na panel analityki. Komunikat musi jednak
+        # rozróżniać "widzimy witrynę Search Console" od "nie wiemy, co konto ma" -
+        # drugie zdarza się przy awarii API, a obiecywanie wtedy danych GSC
+        # byłoby wprowadzaniem w błąd.
+        if _matching_gsc_site(request, domena):
+            messages.warning(
+                request,
+                f"Połączono konto Google. Dla domeny {domena} wykryto tylko witrynę "
+                "Search Console - konto nie ma usługi Analytics 4 dla tej domeny.",
+            )
+        else:
+            messages.warning(
+                request,
+                "Połączono konto Google, ale nie udało się odczytać listy usług "
+                "Analytics 4. Sprawdź przypisanie w panelu analityki.",
+            )
+        return redirect("auditor:audit_analytics", pk=audit.pk)
+
+    if wraca_do_analityki:
         messages.success(request, "Połączono konto Google. Wskaż usługę dla audytu.")
         return redirect("auditor:audit_analytics", pk=audit.pk)
 

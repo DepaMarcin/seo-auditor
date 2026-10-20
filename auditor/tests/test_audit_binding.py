@@ -157,6 +157,16 @@ class CallbackBindingTests(ThreeAuditsTestCase):
              patch(
                  "auditor.services.ga4_service.GA4OAuthService.list_accessible_properties",
                  return_value=[],
+             ), patch(
+                 # Callback sprawdza teraz, czy konto obsługuje domenę audytu.
+                 # Bez atrap sięgałby po to do prawdziwego Google - stąd kilkanaście
+                 # sekund na próbach połączenia w każdym z tych testów.
+                 "auditor.services.google_api.list_ga4_properties", return_value=[]
+             ), patch(
+                 "auditor.services.google_api.list_gsc_sites", return_value=[]
+             ), patch(
+                 "auditor.services.google_api.fetch_account_email",
+                 return_value="jan@gmail.com",
              ):
             return self.client.get("/ga4/callback/", {"state": state, "code": "kod"})
 
@@ -165,10 +175,12 @@ class CallbackBindingTests(ThreeAuditsTestCase):
 
         response = self._callback(state)
 
-        # Bez usług GA4 callback wraca do szczegółów audytu - ma to być enova.
+        # Przedmiotem testu jest TOŻSAMOŚĆ audytu, nie strona docelowa: ma to być
+        # enova, nie inny audyt z listy. Dokąd prowadzi powrót bez usług GA4,
+        # rozstrzyga test_account_dead_end.
         self.assertRedirects(
             response,
-            reverse("auditor:detail", args=[self.enova.pk]),
+            reverse("auditor:audit_analytics", args=[self.enova.pk]),
             fetch_redirect_response=False,
         )
 
@@ -180,7 +192,7 @@ class CallbackBindingTests(ThreeAuditsTestCase):
 
         self.assertRedirects(
             response,
-            reverse("auditor:detail", args=[self.enova.pk]),
+            reverse("auditor:audit_analytics", args=[self.enova.pk]),
             fetch_redirect_response=False,
         )
 
@@ -203,7 +215,7 @@ class CallbackBindingTests(ThreeAuditsTestCase):
 
         self.assertRedirects(
             response,
-            reverse("auditor:detail", args=[self.shell.pk]),
+            reverse("auditor:audit_analytics", args=[self.shell.pk]),
             fetch_redirect_response=False,
         )
 

@@ -1,0 +1,49 @@
+# Co NIE trafia do kontekstu budowania.
+#
+# Dwa powody, oba istotne. Sekrety: wszystko, co tu wymienione, zostałoby
+# zapisane w warstwie obrazu i pojechało razem z nim do rejestru - także po
+# późniejszym usunięciu pliku, bo warstwy są niezmienne. Rozmiar: środowisko
+# wirtualne i baza wektorowa to setki megabajtów przesyłanych do demona przy
+# każdym budowaniu.
+
+# --- sekrety i dane lokalne --------------------------------------------
+.env
+.env.*
+!.env.docker.example
+client_secret*.json
+db.sqlite3
+db.sqlite3-journal
+
+# --- środowisko i artefakty --------------------------------------------
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+staticfiles/
+
+# Baza wektorowa RAG: w kontenerze jest wolumenem, nie zawartością obrazu.
+chroma_db/
+
+# --- repozytorium i narzędzia ------------------------------------------
+.git/
+.gitignore
+.github/
+.idea/
+.vscode/
+
+# --- dokumenty objęte poufnością ---------------------------------------
+# Te same, które `.gitignore` trzyma poza repozytorium: nazwy firm, domeny,
+# dane kontaktowe klientów.
+docs/audits/*
+!docs/audits/rag_knowledge_base.json
+
+# --- rzeczy niepotrzebne w obrazie --------------------------------------
+# Testy zostają: pozwalają uruchomić pakiet wewnątrz kontenera przed wdrożeniem.
+*.md
+!README.md
+Dockerfile
+docker-compose.yml
+.dockerignore

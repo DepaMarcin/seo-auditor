@@ -1,0 +1,113 @@
+# Uruchomienie całości: PostgreSQL, Redis, serwer WWW i worker Celery.
+#
+#   docker compose up --build
+#
+# Zmienne wrażliwe (klucze API, sekret Django, hasło bazy) idą z pliku `.env`,
+# który NIE jest w repozytorium. Wzór pól: `.env.docker.example`.
+#
+# Dlaczego PostgreSQL, a nie SQLite: agenci badania multi-agentowego pracują
+# równolegle w osobnych procesach workera. SQLite blokuje przy tym tabelę
+# ("database is locked") i ustalenia agentów po cichu przepadają - dlatego
+# w `auditor.agents.orchestrator` tryb równoległy jest domyślnie wyłączony.
+# Na PostgreSQL to ograniczenie znika.
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-seo_auditor}
+      POSTGRES_USER: ${POSTGRES_USER:-seo_auditor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?ustaw POSTGRES_PASSWORD w .env}
+    volumes:
+      - dane_postgres:/var/lib/postgresql/data
+    healthcheck:
+      # Pozostałe usługi czekają na gotowość bazy. Bez tego migracje startują,
+      # zanim PostgreSQL przyjmuje połączenia, i kontener kończy się błędem.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-seo_auditor} -d ${POSTGRES_DB:-seo_auditor}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:8-alpine
+    # `--appendonly yes`, bo Redis jest tu nie tylko pośrednikiem kolejki, ale też
+    # backendem wyników: bez niego restart gubi wyniki trwających badań, a akord
+    # Celery nie miałby czego scalić.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - dane_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    build: .
+    env_file: [.env]
+    environment: &wspolne_srodowisko
+      POSTGRES_DB: ${POSTGRES_DB:-seo_auditor}
+      POSTGRES_USER: ${POSTGRES_USER:-seo_auditor}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?ustaw POSTGRES_PASSWORD w .env}
+      POSTGRES_HOST: db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REDIS_CACHE_URL: redis://redis:6379/2
+      GA4_CLIENT_SECRETS_FILE: /run/secrets/client_secret.json
+    volumes: &wspolne_wolumeny
+      # Sekret OAuth montujemy, a nie kopiujemy do obrazu: obraz z sekretem
+      # w warstwie trafiłby do rejestru razem z nim.
+      - ./client_secret.json:/run/secrets/client_secret.json:ro
+      # Baza wiedzy RAG (ChromaDB) musi przeżyć restart kontenera.
+      - dane_chroma:/app/chroma_db
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+    # Migracje przed startem serwera, w JEDNEJ usłudze. Gdyby robił to także
+    # worker, dwa procesy ruszałyby je równolegle na tej samej bazie.
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             gunicorn config.wsgi:application
+                      --bind 0.0.0.0:8000
+                      --workers 3
+                      --timeout 180
+                      --access-logfile -
+                      --error-logfile -"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/login/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    restart: unless-stopped
+
+  worker:
+    build: .
+    env_file: [.env]
+    environment: *wspolne_srodowisko
+    volumes: *wspolne_wolumeny
+    depends_on:
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      # Worker czeka na `web`, bo to tam wykonują się migracje.
+      web: {condition: service_started}
+    # `--concurrency 3`: trzej agenci badania idą równolegle, więc tyle wystarcza,
+    # żeby akord nie czekał na zwolnienie procesu. Audyt techniczny i badanie GEO
+    # są długie, ale rzadkie.
+    command: ["celery", "-A", "config", "worker", "--loglevel", "info", "--concurrency", "3"]
+    healthcheck:
+      test: ["CMD", "celery", "-A", "config", "inspect", "ping", "--destination", "celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  dane_postgres:
+  dane_redis:
+  dane_chroma:
