@@ -56,6 +56,11 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_CACHE_URL: redis://redis:6379/2
       GA4_CLIENT_SECRETS_FILE: /run/secrets/client_secret.json
+      # Ten zestaw usług odpowiada po http - nie ma tu nic, co podawałoby TLS.
+      # Przy wymuszaniu HTTPS Django odbija każde żądanie na adres https, którego
+      # nikt nie obsługuje, a przeglądarka pokazuje ERR_EMPTY_RESPONSE. Po dostawieniu
+      # nginxa z certyfikatem wystarczy wpisać w `.env`: DJANGO_SECURE_SSL_REDIRECT=True.
+      DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT:-False}
     volumes: &wspolne_wolumeny
       # Sekret OAuth montujemy, a nie kopiujemy do obrazu: obraz z sekretem
       # w warstwie trafiłby do rejestru razem z nim.
@@ -67,16 +72,13 @@ services:
       redis: {condition: service_healthy}
     ports:
       - "${WEB_PORT:-8000}:8000"
-    # Migracje przed startem serwera, w JEDNEJ usłudze. Gdyby robił to także
-    # worker, dwa procesy ruszałyby je równolegle na tej samej bazie.
-    command: >
-      sh -c "python manage.py migrate --noinput &&
-             gunicorn config.wsgi:application
-                      --bind 0.0.0.0:8000
-                      --workers 3
-                      --timeout 180
-                      --access-logfile -
-                      --error-logfile -"
+    # Migracje i start gunicorna sa w skrypcie, nie tutaj: rozpisane w zwinietym
+    # bloku YAML (`>`) polecenie rozpadalo sie na osobne linie i gunicorn startowal
+    # bez flag z dalszych linii - w tym bez `--bind`. Patrz komentarz w skrypcie.
+    #
+    # `sh <plik>`, a nie `./plik`: bit wykonywalnosci nie przechodzi przez
+    # repozytorium klonowane na Windows.
+    command: ["sh", "/app/docker/start-web.sh"]
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8000/login/"]
       interval: 15s

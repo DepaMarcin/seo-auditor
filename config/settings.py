@@ -53,18 +53,34 @@ if DEBUG and not ALLOWED_HOSTS:
 # a aplikacja wypisuje ostrzeżenie przy pierwszym zapisie.
 TOKEN_ENCRYPTION_KEY = os.environ.get('TOKEN_ENCRYPTION_KEY', '')
 
+# Czy przed aplikacją stoi cokolwiek, co podaje TLS. To OSOBNA decyzja niż DEBUG:
+# obraz produkcyjny może stać za nginxem z certyfikatem, ale może też odpowiadać
+# wprost po http - tak działa `docker compose up` bez odwrotnego proxy.
+#
+# Gdy wymuszanie jest włączone, a TLS-u nie ma, przeglądarka dostaje 301 na adres
+# https, którego nikt nie obsługuje - i pokazuje ERR_EMPTY_RESPONSE. Secure cookies
+# robią to samo ciszej: logowanie po http nie zapisuje sesji i formularz wraca pusty.
+#
+# Domyślnie WŁĄCZONE, żeby wdrożenie bez świadomej decyzji było zabezpieczone.
+WYMUSZAJ_HTTPS = os.environ.get(
+    'DJANGO_SECURE_SSL_REDIRECT', 'True'
+).strip().lower() in ('1', 'true', 'yes')
+
 if not DEBUG:
-    # Ustawienia wymuszane wyłącznie na produkcji - lokalny serwer deweloperski
-    # działa po http, więc SSL redirect/secure cookies zablokowałyby pracę.
-    SECURE_SSL_REDIRECT = True
-    SESSION_COOKIE_SECURE = True
-    CSRF_COOKIE_SECURE = True
-    SECURE_HSTS_SECONDS = 31_536_000
-    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-    SECURE_HSTS_PRELOAD = True
+    # Nagłówki niezależne od tego, czy połączenie jest szyfrowane.
     SECURE_CONTENT_TYPE_NOSNIFF = True
     SECURE_REFERRER_POLICY = 'same-origin'
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+    if WYMUSZAJ_HTTPS:
+        SECURE_SSL_REDIRECT = True
+        SESSION_COOKIE_SECURE = True
+        CSRF_COOKIE_SECURE = True
+        SECURE_HSTS_SECONDS = 31_536_000
+        SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+        SECURE_HSTS_PRELOAD = True
+        # Nagłówek od proxy terminującego TLS. Bez takiego proxy nie ma go po co
+        # czytać: klient mógłby podać go sam i udawać połączenie szyfrowane.
+        SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
     if not TOKEN_ENCRYPTION_KEY:
         raise ImproperlyConfigured(
@@ -264,18 +280,25 @@ except ImportError:
 else:
     # Kompresja oszczędza transfer bez udziału serwera WWW.
     #
-    # Wariant z manifestem (nazwy z haszem, więc przeglądarka nie poda starej
-    # wersji po wdrożeniu) włącza się TYLKO wtedy, gdy manifest istnieje - czyli
-    # po `collectstatic`, co obraz robi przy budowaniu. Bezwarunkowo wywracałby
-    # panel administracyjny przy lokalnym uruchomieniu z DEBUG=False: każde
-    # `{% static %}` szuka wtedy wpisu w nieistniejącym pliku.
-    _manifest = STATIC_ROOT / 'staticfiles.json'
+    # Wariant z MANIFESTEM nadaje plikom nazwy z haszem, więc przeglądarka nie poda
+    # starej wersji po wdrożeniu. Wymaga jednak wcześniejszego `collectstatic`:
+    # bez pliku `staticfiles.json` każde `{% static %}` kończy się wyjątkiem,
+    # co wywracałoby panel administracyjny przy lokalnym uruchomieniu z DEBUG=False.
+    #
+    # Dlatego decyduje JAWNA zmienna, a nie obecność manifestu. Warunek "jeśli
+    # manifest istnieje" jest nie do spełnienia: manifest tworzy dopiero magazyn
+    # manifestowy, więc sprawdzanie go przed `collectstatic` na zawsze wybierało
+    # wariant bez manifestu. Obraz kontenera ustawia tę zmienną i uruchamia
+    # `collectstatic` przy budowaniu.
+    _manifest_statykow = os.environ.get(
+        'DJANGO_STATIC_MANIFEST', 'False'
+    ).strip().lower() in ('1', 'true', 'yes')
     STORAGES = {
         'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
         'staticfiles': {
             'BACKEND': (
                 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-                if _manifest.exists()
+                if _manifest_statykow
                 else 'whitenoise.storage.CompressedStaticFilesStorage'
             )
         },

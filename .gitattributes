@@ -1,0 +1,5 @@
+# Skrypty uruchamiane w kontenerze (Linux) muszą mieć końce linii LF.
+# `core.autocrlf` jest na tej maszynie włączone, więc bez tej reguły git zamieniłby
+# je przy kopii roboczej na CRLF, a `sh` przerywa wtedy na pierwszej linii
+# komunikatem `\r: not found` - kontener nie wstaje w ogóle.
+*.sh text eol=lf

@@ -37,10 +37,15 @@ RUN pip install --upgrade pip \
 # ----------------------------------------------------------------------
 FROM python:3.14-slim
 
+# `DJANGO_STATIC_MANIFEST=1` włącza nazwy plików statycznych z haszem, więc
+# przeglądarka nie poda starej wersji po wdrożeniu. Wymaga `collectstatic`, który
+# wykonuje się niżej, przy budowaniu - i dlatego decyduje tu jawna zmienna,
+# a nie obecność pliku manifestu (patrz komentarz w config/settings.py).
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/venv/bin:$PATH" \
-    DJANGO_SETTINGS_MODULE=config.settings
+    DJANGO_SETTINGS_MODULE=config.settings \
+    DJANGO_STATIC_MANIFEST=1
 
 # `libpq5` to biblioteka kliencka PostgreSQL wymagana w czasie działania.
 # `curl` służy wyłącznie badaniu stanu kontenera (healthcheck w compose).
@@ -61,9 +66,15 @@ COPY --chown=aplikacja:aplikacja . /app
 # Pliki statyczne panelu administracyjnego zbieramy przy budowaniu, nie przy starcie:
 # inaczej każdy restart kontenera powtarzałby tę samą pracę.
 #
-# Zmienne są atrapami na czas budowania - obraz nie może zawierać prawdziwych
-# sekretów, a `collectstatic` i tak ich nie używa.
-RUN DJANGO_SECRET_KEY=budowanie-obrazu \
+# Zmienne poniżej to ATRAPY na czas budowania - prawdziwe przychodzą z `.env`
+# dopiero przy uruchomieniu. `collectstatic` żadnej z nich nie używa, ale sam
+# import `config.settings` przy DEBUG=False wymaga obecności TOKEN_ENCRYPTION_KEY:
+# bez niego strażnik produkcyjny zatrzymuje start, zanim Django cokolwiek zrobi.
+# To była przyczyna wywrotki budowania obrazu.
+#
+# Wartości są jawnie nazwane jako nieużywane, żeby nikt nie wziął ich za sekret.
+RUN DJANGO_SECRET_KEY=atrapa-tylko-na-czas-budowania \
+    TOKEN_ENCRYPTION_KEY=atrapa-tylko-na-czas-budowania-nieuzywana \
     DJANGO_DEBUG=False \
     python manage.py collectstatic --noinput \
     && chown -R aplikacja:aplikacja /app/staticfiles

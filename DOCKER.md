@@ -7,6 +7,10 @@ jeden — web i worker różnią się wyłącznie poleceniem startowym, więc ni
 ## Pierwsze uruchomienie
 
 ```bash
+# UWAGA: `cp` nadpisuje istniejący `.env` bez pytania - razem z kluczami,
+# których nie da się odtworzyć (TOKEN_ENCRYPTION_KEY odszyfrowuje zapisane
+# tokeny Google). Najpierw kopia zapasowa.
+[ -f .env ] && cp .env .env.kopia
 cp .env.docker.example .env        # uzupełnij klucze i hasła
 docker compose up --build
 ```
@@ -24,10 +28,26 @@ docker compose exec web python manage.py createsuperuser
 | `.env` | klucze API, sekret Django, hasło bazy | `compose` przerywa z komunikatem o `POSTGRES_PASSWORD` |
 | `client_secret.json` | OAuth do Google Analytics i Search Console | aplikacja wstaje, ale podłączenie konta Google kończy się błędem |
 | `TOKEN_ENCRYPTION_KEY` | szyfrowanie zapisanych tokenów Google | zapisane tokeny stają się nieczytelne |
+| `DJANGO_SECURE_SSL_REDIRECT=False` | ten zestaw odpowiada po http | `ERR_EMPTY_RESPONSE` w przeglądarce |
 
 Oba pliki są poza repozytorium (`.gitignore`) i poza obrazem (`.dockerignore`) —
 `client_secret.json` montuje się jako wolumen tylko do odczytu. Obraz z sekretem
 w warstwie trafiłby do rejestru razem z nim, także po późniejszym usunięciu pliku.
+
+## Ten zestaw odpowiada po http, nie po https
+
+Przed aplikacją nie stoi nic, co podawałoby TLS, dlatego compose ustawia
+`DJANGO_SECURE_SSL_REDIRECT=False`. Przy włączonym wymuszaniu HTTPS Django odbija
+każde żądanie na adres `https://localhost:8000`, pod którym nikt nie nasłuchuje —
+przeglądarka pokazuje wtedy **ERR_EMPTY_RESPONSE** przy sprawnym kontenerze
+(`docker compose ps` mówi `healthy`, bo `curl` nie uznaje 301 za błąd). Ciasteczka
+`Secure` zawodzą jeszcze ciszej: logowanie po http nie zapisuje sesji i formularz
+wraca bez komunikatu.
+
+Po dostawieniu nginxa z certyfikatem w `.env` wpisuje się `DJANGO_SECURE_SSL_REDIRECT=True`
+i `DJANGO_CSRF_TRUSTED_ORIGINS=https://...`. Poza Dockerem przy `DEBUG=False`
+wymuszanie jest **włączone domyślnie** — wdrożenie bez świadomej decyzji zostaje
+zabezpieczone.
 
 ## Dlaczego PostgreSQL, a nie SQLite
 
@@ -48,8 +68,16 @@ restart Redisa bez zapisu gubiłby wyniki trwających badań.
 
 ## Migracje
 
-Wykonuje je usługa `web` przed startem serwera. Worker ich **nie** uruchamia — dwa
-procesy startujące migracje równolegle na tej samej bazie to wyścig.
+Wykonuje je usługa `web` przed startem serwera, w skrypcie `docker/start-web.sh`.
+Worker ich **nie** uruchamia — dwa procesy startujące migracje równolegle na tej
+samej bazie to wyścig.
+
+Polecenie startowe leży w skrypcie, a nie w `command:` w compose, bo zwinięty blok
+YAML (`>`) scala tylko linie o tym samym wcięciu, a głębiej wcięte zachowuje razem
+ze znakami nowej linii. Rozpisany tam gunicorn rozpadał się więc na osobne
+polecenia: startował bez flag z dalszych linii, w tym bez `--bind`, i słuchał na
+domyślnym `127.0.0.1:8000` — adresie wnętrza kontenera, do którego mapowanie portu
+nie prowadzi. W logach było to widać jako `Listening at: http://127.0.0.1:8000`.
 
 ## Czego ten obraz nie zawiera
 
