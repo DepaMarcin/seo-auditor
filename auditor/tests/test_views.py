@@ -140,7 +140,10 @@ class IndexViewPostTests(AuthenticatedTestCase):
 
         self.assertEqual(Audit.objects.count(), 0)
         mock_enqueue.assert_not_called()
-        self.assertRedirects(response, reverse("auditor:index"))
+        # Formularz wraca na ekranie z komunikatem, bez przekierowania - to ono
+        # gubiło wpisany adres (patrz `_render_index`).
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Podaj adres URL do audytu.")
 
     def test_post_with_unsafe_url_does_not_create_audit(self, mock_enqueue, mock_guard):
         from auditor.services.url_guard import UnsafeUrlError
@@ -151,7 +154,10 @@ class IndexViewPostTests(AuthenticatedTestCase):
 
         self.assertEqual(Audit.objects.count(), 0)
         mock_enqueue.assert_not_called()
-        self.assertRedirects(response, reverse("auditor:index"))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Adresy w sieci lokalnej nie podlegają audytowi.")
+        # Odrzucony adres zostaje w polu - bez tego użytkownik przepisuje go od zera.
+        self.assertContains(response, 'value="http://127.0.0.1:8000/admin/"')
 
     def test_rate_limit_blocks_excessive_audits(self, mock_enqueue, _mock_guard):
         """Po przekroczeniu limitu kolejne zlecenia nie tworzą audytu ani nie idą do kolejki."""

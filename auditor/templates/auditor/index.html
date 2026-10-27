@@ -8,11 +8,16 @@
     <form class="audit-form" id="audit-form" method="post" action="{% url 'auditor:index' %}">
         {% csrf_token %}
         <input type="text" name="url" id="audit-url" placeholder="przyklad.pl lub https://przyklad.pl"
-               inputmode="url" autocomplete="url" spellcheck="false" required>
+               value="{{ url_value }}"
+               inputmode="url" autocomplete="url" spellcheck="false" required
+               {% if url_error %}aria-invalid="true" aria-describedby="audit-url-error"{% endif %}>
         <button type="submit" id="audit-submit">Uruchom audyt</button>
     </form>
+    {% if url_error %}
+    <p class="field-error" id="audit-url-error" role="alert">{{ url_error }}</p>
+    {% endif %}
 
-    <details class="template-slots" id="template-slots">
+    <details class="template-slots" id="template-slots" {% if expand_template_slots %}open{% endif %}>
         <summary class="template-slots-summary">
             Zbadaj dodatkowe szablony podstron (opcjonalnie)
         </summary>
@@ -36,7 +41,12 @@
                            form="audit-form" class="template-slot-input"
                            data-page-type="{{ slot.page_type }}"
                            placeholder="{{ slot.placeholder }}"
-                           inputmode="url" autocomplete="off" spellcheck="false">
+                           value="{{ slot.value }}"
+                           inputmode="url" autocomplete="off" spellcheck="false"
+                           {% if slot.error %}aria-invalid="true" aria-describedby="error-{{ slot.field }}"{% endif %}>
+                    {% if slot.error %}
+                    <p class="field-error" id="error-{{ slot.field }}" role="alert">{{ slot.error }}</p>
+                    {% endif %}
                 </div>
                 {% endfor %}
             </div>

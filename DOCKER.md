@@ -44,6 +44,13 @@ przeglądarka pokazuje wtedy **ERR_EMPTY_RESPONSE** przy sprawnym kontenerze
 `Secure` zawodzą jeszcze ciszej: logowanie po http nie zapisuje sesji i formularz
 wraca bez komunikatu.
 
+Z tego samego powodu compose podaje `OAUTHLIB_INSECURE_TRANSPORT=1`: biblioteka
+`google-auth-oauthlib` odrzuca odpowiedź autoryzacyjną przysłaną bez https, więc powrót
+z `accounts.google.com` przerywał się wyjątkiem `InsecureTransportError` przy wymianie
+kodu na token. `config/settings.py` ustawia tę flagę sam, gdy aplikacja nie wymusza
+HTTPS — przy `DJANGO_SECURE_SSL_REDIRECT=True` flaga **nie** jest stawiana i oauthlib
+dalej pilnuje protokołu.
+
 Po dostawieniu nginxa z certyfikatem w `.env` wpisuje się `DJANGO_SECURE_SSL_REDIRECT=True`
 i `DJANGO_CSRF_TRUSTED_ORIGINS=https://...`. Poza Dockerem przy `DEBUG=False`
 wymuszanie jest **włączone domyślnie** — wdrożenie bez świadomej decyzji zostaje

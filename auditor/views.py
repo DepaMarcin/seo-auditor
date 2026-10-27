@@ -1186,17 +1186,27 @@ def index(request: HttpRequest) -> HttpResponse:
             )
             return redirect("auditor:index")
 
+        wpisany_adres = request.POST.get("url", "")
         try:
-            url = validate_public_url(request.POST.get("url", ""))
+            url = validate_public_url(wpisany_adres)
         except UnsafeUrlError as exc:
-            messages.error(request, str(exc))
-            return redirect("auditor:index")
+            # Formularz renderujemy PONOWNIE, a nie przekierowujemy: przekierowanie
+            # gubi dane POST, więc użytkownik dostawał puste pole i musiał przepisywać
+            # adres od zera, żeby zobaczyć ten sam błąd.
+            return _render_index(request, url_value=wpisany_adres, url_error=str(exc))
 
         try:
             template_pages = _collect_template_pages(request, primary_url=url)
+        except TemplateUrlError as exc:
+            return _render_index(
+                request, url_value=wpisany_adres, slot_errors={exc.field: str(exc)}
+            )
         except UnsafeUrlError as exc:
-            messages.error(request, f"Adres dodatkowego szablonu jest nieprawidłowy: {exc}")
-            return redirect("auditor:index")
+            return _render_index(
+                request,
+                url_value=wpisany_adres,
+                url_error=f"Adres dodatkowego szablonu jest nieprawidłowy: {exc}",
+            )
 
         audit = Audit.objects.create(url=url, owner=request.user)
         if template_pages:
@@ -1209,12 +1219,55 @@ def index(request: HttpRequest) -> HttpResponse:
         enqueue_audit(audit.pk)
         return redirect("auditor:detail", pk=audit.pk)
 
-    audits = _visible_scans(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT]
+    return _render_index(request)
+
+
+def _render_index(
+    request: HttpRequest,
+    *,
+    url_value: str = "",
+    url_error: str | None = None,
+    slot_errors: dict[str, str] | None = None,
+) -> HttpResponse:
+    """Renderuje ekran główny - także po nieudanej walidacji formularza.
+
+    Wartości wpisane przez użytkownika wracają do pól, bo adres bywa długi i
+    przepisywanie go po każdej literówce było najczęstszym zarzutem do tego ekranu.
+    """
+    slot_errors = slot_errors or {}
+    slots = [
+        {
+            **slot,
+            "value": request.POST.get(slot["field"], "") if request.method == "POST" else "",
+            "error": slot_errors.get(slot["field"]),
+        }
+        for slot in TEMPLATE_SLOTS
+    ]
     return render(
         request,
         "auditor/index.html",
-        {"audits": audits, "template_slots": TEMPLATE_SLOTS},
+        {
+            "audits": _visible_scans(request).order_by("-created_at")[:RECENT_AUDITS_LIMIT],
+            "template_slots": slots,
+            "url_value": url_value,
+            "url_error": url_error,
+            # Pola szablonów siedzą w zwiniętym `<details>`. Zachowana wartość albo
+            # błąd schowany przed użytkownikiem jest gorszy niż brak jednego i drugiego.
+            "expand_template_slots": any(slot["value"] or slot["error"] for slot in slots),
+        },
     )
+
+
+class TemplateUrlError(UnsafeUrlError):
+    """Nieprawidłowy adres w jednym z pól dodatkowych szablonów.
+
+    Niesie nazwę pola, żeby komunikat dał się wyświetlić pod TYM polem, którego
+    dotyczy - a nie jako ogólny błąd formularza.
+    """
+
+    def __init__(self, field: str, message: str):
+        super().__init__(message)
+        self.field = field
 
 
 def _collect_template_pages(request: HttpRequest, primary_url: str) -> list[tuple[str, str]]:
@@ -1233,7 +1286,11 @@ def _collect_template_pages(request: HttpRequest, primary_url: str) -> list[tupl
         if not raw_url:
             continue
 
-        safe_url = validate_public_url(raw_url)
+        try:
+            safe_url = validate_public_url(raw_url)
+        except UnsafeUrlError as exc:
+            raise TemplateUrlError(slot["field"], str(exc)) from exc
+
         if safe_url.rstrip("/") in seen:
             continue
 

@@ -61,6 +61,12 @@ services:
       # nikt nie obsługuje, a przeglądarka pokazuje ERR_EMPTY_RESPONSE. Po dostawieniu
       # nginxa z certyfikatem wystarczy wpisać w `.env`: DJANGO_SECURE_SSL_REDIRECT=True.
       DJANGO_SECURE_SSL_REDIRECT: ${DJANGO_SECURE_SSL_REDIRECT:-False}
+      # Skutek powyższego dla OAuth: google-auth-oauthlib odrzuca `authorization_response`
+      # bez https, więc powrót z accounts.google.com przerywał się InsecureTransportError
+      # przy wymianie kodu na token. Podajemy to jawnie OBU usługom - `config.settings`
+      # ustawia tę flagę samo, ale zmienna w jednym miejscu mówi wprost, na jakim
+      # protokole ten zestaw pracuje. Po dostawieniu proxy z certyfikatem: 0.
+      OAUTHLIB_INSECURE_TRANSPORT: "${OAUTHLIB_INSECURE_TRANSPORT:-1}"
     volumes: &wspolne_wolumeny
       # Sekret OAuth montujemy, a nie kopiujemy do obrazu: obraz z sekretem
       # w warstwie trafiłby do rejestru razem z nim.

@@ -48,6 +48,9 @@ ODCZYT_USTAWIEN = (
     "'hsts': s.SECURE_HSTS_SECONDS,"
     "'nosniff': s.SECURE_CONTENT_TYPE_NOSNIFF,"
     "'proxy_naglowek': bool(s.SECURE_PROXY_SSL_HEADER),"
+    # Flaga oauthlib jest zmienną ŚRODOWISKOWĄ, nie ustawieniem Django - ustawia ją
+    # import `config.settings`, więc czytamy ją po `django.setup()`.
+    "'oauthlib_insecure': os.environ.get('OAUTHLIB_INSECURE_TRANSPORT'),"
     "}))"
 )
 
@@ -293,6 +296,36 @@ class HttpsEnforcementTests(SimpleTestCase):
         self.assertTrue(dane["ssl_redirect"])
         self.assertTrue(dane["proxy_naglowek"])
 
+    def test_oauth_over_plain_http_is_allowed_when_https_is_not_enforced(self):
+        # google-auth-oauthlib odrzuca `authorization_response` bez https, więc bez
+        # tej flagi powrót z accounts.google.com przerywał się InsecureTransportError
+        # przy wymianie kodu na token (`ga4_callback`).
+        dane = self._ustawienia(DJANGO_SECURE_SSL_REDIRECT="False")
+
+        self.assertEqual(dane["oauthlib_insecure"], "1")
+
+    def test_oauth_still_requires_https_in_production(self):
+        # Za proxy z certyfikatem flaga musi zostać NIEUSTAWIONA - inaczej aplikacja
+        # przyjęłaby odpowiedź OAuth przysłaną po nieszyfrowanym połączeniu.
+        dane = self._ustawienia(DJANGO_SECURE_SSL_REDIRECT="True")
+
+        self.assertIsNone(dane["oauthlib_insecure"])
+
+    def test_an_explicit_value_from_the_environment_wins(self):
+        # `setdefault`: wartość podana jawnie (np. w `.env`) ma pierwszeństwo nad
+        # domyślną decyzją ustawień.
+        dane = self._ustawienia(
+            DJANGO_SECURE_SSL_REDIRECT="False", OAUTHLIB_INSECURE_TRANSPORT="0"
+        )
+
+        self.assertEqual(dane["oauthlib_insecure"], "0")
+
+    def test_local_development_also_allows_oauth_over_http(self):
+        # Lokalny serwer deweloperski stoi na http://127.0.0.1:8000.
+        dane = self._ustawienia(DJANGO_DEBUG="True", TOKEN_ENCRYPTION_KEY="")
+
+        self.assertEqual(dane["oauthlib_insecure"], "1")
+
     def test_local_development_is_untouched(self):
         dane = self._ustawienia(DJANGO_DEBUG="True", TOKEN_ENCRYPTION_KEY="")
 
@@ -306,6 +339,18 @@ class ComposeContractTests(SimpleTestCase):
     @property
     def compose(self) -> str:
         return (Path(settings.BASE_DIR) / "docker-compose.yml").read_text(encoding="utf-8")
+
+    def test_the_oauth_flag_reaches_both_application_services(self):
+        # Worker też wymienia tokeny (odświeżanie dostępu do GA4/GSC w tle), więc
+        # nie może pracować na innym zestawie zmiennych niż serwer WWW.
+        compose = yaml.safe_load(self.compose)
+
+        for usluga in ("web", "worker"):
+            with self.subTest(usluga=usluga):
+                self.assertEqual(
+                    compose["services"][usluga]["environment"]["OAUTHLIB_INSECURE_TRANSPORT"],
+                    "${OAUTHLIB_INSECURE_TRANSPORT:-1}",
+                )
 
     def test_plain_http_is_the_default_for_the_compose_stack(self):
         # Bez tego wpisu `.env` skopiowany z wzoru daje DEBUG=False i puste pole,

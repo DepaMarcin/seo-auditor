@@ -86,6 +86,17 @@ BROWSER_CLIENT_HINTS = {
 # Powtórzenie tego samego żądania statycznego nic by nie zmieniło (patrz `fetch`).
 RENDER_FALLBACK_STATUS_CODES = (403, 429)
 
+# Statusy, które znaczą "serwer nie dał dostępu", a nie "zasobu nie ma". 401/403 to
+# typowa odmowa WAF-a, 429 - limit żądań. Odpowiedzi 5xx traktujemy tak samo (patrz
+# `SEOScraper.check_robots_txt`): w obu wypadkach plik może istnieć, a audyt tylko go
+# nie odczytał - wniosek "brak pliku" byłby fałszywy.
+BLOCKED_ACCESS_STATUS_CODES = (401, 403, 429)
+
+# Sufit czasu dla krótkich sprawdzeń pobocznych (robots.txt, strona 404). Audyt nie
+# może czekać na nie tyle, co na samą stronę.
+ROBOTS_TIMEOUT_SECONDS = 10.0
+IMAGE_HEAD_TIMEOUT_SECONDS = 8.0
+
 # User-Agent Googlebota używany przy ponowieniu, gdy serwer odda audytowi pustą
 # powłokę aplikacji. Nie chodzi o obejście zabezpieczeń - snapshot serwowany
 # Googlebotowi jest publicznie dostępny, a audyt ma ocenić dokładnie to, co widzi
@@ -1551,22 +1562,115 @@ class SEOScraper:
     # pojedynczego sprawdzenia (timeout, 404, brak nagłówka) nigdy nie przerywa
     # audytu ani nie wpływa na pozostałe sprawdzenia.
     # ------------------------------------------------------------------
+    def _capped_timeout(self, seconds: float) -> httpx.Timeout:
+        """Limit czasu bieżącej instancji z sufitem `seconds` na każdej fazie.
+
+        Wcześniej stało tu `min(self.timeout, 10.0)`, co podnosiło TypeError:
+        `self.timeout` jest obiektem `httpx.Timeout`, a nie liczbą (konstruktor
+        zamienia na niego także `float`). Krótkie sprawdzenia sieciowe nigdy nie
+        dochodziły więc do żądania - wyjątek łapało `except Exception` w
+        `AuditService._build_extra_checks_metrics` i audyt raportował "brak pliku
+        robots.txt" dla KAŻDEJ witryny.
+        """
+        def sufit(wartosc: float | None) -> float:
+            return min(wartosc, seconds) if wartosc is not None else seconds
+
+        return httpx.Timeout(
+            sufit(self.timeout.read),
+            connect=sufit(self.timeout.connect),
+            write=sufit(self.timeout.write),
+            pool=sufit(self.timeout.pool),
+        )
+
+    def _request_following_redirects(
+        self, method: str, url: str, timeout: httpx.Timeout
+    ) -> httpx.Response:
+        """Żądanie HTTP podążające za przekierowaniami, z walidacją KAŻDEGO skoku.
+
+        `follow_redirects=True` z httpx przeszłoby przez przekierowanie prowadzące
+        w głąb sieci lokalnej bez żadnego sprawdzenia, więc skoki wykonujemy sami -
+        tak samo jak `_fetch_once` robi to dla strony głównej audytu.
+
+        Bez podążania za przekierowaniami te sprawdzenia widziały status 301 i
+        uznawały plik za nieistniejący, choć leżał pod adresem docelowym (typowe
+        przy przekierowaniu http -> https albo domena -> www).
+        """
+        safe_url = validate_public_url(url)
+        with httpx.Client(
+            headers=self.headers, timeout=timeout, follow_redirects=False
+        ) as client:
+            response = client.request(method, safe_url)
+            hops = 0
+            while response.is_redirect and hops < MAX_REDIRECT_HOPS:
+                next_request = response.next_request
+                if next_request is None:
+                    break
+                response = client.request(
+                    method, validate_public_url(str(next_request.url))
+                )
+                hops += 1
+        return response
+
+    @staticmethod
+    def _looks_like_html(response: httpx.Response) -> bool:
+        """Czy odpowiedź jest stroną HTML, a nie plikiem tekstowym.
+
+        Część serwerów na nieistniejący `/robots.txt` oddaje stronę błędu ze statusem
+        200. Bez tego rozpoznania audyt parsowałby HTML jako dyrektywy i raportował
+        plik jako poprawny, choć roboty nie odczytają z niego niczego.
+        """
+        if "html" in response.headers.get("content-type", "").lower():
+            return True
+        poczatek = response.text[:512].lstrip().lower()
+        return poczatek.startswith("<!doctype html") or poczatek.startswith("<html")
+
     def check_robots_txt(self, base_url: str) -> dict:
         """Sprawdza obecność i podstawową treść pliku /robots.txt pod audytowaną
-        domeną - osobne, krótkie zapytanie GET."""
+        domeną - osobne, krótkie zapytanie GET.
+
+        Statusy odpowiedzi rozróżniamy, bo prowadzą do RÓŻNYCH wniosków:
+          * 200 z treścią tekstową - plik istnieje i jest parsowany,
+          * 404/410 - pliku naprawdę nie ma,
+          * 401/403/429 oraz 5xx - serwer (zwykle WAF albo CDN) nie dał audytowi
+            dostępu; plik może istnieć, więc "brak pliku" byłoby fałszywą diagnozą,
+          * 200, ale ze stroną HTML - pod adresem nie leży plik robots.txt.
+        """
         robots_url = self._build_absolute_url(base_url, "/robots.txt")
+        pusty = {
+            "checked": False,
+            "exists": False,
+            "disallows_all": False,
+            "blocked_ai_bots": [],
+            "status_code": None,
+            "blocked": False,
+            "html_instead": False,
+            "content_type": None,
+        }
         try:
-            response = httpx.get(
-                validate_public_url(robots_url), headers=self.headers, timeout=min(self.timeout, 10.0)
+            response = self._request_following_redirects(
+                "GET", robots_url, self._capped_timeout(ROBOTS_TIMEOUT_SECONDS)
             )
-        except (httpx.HTTPError, UnsafeUrlError):
-            return {"checked": True, "exists": False, "disallows_all": False}
+        except (httpx.HTTPError, UnsafeUrlError) as exc:
+            return {**pusty, "error": str(exc)}
+
+        wynik = {
+            **pusty,
+            "checked": True,
+            "status_code": response.status_code,
+            "content_type": response.headers.get("content-type"),
+        }
+
+        if response.status_code in BLOCKED_ACCESS_STATUS_CODES or response.status_code >= 500:
+            return {**wynik, "blocked": True}
 
         if response.status_code != 200:
-            return {"checked": True, "exists": False, "disallows_all": False, "blocked_ai_bots": []}
+            return wynik
+
+        if self._looks_like_html(response):
+            return {**wynik, "html_instead": True}
 
         return {
-            "checked": True,
+            **wynik,
             "exists": True,
             "disallows_all": self._robots_disallows_everything(response.text),
             "blocked_ai_bots": self._robots_blocked_ai_bots(response.text),
@@ -1642,11 +1746,8 @@ class SEOScraper:
         probe_path = f"/seo-auditor-404-check-{uuid4().hex[:10]}"
         probe_url = self._build_absolute_url(base_url, probe_path)
         try:
-            response = httpx.get(
-                validate_public_url(probe_url),
-                headers=self.headers,
-                timeout=min(self.timeout, 10.0),
-                follow_redirects=True,
+            response = self._request_following_redirects(
+                "GET", probe_url, self._capped_timeout(ROBOTS_TIMEOUT_SECONDS)
             )
         except (httpx.HTTPError, UnsafeUrlError):
             return {"checked": False, "returns_404": False, "status_code": None}
@@ -1670,11 +1771,8 @@ class SEOScraper:
                 # Adresy obrazków pochodzą z audytowanej (obcej) strony, więc są danymi
                 # niezaufanymi - <img src="http://127.0.0.1:8000/..."> to najprostsza
                 # droga do SSRF, jeśli nie sprawdzić ich tak samo jak adresu audytu.
-                response = httpx.head(
-                    validate_public_url(image_url),
-                    headers=self.headers,
-                    timeout=min(self.timeout, 8.0),
-                    follow_redirects=True,
+                response = self._request_following_redirects(
+                    "HEAD", image_url, self._capped_timeout(IMAGE_HEAD_TIMEOUT_SECONDS)
                 )
                 content_length = response.headers.get("content-length")
                 if content_length is None:

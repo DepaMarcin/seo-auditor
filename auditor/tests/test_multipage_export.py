@@ -120,7 +120,13 @@ class TemplateFormTests(TestCase):
         })
 
         self.assertEqual(Audit.objects.count(), 0)
-        self.assertRedirects(response, reverse("auditor:index"))
+        self.assertEqual(response.status_code, 200)
+        # Błąd stoi pod TYM polem, które go wywołało, a oba adresy zostają w formularzu.
+        self.assertContains(response, 'id="error-url_category"')
+        self.assertContains(response, 'value="http://127.0.0.1:8000/admin/"')
+        self.assertContains(response, 'value="https://example.com"')
+        # Pola szablonów siedzą w zwiniętym `<details>` - z błędem musi być otwarte.
+        self.assertContains(response, 'id="template-slots" open')
 
 
 class ScanAdditionalPagesTests(TestCase):

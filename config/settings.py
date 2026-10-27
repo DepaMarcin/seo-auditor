@@ -351,10 +351,19 @@ GA4_SCOPES = [
 ]
 GA4_REDIRECT_URI = os.environ.get('GA4_REDIRECT_URI', 'http://127.0.0.1:8000/ga4/callback/')
 
-if DEBUG:
-    # google-auth-oauthlib domyślnie wymaga HTTPS w authorization_response. Lokalny
-    # serwer deweloperski Django (http://127.0.0.1:8000) tego nie spełnia, dlatego
-    # WYŁĄCZNIE w trybie DEBUG (nigdy na produkcji) wyłączamy tę weryfikację.
+if DEBUG or not WYMUSZAJ_HTTPS:
+    # google-auth-oauthlib domyślnie wymaga HTTPS w `authorization_response`. Nie
+    # spełnia tego ani lokalny serwer deweloperski (http://127.0.0.1:8000), ani
+    # `docker compose up` - ten zestaw odpowiada po http, bo nie ma w nim nic, co
+    # podawałoby TLS (patrz DOCKER.md). Bez tej flagi wymiana kodu na token
+    # przerywała się w `ga4_callback` wyjątkiem InsecureTransportError.
+    #
+    # Warunkiem jest BRAK wymuszania HTTPS, a nie sam DEBUG: obraz produkcyjny
+    # uruchamiany z `DJANGO_DEBUG=False` miał ten sam problem. Za proxy
+    # z certyfikatem ustawia się `DJANGO_SECURE_SSL_REDIRECT=True` i wtedy flaga
+    # NIE jest stawiana - oauthlib dalej pilnuje protokołu.
+    #
+    # `setdefault`, więc jawna wartość ze środowiska ma pierwszeństwo.
     os.environ.setdefault('OAUTHLIB_INSECURE_TRANSPORT', '1')
 
 

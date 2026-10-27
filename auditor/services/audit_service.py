@@ -2567,6 +2567,28 @@ class AuditService:
         if x_robots.get("noindex"):
             header_blocked = list(AI_BOT_USER_AGENTS)
         if (not robots.get("checked") or not robots.get("exists")) and not header_blocked:
+            # Nieodczytany plik to nie to samo co brak pliku: przy odmowie serwera
+            # (403 od WAF-a) albo błędzie połączenia treść robots.txt jest NIEZNANA,
+            # więc "boty AI mają pełny dostęp" byłoby twierdzeniem bez pokrycia.
+            nieznany = not robots.get("checked") or robots.get("blocked")
+            if nieznany:
+                return self._make_metric(
+                    "technical",
+                    "robots_ai_bots",
+                    {
+                        "blocked_bots": [],
+                        "blocked_in_robots_txt": [],
+                        "blocked_in_http_header": [],
+                        "checked_bots": list(AI_BOT_USER_AGENTS),
+                        "note": (
+                            "Nie udało się odczytać pliku robots.txt, więc dostęp botów AI "
+                            "pozostaje niesprawdzony - zweryfikuj plik w przeglądarce."
+                        ),
+                    },
+                    "warning",
+                    current_value="(nie udało się odczytać robots.txt)",
+                    generate_recommendation=False,
+                )
             return self._make_metric(
                 "technical",
                 "robots_ai_bots",
@@ -2618,7 +2640,31 @@ class AuditService:
         )
 
     def _evaluate_robots_txt(self, robots: dict) -> dict:
-        if not robots.get("exists"):
+        status_code = robots.get("status_code")
+        if not robots.get("checked"):
+            # Nieudane połączenie to NIE to samo co brak pliku - wcześniej oba stany
+            # dawały ten sam komunikat, więc awaria sprawdzenia wyglądała jak usterka
+            # audytowanej witryny.
+            status, note = "warning", (
+                "Nie udało się sprawdzić pliku robots.txt - audyt nie uzyskał odpowiedzi "
+                "z serwera. Stan pliku pozostaje nieznany."
+            )
+            current_value = "(nie udało się sprawdzić)"
+        elif robots.get("blocked"):
+            status, note = "warning", (
+                f"Serwer odmówił dostępu do /robots.txt (status HTTP {status_code}) - typowo "
+                "blokada WAF-a lub CDN-u nałożona na ruch automatyczny. Plik najprawdopodobniej "
+                "istnieje; audyt nie mógł go odczytać. Sprawdź go w przeglądarce."
+            )
+            current_value = f"Status HTTP: {status_code}"
+        elif robots.get("html_instead"):
+            status, note = "warning", (
+                "Pod adresem /robots.txt serwer zwrócił stronę HTML, a nie plik tekstowy. "
+                "Roboty wyszukiwarek nie odczytają z niej żadnych dyrektyw - to tak, jakby "
+                "pliku nie było."
+            )
+            current_value = f"Content-Type: {robots.get('content_type') or '(nieznany)'}"
+        elif not robots.get("exists"):
             status, note = "warning", "Nie znaleziono pliku robots.txt pod adresem /robots.txt."
             current_value = "(brak pliku robots.txt)"
         elif robots.get("disallows_all"):

@@ -572,6 +572,19 @@
             border-color: var(--error);
             color: #fca5a5;
         }
+        /* Błąd przypisany do KONKRETNEGO pola, pokazywany pod nim. Komunikat
+           w globalnej liście `.messages` stoi na górze strony - przy dłuższym
+           formularzu użytkownik nie wie, które pole poprawić. */
+        .field-error {
+            margin: 0.4rem 0 0;
+            color: #fca5a5;
+            font-size: 0.9rem;
+        }
+        .field-error::before { content: "⚠ "; }
+        input[aria-invalid="true"] {
+            border-color: var(--error);
+            background: rgba(127, 29, 29, 0.15);
+        }
         .score { font-size: 2.5rem; font-weight: 700; }
         h2 { text-transform: capitalize; }
         /* Nagłówki zawierające DANE (domena, adres) nie mogą być kapitalizowane:
