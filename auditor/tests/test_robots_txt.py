@@ -179,9 +179,12 @@ class RobotsFetchTests(SimpleTestCase):
         )
 
         self.assertFalse(wynik["checked"])
-        self.assertIn("error", wynik)
-        # Żądanie pod adres lokalny nigdy nie poszło.
-        self.assertEqual(len(zapis["zadania"]), 1)
+        self.assertTrue(wynik["error"])
+        self.assertEqual(wynik["error_kind"], "unsafe_url")
+        # Żądanie pod adres lokalny nigdy nie poszło - liczba podejść nie ma tu
+        # znaczenia (po nieudanym pobraniu sprawdzany jest jeszcze wariant "www").
+        for _, url in zapis["zadania"]:
+            self.assertNotIn("127.0.0.1", url)
 
     def test_a_connection_error_is_not_reported_as_a_missing_file(self):
         wynik, _ = self._sprawdz(httpx.ConnectTimeout("limit czasu"))
@@ -278,3 +281,290 @@ class RobotsEvaluationTests(SimpleTestCase):
         )
 
         self.assertEqual(metric["status"], "ok")
+
+
+class RobotsFallbackTests(SimpleTestCase):
+    """Drugi wariant hosta i nagłówki żądania."""
+
+    def _sprawdz(self, odpowiedzi_per_host: dict) -> tuple[dict, dict]:
+        """Odpowiedzi dobierane po adresie, nie po kolejności - tu liczy się host."""
+        zapis: dict = {"zadania": []}
+
+        class _KlientPerHost(_AtrapaKlienta):
+            def request(self, method, url):
+                self._zapis.setdefault("zadania", []).append((method, str(url)))
+                odpowiedz = odpowiedzi_per_host.get(str(url))
+                if odpowiedz is None:
+                    odpowiedz = _odpowiedz(404, tresc="Not Found")
+                if isinstance(odpowiedz, Exception):
+                    raise odpowiedz
+                # Prawdziwy klient wiąże odpowiedź z wysłanym żądaniem i to z niego
+                # bierze się `response.url`. Bez tego atrapa podawałaby adres
+                # z szablonu odpowiedzi, a nie ten faktycznie odpytany.
+                odpowiedz.request = httpx.Request(method, url)
+                return odpowiedz
+
+        with patch(
+            "auditor.services.scraper.httpx.Client",
+            side_effect=lambda **kwargs: _KlientPerHost([], zapis, **kwargs),
+        ), patch(
+            "auditor.services.scraper.validate_public_url", side_effect=_atrapa_straznika
+        ):
+            wynik = SEOScraper().check_robots_txt("https://przyklad.test")
+        return wynik, zapis
+
+    def test_the_www_variant_is_tried_when_the_bare_host_has_no_file(self):
+        # Część serwerów oddaje plik tylko pod jedną z tych nazw, a przekierowania
+        # między nimi nie zawsze są ustawione.
+        wynik, zapis = self._sprawdz({
+            "https://www.przyklad.test/robots.txt": _odpowiedz(),
+        })
+
+        self.assertTrue(wynik["exists"])
+        self.assertEqual(wynik["robots_url"], "https://www.przyklad.test/robots.txt")
+        self.assertEqual(len(zapis["zadania"]), 2)
+
+    def test_a_file_found_at_the_first_try_needs_no_second_request(self):
+        wynik, zapis = self._sprawdz({
+            "https://przyklad.test/robots.txt": _odpowiedz(),
+        })
+
+        self.assertTrue(wynik["exists"])
+        self.assertEqual(len(zapis["zadania"]), 1)
+
+    def test_a_blocked_response_is_not_retried_on_the_other_host(self):
+        # Odmowa WAF-a dotyczy całej witryny, nie jednej nazwy hosta - drugie
+        # podejście tylko dołożyłoby serwerowi żądań.
+        wynik, zapis = self._sprawdz({
+            "https://przyklad.test/robots.txt": _odpowiedz(403, tresc="Forbidden"),
+        })
+
+        self.assertTrue(wynik["blocked"])
+        self.assertEqual(len(zapis["zadania"]), 1)
+
+    def test_the_request_asks_for_plain_text(self):
+        # Część serwerów i CDN-ów oddaje wariant HTML żądaniu bez tej deklaracji.
+        _, zapis = self._sprawdz({"https://przyklad.test/robots.txt": _odpowiedz()})
+
+        self.assertEqual(zapis["kwargs"]["headers"]["Accept"], "text/plain, */*")
+
+    def test_network_failures_keep_their_kind(self):
+        przypadki = (
+            (httpx.ConnectTimeout("limit"), "timeout"),
+            (httpx.ReadTimeout("limit"), "timeout"),
+            (httpx.ConnectError("certificate verify failed"), "ssl"),
+            (httpx.ConnectError("connection refused"), "connection"),
+        )
+        for wyjatek, rodzaj in przypadki:
+            with self.subTest(rodzaj=rodzaj):
+                wynik, _ = self._sprawdz({"https://przyklad.test/robots.txt": wyjatek})
+
+                self.assertFalse(wynik["checked"])
+                self.assertFalse(wynik["exists"])
+                self.assertEqual(wynik["error_kind"], rodzaj)
+
+
+class RobotsDirectiveAnalysisTests(SimpleTestCase):
+    """Merytoryczna ocena treści pliku."""
+
+    def _analiza(self, tresc: str) -> dict:
+        return SEOScraper().analyze_robots_directives(tresc)
+
+    def _teksty(self, tresc: str, severity: str) -> list[str]:
+        return [
+            u["text"] for u in self._analiza(tresc)["findings"] if u["severity"] == severity
+        ]
+
+    def test_rules_before_the_first_user_agent_are_reported(self):
+        # Prawdziwy plik z daszer.pl: Yoast dopisuje swój blok niżej, a reguła
+        # z góry pliku nie obowiązuje żadnego robota.
+        analiza = self._analiza(
+            "Disallow: /wp-content/uploads/lista.json\n"
+            "\n"
+            "User-agent: *\n"
+            "Disallow:\n"
+            "Sitemap: https://przyklad.pl/sitemap_index.xml\n"
+        )
+
+        self.assertEqual(analiza["orphan_rules"], ["Disallow: /wp-content/uploads/lista.json"])
+        self.assertTrue(
+            any("nie obowiązują żadnego robota" in u["text"] for u in analiza["findings"])
+        )
+
+    def test_a_missing_sitemap_is_a_finding(self):
+        ostrzezenia = self._teksty("User-agent: *\nDisallow: /tmp/\n", "warning")
+
+        self.assertTrue(ostrzezenia)
+        self.assertIn("Sitemap", " ".join(ostrzezenia))
+
+    def test_a_declared_sitemap_is_reported_as_correct(self):
+        analiza = self._analiza(
+            "User-agent: *\nDisallow:\nSitemap: https://przyklad.pl/sitemap.xml\n"
+        )
+
+        self.assertEqual(analiza["sitemaps"], ["https://przyklad.pl/sitemap.xml"])
+        self.assertTrue(any(u["severity"] == "ok" for u in analiza["findings"]))
+
+    def test_blocking_stylesheets_and_scripts_is_reported(self):
+        analiza = self._analiza(
+            "User-agent: *\nDisallow: /wp-content/\nSitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(analiza["resource_blocks"], ["/wp-content/"])
+        self.assertIn("renderowania", " ".join(u["text"] for u in analiza["findings"]))
+
+    def test_blocking_a_single_file_inside_a_resource_directory_is_not_reported(self):
+        # Odwrotność poprzedniego testu: zablokowanie jednego pliku JSON nie
+        # przeszkadza renderowaniu, więc ostrzeżenie byłoby fałszywką.
+        analiza = self._analiza(
+            "User-agent: *\n"
+            "Disallow: /wp-content/uploads/wpo-plugins-tables-list.json\n"
+            "Sitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(analiza["resource_blocks"], [])
+
+    def test_a_site_wide_block_is_not_reported_as_a_resource_block(self):
+        # Regresja na fałszywkę z linkhouse.pl: "Disallow: /" w grupie konkretnych
+        # botów było zgłaszane jako blokada CSS/JS, bo każdy katalog z zasobami
+        # zaczyna się od "/". Blokadę całej witryny raportuje osobny test.
+        for sciezka in ("/", "/*"):
+            with self.subTest(sciezka=sciezka):
+                analiza = self._analiza(
+                    f"User-agent: Scrapy\nDisallow: {sciezka}\n"
+                    "Sitemap: https://przyklad.pl/s.xml\n"
+                )
+
+                self.assertEqual(analiza["resource_blocks"], [])
+
+    def test_a_wildcard_css_rule_is_reported(self):
+        analiza = self._analiza(
+            "User-agent: *\nDisallow: /*.css\nSitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(analiza["resource_blocks"], ["/*.css"])
+
+    def test_the_unsupported_noindex_directive_is_reported(self):
+        analiza = self._analiza(
+            "User-agent: *\nNoindex: /tajne/\nDisallow:\nSitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(analiza["unsupported_directives"], ["Noindex: /tajne/"])
+        self.assertIn("2019", " ".join(u["text"] for u in analiza["findings"]))
+
+    def test_a_path_without_a_leading_slash_is_reported(self):
+        analiza = self._analiza(
+            "User-agent: *\nDisallow: tajne/\nSitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(analiza["malformed_rules"], ["Disallow: tajne/"])
+
+    def test_crawl_delay_is_noted_without_raising_the_alarm(self):
+        analiza = self._analiza(
+            "User-agent: *\nCrawl-delay: 10\nDisallow:\nSitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(analiza["crawl_delay"], "10")
+        poziomy = {u["severity"] for u in analiza["findings"]}
+        self.assertIn("info", poziomy)
+        self.assertNotIn("warning", poziomy)
+
+    def test_an_unknown_field_is_noted(self):
+        analiza = self._analiza(
+            "User-agent: *\nDisalow: /literowka/\nDisallow:\nSitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(analiza["unknown_fields"], ["disalow"])
+
+    def test_paths_blocked_for_every_crawler_are_listed(self):
+        analiza = self._analiza(
+            "User-agent: *\nDisallow: /koszyk/\nDisallow: /konto/\n"
+            "User-agent: Bingbot\nDisallow: /tylko-bing/\n"
+            "Sitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(analiza["disallowed_paths"], ["/koszyk/", "/konto/"])
+        self.assertEqual(analiza["user_agents"], ["*", "Bingbot"])
+        self.assertEqual(analiza["rule_count"], 3)
+
+    def test_an_empty_file_is_described_as_blocking_nothing(self):
+        analiza = self._analiza("# tylko komentarz\n")
+
+        self.assertEqual(analiza["rule_count"], 0)
+        self.assertIn(
+            "nie zawiera żadnej reguły", " ".join(u["text"] for u in analiza["findings"])
+        )
+
+    def test_a_clean_file_raises_no_warning(self):
+        analiza = self._analiza(
+            "User-agent: *\n"
+            "Disallow: /koszyk/\n"
+            "Disallow: /panel/\n"
+            "Sitemap: https://przyklad.pl/sitemap.xml\n"
+        )
+
+        self.assertEqual([u for u in analiza["findings"] if u["severity"] == "warning"], [])
+
+
+class RobotsVerdictTests(SimpleTestCase):
+    """Jak ocena dyrektyw przekłada się na status testu w raporcie."""
+
+    def setUp(self):
+        self.service = _service_with_mocks()
+
+    def _metric(self, tresc: str) -> dict:
+        analiza = SEOScraper().analyze_robots_directives(tresc)
+        return self.service._evaluate_robots_txt({
+            "checked": True, "exists": True, "disallows_all": False,
+            "status_code": 200, "robots_url": "https://przyklad.pl/robots.txt",
+            "directives": analiza,
+        })
+
+    def test_a_file_with_problems_is_a_warning_not_an_ok(self):
+        # Dotąd test kończył się na "istnieje i nie blokuje całej witryny" - plik
+        # z błędną składnią dostawał zielone światło.
+        metric = self._metric("User-agent: *\nDisallow: tajne/\n")
+
+        self.assertEqual(metric["status"], "warning")
+        self.assertIn("wymagają poprawy", metric["value"]["note"])
+
+    def test_a_clean_file_is_ok(self):
+        metric = self._metric(
+            "User-agent: *\nDisallow: /panel/\nSitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertEqual(metric["status"], "ok")
+
+    def test_the_findings_travel_with_the_metric(self):
+        # Szablon karty testu (`_test_card.html`) wypisuje je pod podsumowaniem.
+        metric = self._metric("User-agent: *\nDisallow: /wp-content/\n")
+
+        self.assertTrue(metric["value"]["findings"])
+        self.assertTrue(
+            all("severity" in u and "text" in u for u in metric["value"]["findings"])
+        )
+
+    def test_the_details_name_the_address_and_the_sitemap(self):
+        metric = self._metric(
+            "User-agent: *\nDisallow: /panel/\nSitemap: https://przyklad.pl/s.xml\n"
+        )
+
+        self.assertIn("https://przyklad.pl/robots.txt", metric["current_value"])
+        self.assertIn("https://przyklad.pl/s.xml", metric["current_value"])
+
+    def test_each_network_failure_gets_its_own_wording(self):
+        przypadki = {
+            "timeout": "nie odpowiedział w wyznaczonym czasie",
+            "ssl": "TLS",
+            "connection": "zapora",
+            "unsafe_url": "poza publiczny internet",
+        }
+        for rodzaj, fragment in przypadki.items():
+            with self.subTest(rodzaj=rodzaj):
+                metric = self.service._evaluate_robots_txt({
+                    "checked": False, "exists": False,
+                    "error_kind": rodzaj, "error": "szczegóły",
+                })
+
+                self.assertEqual(metric["status"], "warning")
+                self.assertIn(fragment, metric["value"]["note"])

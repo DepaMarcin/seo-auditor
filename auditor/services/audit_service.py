@@ -187,6 +187,29 @@ SCORE_WEIGHTS = {"ok": 100, "info": 100, "warning": 50, "error": 0}
 # bezpieczeństwa ma rozwiązać - zaniżony wynik z powodu niedostępności, nie jakości.
 SCORED_STATUSES = frozenset(SCORE_WEIGHTS)
 
+# Zdanie dla raportu zależnie od rodzaju awarii przy pobieraniu robots.txt. Każdy
+# rodzaj prowadzi do innego działania, więc jeden ogólny komunikat ("nie udało się")
+# kazałby użytkownikowi zgadywać, czego szukać.
+ROBOTS_ERROR_NOTES = {
+    "timeout": (
+        "Serwer nie odpowiedział w wyznaczonym czasie przy pobieraniu /robots.txt - "
+        "wskazuje to na przeciążenie lub bardzo wolną odpowiedź hostingu."
+    ),
+    "ssl": (
+        "Pobranie /robots.txt przerwał błąd połączenia szyfrowanego (TLS) - ten sam "
+        "problem widzą użytkownicy i roboty wyszukiwarek."
+    ),
+    "connection": (
+        "Nie udało się nawiązać połączenia z serwerem przy pobieraniu /robots.txt - "
+        "host nie odpowiada albo połączenie blokuje zapora."
+    ),
+    "unsafe_url": (
+        "Adres /robots.txt (lub jego przekierowanie) prowadzi poza publiczny internet, "
+        "więc audyt go nie pobrał."
+    ),
+    None: "Nie udało się sprawdzić pliku robots.txt - audyt nie uzyskał odpowiedzi z serwera.",
+}
+
 # Testy, których wynik zależy WYŁĄCZNIE od treści w surowym HTML. Gdy pre-flight
 # orzeknie, że surowy HTML jest pusty (CSR) albo niedostępny (WAF), każdy z nich
 # zwróciłby błąd opisujący problem, którego na stronie nie ma - "Brak H1" dla strony
@@ -2644,12 +2667,13 @@ class AuditService:
         if not robots.get("checked"):
             # Nieudane połączenie to NIE to samo co brak pliku - wcześniej oba stany
             # dawały ten sam komunikat, więc awaria sprawdzenia wyglądała jak usterka
-            # audytowanej witryny.
+            # audytowanej witryny. Rodzaj awarii prowadzi do innego działania, więc
+            # podajemy go wprost.
             status, note = "warning", (
-                "Nie udało się sprawdzić pliku robots.txt - audyt nie uzyskał odpowiedzi "
-                "z serwera. Stan pliku pozostaje nieznany."
+                f"{ROBOTS_ERROR_NOTES.get(robots.get('error_kind'), ROBOTS_ERROR_NOTES[None])} "
+                "Stan pliku pozostaje nieznany."
             )
-            current_value = "(nie udało się sprawdzić)"
+            current_value = f"(nie udało się sprawdzić: {robots.get('error') or 'brak szczegółów'})"
         elif robots.get("blocked"):
             status, note = "warning", (
                 f"Serwer odmówił dostępu do /robots.txt (status HTTP {status_code}) - typowo "
@@ -2674,11 +2698,56 @@ class AuditService:
             )
             current_value = "User-agent: *\nDisallow: /"
         else:
-            status, note = "ok", "Plik robots.txt istnieje i nie blokuje całej witryny."
-            current_value = "Plik robots.txt jest dostępny pod /robots.txt."
+            status, note, current_value = self._ocen_dyrektywy_robots(robots)
+
+        ustalenia = (robots.get("directives") or {}).get("findings") or []
         return self._make_metric(
-            "technical", "robots_txt", {**robots, "note": note}, status, current_value=current_value
+            "technical",
+            "robots_txt",
+            {**robots, "note": note, "findings": ustalenia},
+            status,
+            current_value=current_value,
         )
+
+    def _ocen_dyrektywy_robots(self, robots: dict) -> tuple[str, str, str]:
+        """Werdykt dla pliku, który udało się pobrać - na podstawie jego TREŚCI.
+
+        Samo istnienie pliku nie mówi jeszcze nic o jego jakości: te same trzy linie
+        mogą wpuścić wyszukiwarkę wszędzie albo odciąć ją od arkuszy stylów. Dotąd
+        test kończył się na "istnieje i nie blokuje całej witryny".
+        """
+        directives = robots.get("directives") or {}
+        ustalenia = directives.get("findings") or []
+        problemy = [u for u in ustalenia if u["severity"] == "warning"]
+
+        if problemy:
+            status = "warning"
+            note = (
+                f"Plik robots.txt jest dostępny, ale jego dyrektywy wymagają poprawy "
+                f"({len(problemy)}): " + " ".join(u["text"] for u in problemy)
+            )
+        else:
+            status = "ok"
+            note = "Plik robots.txt istnieje, nie blokuje całej witryny i nie zawiera błędów."
+            pozostale = [u["text"] for u in ustalenia if u["severity"] != "warning"]
+            if pozostale:
+                note = f"{note} {' '.join(pozostale)}"
+
+        linie = [f"Adres pliku: {robots.get('robots_url') or '/robots.txt'}"]
+        if directives:
+            agenci = directives.get("user_agents") or []
+            linie.append(
+                f"Grupy User-agent: {', '.join(agenci) if agenci else '(brak)'}"
+            )
+            linie.append(f"Reguł Disallow/Allow: {directives.get('rule_count', 0)}")
+            mapy = directives.get("sitemaps") or []
+            linie.append(f"Sitemap: {', '.join(mapy) if mapy else '(brak)'}")
+            blokowane = directives.get("disallowed_paths") or []
+            if blokowane:
+                linie.append(
+                    "Ścieżki zablokowane dla wszystkich robotów: " + ", ".join(blokowane[:10])
+                )
+        return status, note, "\n".join(linie)
 
     def _evaluate_http_errors(self, http_errors: dict) -> dict:
         status_code = http_errors.get("status_code")

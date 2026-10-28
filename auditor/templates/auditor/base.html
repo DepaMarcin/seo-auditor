@@ -585,6 +585,25 @@
             border-color: var(--error);
             background: rgba(127, 29, 29, 0.15);
         }
+        /* Ustalenia szczegółowe w karcie testu - kolor nosi wagę ustalenia, więc
+           obok niego stoi też znak, czytelny przy daltonizmie i na wydruku. */
+        .test-card-findings { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+        .test-card-findings li {
+            padding: 0.3rem 0 0.3rem 1.4rem;
+            position: relative;
+            font-size: 0.92rem;
+            line-height: 1.45;
+        }
+        .test-card-findings li::before {
+            position: absolute;
+            left: 0;
+        }
+        .finding-warning { color: #FBBF24; }
+        .finding-warning::before { content: "⚠"; }
+        .finding-ok { color: #86efac; }
+        .finding-ok::before { content: "✓"; }
+        .finding-info { color: var(--text-muted, #94a3b8); }
+        .finding-info::before { content: "ℹ"; }
         .score { font-size: 2.5rem; font-weight: 700; }
         h2 { text-transform: capitalize; }
         /* Nagłówki zawierające DANE (domena, adres) nie mogą być kapitalizowane:

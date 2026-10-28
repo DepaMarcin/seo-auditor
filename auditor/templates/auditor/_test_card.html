@@ -7,6 +7,16 @@
     </div>
     <p class="test-card-summary">{{ metric.value.note }}</p>
 
+    {% if metric.value.findings %}
+    {# Ustalenia szczegółowe (np. ocena dyrektyw robots.txt) - widoczne bez rozwijania,
+       bo to one mówią, CO poprawić. #}
+    <ul class="test-card-findings">
+        {% for finding in metric.value.findings %}
+        <li class="finding-{{ finding.severity }}">{{ finding.text }}</li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+
     {% if metric.definition or metric.current_value or metric.recommendation_segments or metric.value.comparison %}
     <details class="test-card-details">
         <summary>Rozwiń rekomendację i kod</summary>

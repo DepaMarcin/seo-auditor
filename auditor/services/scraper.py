@@ -97,6 +97,25 @@ BLOCKED_ACCESS_STATUS_CODES = (401, 403, 429)
 ROBOTS_TIMEOUT_SECONDS = 10.0
 IMAGE_HEAD_TIMEOUT_SECONDS = 8.0
 
+# Pola uznawane przez standard robots.txt (oraz rozszerzenia honorowane przez część
+# wyszukiwarek). Cokolwiek poza tą listą zgłaszamy jako nierozpoznane - zwykle jest
+# to literówka, a literówka w nazwie pola znaczy regułę pomijaną w ciszy.
+ROBOTS_KNOWN_FIELDS = frozenset({
+    "user-agent", "disallow", "allow", "sitemap", "crawl-delay",
+    "host", "clean-param", "request-rate", "visit-time",
+})
+
+# Katalogi, w których mieszkają arkusze stylów i skrypty. Ich zablokowanie odcina
+# Google od renderowania strony (patrz `SEOScraper._blokuje_zasoby`).
+ROBOTS_RESOURCE_DIRS = (
+    "/wp-content/", "/wp-includes/", "/assets/", "/static/",
+    "/themes/", "/css/", "/js/", "/media/",
+)
+
+# Nagłówek `Accept` dla pliku tekstowego. Część serwerów i CDN-ów oddaje wariant HTML
+# żądaniu bez tej deklaracji.
+ROBOTS_ACCEPT_HEADER = "text/plain, */*"
+
 # User-Agent Googlebota używany przy ponowieniu, gdy serwer odda audytowi pustą
 # powłokę aplikacji. Nie chodzi o obejście zabezpieczeń - snapshot serwowany
 # Googlebotowi jest publicznie dostępny, a audyt ma ocenić dokładnie to, co widzi
@@ -1582,8 +1601,47 @@ class SEOScraper:
             pool=sufit(self.timeout.pool),
         )
 
+    @staticmethod
+    def _opisz_blad_sieciowy(exc: Exception) -> tuple[str, str]:
+        """Rodzaj awarii sieciowej i zdanie dla raportu.
+
+        Rozróżnienie jest istotne, bo prowadzi do różnych działań: limit czasu znaczy
+        wolny albo przeciążony serwer, błąd certyfikatu - usterkę TLS widoczną też dla
+        użytkowników, a odmowa połączenia - zaporę. Żadne z nich nie znaczy "brak pliku".
+        """
+        tekst = str(exc)
+        if isinstance(exc, UnsafeUrlError):
+            return "unsafe_url", tekst
+        if isinstance(exc, httpx.TimeoutException):
+            return "timeout", "serwer nie odpowiedział w wyznaczonym czasie"
+        if "ssl" in tekst.lower() or "certificate" in tekst.lower():
+            return "ssl", f"błąd połączenia szyfrowanego (TLS): {tekst}"
+        if isinstance(exc, httpx.ConnectError):
+            return "connection", f"nie udało się nawiązać połączenia: {tekst}"
+        return "http", tekst
+
+    def _toggle_www(self, url: str) -> str | None:
+        """Ten sam adres w drugim wariancie: z "www." albo bez niego.
+
+        Część serwerów oddaje plik tylko pod jedną z tych nazw, a przekierowania
+        między nimi nie zawsze są ustawione. Zwraca None, gdy host nie ma wariantu
+        (np. adres IP albo subdomena inna niż www).
+        """
+        parsed = urlparse(url)
+        if not parsed.netloc:
+            return None
+        if parsed.netloc.startswith("www."):
+            nowy = parsed.netloc[4:]
+        else:
+            nowy = f"www.{parsed.netloc}"
+        return parsed._replace(netloc=nowy).geturl()
+
     def _request_following_redirects(
-        self, method: str, url: str, timeout: httpx.Timeout
+        self,
+        method: str,
+        url: str,
+        timeout: httpx.Timeout,
+        extra_headers: dict | None = None,
     ) -> httpx.Response:
         """Żądanie HTTP podążające za przekierowaniami, z walidacją KAŻDEGO skoku.
 
@@ -1597,7 +1655,9 @@ class SEOScraper:
         """
         safe_url = validate_public_url(url)
         with httpx.Client(
-            headers=self.headers, timeout=timeout, follow_redirects=False
+            headers={**self.headers, **(extra_headers or {})},
+            timeout=timeout,
+            follow_redirects=False,
         ) as client:
             response = client.request(method, safe_url)
             hops = 0
@@ -1636,6 +1696,21 @@ class SEOScraper:
           * 200, ale ze stroną HTML - pod adresem nie leży plik robots.txt.
         """
         robots_url = self._build_absolute_url(base_url, "/robots.txt")
+        wynik = self._pobierz_robots(robots_url)
+
+        # Drugi wariant hosta. Część serwerów oddaje plik tylko pod "www." (albo tylko
+        # bez niego), a przekierowanie między tymi nazwami nie zawsze istnieje - wtedy
+        # pierwsze podejście kończy się 404, choć plik na witrynie jest.
+        if not wynik["exists"] and not wynik["blocked"]:
+            wariant = self._toggle_www(robots_url)
+            if wariant:
+                zapasowy = self._pobierz_robots(wariant)
+                if zapasowy["exists"]:
+                    return zapasowy
+        return wynik
+
+    def _pobierz_robots(self, robots_url: str) -> dict:
+        """Jedno podejście do pobrania pliku spod konkretnego adresu."""
         pusty = {
             "checked": False,
             "exists": False,
@@ -1645,19 +1720,31 @@ class SEOScraper:
             "blocked": False,
             "html_instead": False,
             "content_type": None,
+            "robots_url": robots_url,
+            "error": None,
+            "error_kind": None,
+            "directives": None,
         }
         try:
             response = self._request_following_redirects(
-                "GET", robots_url, self._capped_timeout(ROBOTS_TIMEOUT_SECONDS)
+                "GET",
+                robots_url,
+                self._capped_timeout(ROBOTS_TIMEOUT_SECONDS),
+                extra_headers={"Accept": ROBOTS_ACCEPT_HEADER},
             )
         except (httpx.HTTPError, UnsafeUrlError) as exc:
-            return {**pusty, "error": str(exc)}
+            # Awarii nie przemilczamy: bez tego wpisu w logu i w wyniku błąd sieci
+            # wyglądał w raporcie dokładnie tak samo jak brak pliku na serwerze.
+            rodzaj, opis = self._opisz_blad_sieciowy(exc)
+            logger.warning("Nie udało się pobrać %s (%s): %s", robots_url, rodzaj, opis)
+            return {**pusty, "error": opis, "error_kind": rodzaj}
 
         wynik = {
             **pusty,
             "checked": True,
             "status_code": response.status_code,
             "content_type": response.headers.get("content-type"),
+            "robots_url": str(response.url),
         }
 
         if response.status_code in BLOCKED_ACCESS_STATUS_CODES or response.status_code >= 500:
@@ -1674,6 +1761,7 @@ class SEOScraper:
             "exists": True,
             "disallows_all": self._robots_disallows_everything(response.text),
             "blocked_ai_bots": self._robots_blocked_ai_bots(response.text),
+            "directives": self.analyze_robots_directives(response.text),
         }
 
     def _robots_blocked_ai_bots(self, content: str) -> list[str]:
@@ -1725,6 +1813,219 @@ class SEOScraper:
             if blocks_everything(agent) or (agent not in rules_by_agent and blocks_everything("*")):
                 blocked.append(bot)
         return blocked
+
+    def analyze_robots_directives(self, content: str) -> dict:
+        """Merytoryczna ocena dyrektyw w pobranym pliku robots.txt.
+
+        Samo istnienie pliku nie mówi jeszcze nic o jego jakości - te same trzy linie
+        mogą wpuścić wyszukiwarkę wszędzie albo odciąć ją od arkuszy stylów. Zwracamy
+        strukturę opisującą zawartość oraz listę ustaleń gotową do pokazania w raporcie.
+        """
+        sitemaps: list[str] = []
+        osierocone: list[str] = []
+        nieobslugiwane: list[str] = []
+        nieznane_pola: list[str] = []
+        bledne_sciezki: list[str] = []
+        blokowane_zasoby: list[str] = []
+        blokowane_sciezki: list[str] = []
+        crawl_delay: str | None = None
+        agenci: list[str] = []
+        regul = 0
+        widziano_user_agent = False
+        # Czy jesteśmy w ciągu kolejnych linii "User-agent" (jedna grupa reguł).
+        oczekiwanie_agentow = False
+        biezace_agenty: list[str] = []
+
+        for raw_line in content.splitlines():
+            line = raw_line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            if ":" not in line:
+                bledne_sciezki.append(line)
+                continue
+
+            field, _, value = line.partition(":")
+            field, value = field.strip().lower(), value.strip()
+
+            if field == "user-agent":
+                widziano_user_agent = True
+                # Kolejne linie "User-agent" BEZ reguły pomiędzy tworzą jedną grupę;
+                # linia po regule otwiera grupę nową. Bez tego reset reguły dla
+                # Bingbota dopisywały się do zbioru obowiązującego wszystkie roboty.
+                if not oczekiwanie_agentow:
+                    biezace_agenty = []
+                    oczekiwanie_agentow = True
+                biezace_agenty.append(value)
+                if value not in agenci:
+                    agenci.append(value)
+            elif field == "sitemap":
+                # `Sitemap` jest dyrektywą GLOBALNĄ - nie należy do żadnej grupy
+                # User-agent, więc jej pozycja w pliku nie ma znaczenia.
+                sitemaps.append(value)
+            elif field in ("disallow", "allow"):
+                oczekiwanie_agentow = False
+                regul += 1
+                if not widziano_user_agent:
+                    # Reguła przed pierwszym "User-agent" nie obowiązuje żadnego robota -
+                    # roboty ją pomijają, a autor pliku zwykle sądzi, że działa.
+                    osierocone.append(line)
+                    continue
+                if field == "disallow" and value:
+                    if "*" in biezace_agenty:
+                        blokowane_sciezki.append(value)
+                    if not value.startswith(("/", "*")):
+                        bledne_sciezki.append(line)
+                    elif self._blokuje_zasoby(value):
+                        blokowane_zasoby.append(value)
+            elif field == "crawl-delay":
+                crawl_delay = value
+            elif field == "noindex":
+                # Google przestał honorować "Noindex:" w robots.txt we wrześniu 2019.
+                nieobslugiwane.append(line)
+            elif field not in ROBOTS_KNOWN_FIELDS:
+                nieznane_pola.append(field)
+
+        ustalenia = self._robots_findings(
+            sitemaps=sitemaps,
+            osierocone=osierocone,
+            nieobslugiwane=nieobslugiwane,
+            nieznane_pola=nieznane_pola,
+            bledne_sciezki=bledne_sciezki,
+            blokowane_zasoby=blokowane_zasoby,
+            crawl_delay=crawl_delay,
+            regul=regul,
+        )
+        return {
+            "sitemaps": sitemaps,
+            "orphan_rules": osierocone,
+            "unsupported_directives": nieobslugiwane,
+            "unknown_fields": sorted(set(nieznane_pola)),
+            "malformed_rules": bledne_sciezki,
+            "resource_blocks": blokowane_zasoby,
+            "disallowed_paths": blokowane_sciezki,
+            "crawl_delay": crawl_delay,
+            "user_agents": agenci,
+            "rule_count": regul,
+            "findings": ustalenia,
+        }
+
+    @staticmethod
+    def _blokuje_zasoby(sciezka: str) -> bool:
+        """Czy reguła odcina arkusze stylów albo skrypty potrzebne do renderowania.
+
+        Google ocenia stronę tak, jak ją widzi po wykonaniu CSS i JS. Zablokowanie
+        katalogu z zasobami daje w Search Console stronę bez stylów - i taką ocenę.
+
+        Pojedynczy plik wewnątrz takiego katalogu (np. ".../lista.json") renderowaniu
+        nie przeszkadza, więc rozpoznajemy rozszerzenie i nie zgłaszamy fałszywki.
+        """
+        s = sciezka.lower()
+        if s.endswith((".css", ".js")):
+            return True
+        # Reguła obejmująca całą witrynę ("/" albo "/*") to blokada globalna -
+        # raportuje ją test blokady całej witryny. Tu dawała fałszywkę, bo każdy
+        # katalog z zasobami zaczyna się od "/".
+        if s.strip("*/") == "":
+            return False
+        ostatni = s.rsplit("/", 1)[-1]
+        if "." in ostatni and not ostatni.startswith("*"):
+            return False
+        prefiks = s.rstrip("/") + "/"
+        return any(
+            prefiks.startswith(katalog) or katalog.startswith(prefiks)
+            for katalog in ROBOTS_RESOURCE_DIRS
+        )
+
+    @staticmethod
+    def _robots_findings(
+        *,
+        sitemaps: list[str],
+        osierocone: list[str],
+        nieobslugiwane: list[str],
+        nieznane_pola: list[str],
+        bledne_sciezki: list[str],
+        blokowane_zasoby: list[str],
+        crawl_delay: str | None,
+        regul: int,
+    ) -> list[dict]:
+        """Ustalenia w kolejności od najpoważniejszego. Każde mówi SKUTEK, nie tylko fakt."""
+        ustalenia: list[dict] = []
+
+        if blokowane_zasoby:
+            ustalenia.append({
+                "severity": "warning",
+                "text": (
+                    "Zablokowane zasoby potrzebne do renderowania strony "
+                    f"({', '.join(blokowane_zasoby[:5])}) - Google ocenia wygląd strony "
+                    "po wykonaniu CSS i JS, więc widzi ją wtedy bez stylów."
+                ),
+            })
+
+        if osierocone:
+            ustalenia.append({
+                "severity": "warning",
+                "text": (
+                    f"Reguły przed pierwszą linią \"User-agent\" ({', '.join(osierocone[:3])}) "
+                    "nie obowiązują żadnego robota - roboty je pomijają."
+                ),
+            })
+
+        if nieobslugiwane:
+            ustalenia.append({
+                "severity": "warning",
+                "text": (
+                    "Dyrektywa \"Noindex\" w robots.txt nie działa - Google przestał ją "
+                    "honorować w 2019 roku. Wykluczenie z indeksu wymaga znacznika "
+                    "<meta name=\"robots\" content=\"noindex\"> albo nagłówka X-Robots-Tag."
+                ),
+            })
+
+        if bledne_sciezki:
+            ustalenia.append({
+                "severity": "warning",
+                "text": (
+                    f"Linie o nieprawidłowej składni ({', '.join(bledne_sciezki[:3])}) - "
+                    "ścieżka musi zaczynać się od \"/\" albo \"*\", inaczej reguła jest pomijana."
+                ),
+            })
+
+        if not sitemaps:
+            ustalenia.append({
+                "severity": "warning",
+                "text": (
+                    "Plik nie wskazuje mapy witryny (brak dyrektywy \"Sitemap:\") - to "
+                    "najprostszy sposób, żeby wyszukiwarka poznała wszystkie podstrony."
+                ),
+            })
+        else:
+            ustalenia.append({
+                "severity": "ok",
+                "text": f"Mapa witryny wskazana w pliku: {', '.join(sitemaps[:3])}.",
+            })
+
+        if crawl_delay:
+            ustalenia.append({
+                "severity": "info",
+                "text": (
+                    f"Dyrektywa \"Crawl-delay: {crawl_delay}\" jest przez Google ignorowana "
+                    "(tempo indeksacji ustawia się w Search Console); pozostałe roboty "
+                    "zwolni o tyle sekund między żądaniami."
+                ),
+            })
+
+        if nieznane_pola:
+            ustalenia.append({
+                "severity": "info",
+                "text": f"Pola nierozpoznane przez standard: {', '.join(sorted(set(nieznane_pola))[:5])}.",
+            })
+
+        if regul == 0:
+            ustalenia.append({
+                "severity": "info",
+                "text": "Plik nie zawiera żadnej reguły Disallow/Allow - nic nie jest blokowane.",
+            })
+
+        return ustalenia
 
     def _robots_disallows_everything(self, content: str) -> bool:
         """Czy robots.txt blokuje CAŁĄ witrynę dla wszystkich robotów
