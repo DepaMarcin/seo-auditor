@@ -8,8 +8,7 @@
     <p class="test-card-summary">{{ metric.value.note }}</p>
 
     {% if metric.value.findings %}
-    {# Ustalenia szczegółowe (np. ocena dyrektyw robots.txt) - widoczne bez rozwijania,
-       bo to one mówią, CO poprawić. #}
+    {# Ustalenia szczegółowe (np. ocena dyrektyw robots.txt), widoczne bez rozwijania. #}
     <ul class="test-card-findings">
         {% for finding in metric.value.findings %}
         <li class="finding-{{ finding.severity }}">{{ finding.text }}</li>

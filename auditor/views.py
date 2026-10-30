@@ -1488,6 +1488,66 @@ def audit_status(request: HttpRequest, pk: int) -> JsonResponse:
 # Google Analytics 4 - integracja OAuth 2.0 ("Zaloguj się przez Google")
 # ----------------------------------------------------------------------
 
+# Para adresów pętli lokalnej. Dla Google to DWA różne adresy powrotne, a dla
+# przeglądarki dwa różne hosty - czyli dwa osobne zestawy ciasteczek.
+LOOPBACK_ALIASES = {"localhost": "127.0.0.1", "127.0.0.1": "localhost"}
+
+
+def _loopback_counterpart(netloc: str) -> str | None:
+    """Ten sam adres w drugim wariancie pętli lokalnej, z zachowaniem portu."""
+    host, _, port = netloc.partition(":")
+    alias = LOOPBACK_ALIASES.get(host.lower())
+    if not alias:
+        return None
+    return f"{alias}:{port}" if port else alias
+
+
+def _allowed_oauth_hosts(skonfigurowany_netloc: str) -> set[str]:
+    """Hosty, dla których wolno zbudować adres powrotny OAuth.
+
+    Lista jest zamknięta, bo każdy adres powrotny musi być osobno zarejestrowany
+    w konsoli Google - zbudowanie go z dowolnego `request.get_host()` kończyłoby się
+    odmową "redirect_uri_mismatch". Drugi wariant pętli lokalnej dopuszczamy
+    domyślnie: to standardowa para dla środowiska deweloperskiego.
+    """
+    hosty = {h for h in getattr(settings, "GA4_REDIRECT_HOSTS", []) if h}
+    odpowiednik = _loopback_counterpart(skonfigurowany_netloc)
+    if odpowiednik:
+        hosty.add(odpowiednik)
+    return hosty
+
+
+def _oauth_redirect_uri(request: HttpRequest) -> str | None:
+    """Adres powrotny dla Google - na TYM hoście, na którym jest użytkownik.
+
+    Ciasteczko sesji jest przypisane do hosta. Gdy użytkownik pracuje na
+    http://localhost:8000, a Google odsyła go na http://127.0.0.1:8000/ga4/callback/,
+    przeglądarka NIE wysyła tam ciasteczka sesji. Skutki są dwa i oba były zgłoszone:
+    `@login_required` widzi anonima i przekierowuje na /login/, a zapisany w sesji
+    PKCE `code_verifier` jest nieosiągalny, więc wymiana kodu kończy się
+    "InvalidGrantError: Missing code verifier". Jedna przyczyna, dwa objawy.
+
+    Host spoza listy dopuszczonych cofa nas do adresu KANONICZNEGO z konfiguracji:
+    jest zarejestrowany w konsoli Google, więc Google przynajmniej przyjmie żądanie.
+    Zostaje wtedy ostrzeżenie w logu, bo to usterka konfiguracji, a nie stan normalny.
+    """
+    skonfigurowany = urlparse(settings.GA4_REDIRECT_URI)
+    biezacy = request.get_host()
+
+    if biezacy == skonfigurowany.netloc:
+        return settings.GA4_REDIRECT_URI
+    if biezacy in _allowed_oauth_hosts(skonfigurowany.netloc):
+        return skonfigurowany._replace(netloc=biezacy).geturl()
+
+    logger.warning(
+        "Host %s nie jest na liście adresów powrotnych OAuth - używam kanonicznego %s. "
+        "Jeśli użytkownicy pracują pod tym adresem, dopisz go do GA4_REDIRECT_HOSTS "
+        "i zarejestruj w konsoli Google, inaczej powrót z Google zgubi sesję.",
+        biezacy, settings.GA4_REDIRECT_URI,
+    )
+    return settings.GA4_REDIRECT_URI
+
+
 @login_required
 def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
     """Inicjuje przepływ OAuth 2.0 z Google dla danego audytu: buduje `Flow` z pliku
@@ -1496,11 +1556,16 @@ def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
     użytkownika na ekran logowania/zgody Google."""
     audit = _get_owned_audit(request, pk)
 
+    # Adres powrotny ustalamy PRZED wysłaniem użytkownika do Google: musi wskazywać
+    # host, na którym użytkownik jest teraz, inaczej powrót trafia na inny host
+    # i gubi sesję razem z weryfikatorem PKCE.
+    redirect_uri = _oauth_redirect_uri(request)
+
     try:
         flow = Flow.from_client_secrets_file(
             str(settings.GA4_CLIENT_SECRETS_FILE),
             scopes=settings.GA4_SCOPES,
-            redirect_uri=settings.GA4_REDIRECT_URI,
+            redirect_uri=redirect_uri,
         )
         # "select_account" wymusza ekran wyboru konta - bez niego Google loguje
         # po cichu na konto już aktywne w przeglądarce i przełączenie jest niemożliwe.
@@ -1532,7 +1597,17 @@ def start_ga4_auth(request: HttpRequest, pk: int) -> HttpResponse:
     # (flow.authorization_url), ale to inny obiekt `Flow` obsługuje callback (inny request/
     # proces) - bez zapisania go w sesji i odtworzenia w ga4_callback, flow.fetch_token()
     # kończy się błędem "InvalidGrantError: Missing code verifier".
-    request.session["code_verifier"] = flow.code_verifier
+    if flow.code_verifier:
+        request.session["code_verifier"] = flow.code_verifier
+    else:
+        # Biblioteka może nie wygenerować weryfikatora (wyłączone PKCE). Pozostawienie
+        # tu wartości z POPRZEDNIEJ autoryzacji byłoby gorsze niż jej brak: Google
+        # odrzuciłby wymianę kodu, podając weryfikator niezgodny z wysłanym.
+        request.session.pop("code_verifier", None)
+    # Ten sam adres powrotny musi pójść do Google DWA razy: przy autoryzacji i przy
+    # wymianie kodu na token. Różnica między nimi to odmowa "redirect_uri_mismatch",
+    # więc nie wyliczamy go w callbacku od nowa, a zapamiętujemy.
+    request.session["ga4_redirect_uri"] = redirect_uri
 
     return redirect(authorization_url)
 
@@ -1632,12 +1707,21 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
             str(settings.GA4_CLIENT_SECRETS_FILE),
             scopes=settings.GA4_SCOPES,
             state=state,
-            redirect_uri=settings.GA4_REDIRECT_URI,
+            # Dokładnie ten adres, który poszedł do Google przy autoryzacji -
+            # zapisany w sesji. Zapasowe warianty na wypadek przepływu
+            # rozpoczętego przed tą zmianą albo wyczyszczonej sesji.
+            redirect_uri=(
+                request.session.get("ga4_redirect_uri")
+                or _oauth_redirect_uri(request)
+                or settings.GA4_REDIRECT_URI
+            ),
         )
         # Odtwarzamy PKCE code_verifier zapisany w start_ga4_auth - `flow` tworzony tutaj
         # to nowy obiekt (inny request niż ten, który wygenerował authorization_url), więc
         # bez tego flow.fetch_token() rzuca InvalidGrantError: "Missing code verifier".
-        flow.code_verifier = request.session.get("code_verifier")
+        code_verifier = request.session.get("code_verifier")
+        if code_verifier:
+            flow.code_verifier = code_verifier
         flow.fetch_token(authorization_response=request.build_absolute_uri())
         credentials = flow.credentials
     except Exception:
@@ -1648,6 +1732,7 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
         request.session.pop("pending_audit_id", None)
         request.session.pop("ga4_oauth_state", None)
         request.session.pop("code_verifier", None)
+        request.session.pop("ga4_redirect_uri", None)
 
     if credentials.refresh_token:
         # Token zapisujemy przy KONCIE użytkownika, nie przy audycie. Kopia per audyt

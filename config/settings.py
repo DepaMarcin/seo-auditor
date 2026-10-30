@@ -351,6 +351,23 @@ GA4_SCOPES = [
 ]
 GA4_REDIRECT_URI = os.environ.get('GA4_REDIRECT_URI', 'http://127.0.0.1:8000/ga4/callback/')
 
+# Dodatkowe hosty, dla których wolno zbudować adres powrotny OAuth (po przecinku,
+# z portem - np. "localhost:8000,app.przyklad.pl").
+#
+# Ciasteczko sesji jest przypisane do HOSTA: jeśli użytkownik pracuje na
+# http://localhost:8000, a Google odsyła go na 127.0.0.1, przeglądarka nie wyśle tam
+# sesji - użytkownik ląduje na /login/, a zapisany w sesji PKCE `code_verifier` jest
+# nieosiągalny ("InvalidGrantError: Missing code verifier"). Dlatego adres powrotny
+# budujemy na hoście, na którym użytkownik FAKTYCZNIE jest (patrz
+# `auditor.views._oauth_redirect_uri`).
+#
+# Lista jest zamknięta, bo każdy taki adres musi być osobno zarejestrowany w konsoli
+# Google jako "authorized redirect URI". Drugi wariant pętli lokalnej
+# (localhost <-> 127.0.0.1) jest dopuszczony domyślnie.
+GA4_REDIRECT_HOSTS = [
+    h.strip() for h in os.environ.get('GA4_REDIRECT_HOSTS', '').split(',') if h.strip()
+]
+
 if DEBUG or not WYMUSZAJ_HTTPS:
     # google-auth-oauthlib domyślnie wymaga HTTPS w `authorization_response`. Nie
     # spełnia tego ani lokalny serwer deweloperski (http://127.0.0.1:8000), ani
