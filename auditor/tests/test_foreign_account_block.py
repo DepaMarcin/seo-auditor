@@ -1,7 +1,7 @@
 """Blokada przypisania usługi z konta, które nie obsługuje badanej domeny.
 
 Scenariusz ze zgłoszenia: audyt `shell.pl`, konto Google z dostępem wyłącznie do
-projektu „Early Stage". Panel pokazywał ostrzeżenia, ale przycisk zapisu pozostawał
+projektu „Klient Testowy". Panel pokazywał ostrzeżenia, ale przycisk zapisu pozostawał
 aktywny, a backend przyjmował obce ID - bo nazwa usługi nie zawiera domeny, więc
 nie dało się DOWIEŚĆ niezgodności.
 
@@ -27,7 +27,7 @@ User = get_user_model()
 # Usługa innej firmy, z nazwy której NIE DA SIĘ odczytać domeny - sedno problemu.
 USLUGA_OBCA = {
     "property_id": "363353591",
-    "display_name": "Early Stage",
+    "display_name": "Klient Testowy",
     "account_name": "Konto",
 }
 USLUGA_WLASNA = {
@@ -205,7 +205,7 @@ class BackendRejectionTests(ForeignAccountBase):
 
         powod = next(m for m in komunikaty if "nie ma dostępu do żadnej usługi" in m)
         self.assertIn("shell.pl", powod)
-        self.assertIn("Early Stage", powod)
+        self.assertIn("Klient Testowy", powod)
 
     def test_existing_configuration_survives_the_refusal(self):
         Audit.objects.filter(pk=self.audit.pk).update(ga4_property_id="222222")
@@ -250,24 +250,24 @@ class OtherDomainExitTests(ForeignAccountBase):
 
     def test_link_points_at_the_audit_of_the_covered_domain(self):
         inny = Audit.objects.create(
-            url="https://earlystage.pl/", owner=self.user,
+            url="https://klienttestowy.pl/", owner=self.user,
             status=Audit.Status.COMPLETED,
         )
 
         html = self._html(
             wlasciwosci=[
-                {"property_id": "999", "display_name": "earlystage.pl",
+                {"property_id": "999", "display_name": "klienttestowy.pl",
                  "account_name": "Konto"}
             ]
         )
 
-        self.assertIn("Przejdź do audytu domeny earlystage.pl", html)
+        self.assertIn("Przejdź do audytu domeny klienttestowy.pl", html)
         self.assertIn(reverse("auditor:audit_analytics", args=[inny.pk]), html)
 
     def test_without_such_an_audit_the_general_entry_is_offered(self):
         html = self._html(
             wlasciwosci=[
-                {"property_id": "999", "display_name": "earlystage.pl",
+                {"property_id": "999", "display_name": "klienttestowy.pl",
                  "account_name": "Konto"}
             ]
         )
@@ -276,19 +276,19 @@ class OtherDomainExitTests(ForeignAccountBase):
         self.assertNotIn("Przejdź do audytu domeny", html)
 
     def test_account_without_a_readable_domain_offers_the_general_entry(self):
-        # "Early Stage" nie niesie domeny - nie ma dokąd prowadzić wprost.
+        # "Klient Testowy" nie niesie domeny - nie ma dokąd prowadzić wprost.
         html = self._html(wlasciwosci=[USLUGA_OBCA])
 
         self.assertIn("Przejdź do domen dostępnych na tym koncie", html)
 
     def test_several_foreign_domains_are_not_guessed(self):
         # Przy kilku obcych domenach nie wiadomo, która jest tą właściwą.
-        Audit.objects.create(url="https://earlystage.pl/", owner=self.user)
+        Audit.objects.create(url="https://klienttestowy.pl/", owner=self.user)
         Audit.objects.create(url="https://enova.pl/", owner=self.user)
 
         html = self._html(
             wlasciwosci=[
-                {"property_id": "1", "display_name": "earlystage.pl", "account_name": "K"},
+                {"property_id": "1", "display_name": "klienttestowy.pl", "account_name": "K"},
                 {"property_id": "2", "display_name": "enova.pl", "account_name": "K"},
             ]
         )
@@ -302,11 +302,11 @@ class OtherDomainExitTests(ForeignAccountBase):
             email="obcy61@przyklad.pl",
             password="haslo-kontrolne-2",
         )
-        Audit.objects.create(url="https://earlystage.pl/", owner=obcy)
+        Audit.objects.create(url="https://klienttestowy.pl/", owner=obcy)
 
         html = self._html(
             wlasciwosci=[
-                {"property_id": "999", "display_name": "earlystage.pl",
+                {"property_id": "999", "display_name": "klienttestowy.pl",
                  "account_name": "Konto"}
             ]
         )

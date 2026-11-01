@@ -4,3 +4,8 @@
 # (wymaga modułu `fcntl`). Projekt rozwija się lokalnie na Windows, więc
 # `pip install -r requirements.txt` musi tam przechodzić bez błędu.
 gunicorn==23.0.0
+
+# Przeładowywanie workera Celery po zmianie kodu (polecenie `watchmedo`) - używane
+# wyłącznie przez nakładkę deweloperską docker-compose.override.yml. Celery nie ma
+# własnego przeładowywania: flagę `--autoreload` usunięto w wersji 5.x.
+watchdog==6.0.0

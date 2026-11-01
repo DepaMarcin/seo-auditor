@@ -51,6 +51,7 @@ ODCZYT_USTAWIEN = (
     # Flaga oauthlib jest zmienną ŚRODOWISKOWĄ, nie ustawieniem Django - ustawia ją
     # import `config.settings`, więc czytamy ją po `django.setup()`.
     "'oauthlib_insecure': os.environ.get('OAUTHLIB_INSECURE_TRANSPORT'),"
+    "'szablony_cached': 'loaders' not in s.TEMPLATES[0]['OPTIONS'],"
     "}))"
 )
 
@@ -296,6 +297,19 @@ class HttpsEnforcementTests(SimpleTestCase):
         self.assertTrue(dane["ssl_redirect"])
         self.assertTrue(dane["proxy_naglowek"])
 
+    def test_the_switch_turns_off_the_cached_template_loader(self):
+        # Bez tego zmiana pliku .html nie dawała żadnego efektu w przeglądarce.
+        dane = self._ustawienia(DJANGO_TEMPLATE_RELOAD="1")
+
+        self.assertFalse(dane["szablony_cached"])
+
+    def test_templates_stay_cached_by_default(self):
+        # Na produkcji ponowne parsowanie szablonu przy każdym żądaniu to czysty
+        # koszt - przełącznik musi być opcją, nie domyślnym stanem.
+        dane = self._ustawienia()
+
+        self.assertTrue(dane["szablony_cached"])
+
     def test_oauth_over_plain_http_is_allowed_when_https_is_not_enforced(self):
         # google-auth-oauthlib odrzuca `authorization_response` bez https, więc bez
         # tej flagi powrót z accounts.google.com przerywał się InsecureTransportError
@@ -352,6 +366,21 @@ class ComposeContractTests(SimpleTestCase):
                     "${OAUTHLIB_INSECURE_TRANSPORT:-1}",
                 )
 
+    def test_healthchecks_using_variables_run_through_a_shell(self):
+        # Forma `CMD` nie uruchamia powłoki: `$HOSTNAME` trafiał wtedy do polecenia
+        # dosłownie, worker działał, a kontener stał jako `unhealthy` i blokował
+        # usługi zależne. Zmienna w teście wymaga `CMD-SHELL`.
+        compose = yaml.safe_load(self.compose)
+
+        for nazwa, usluga in compose["services"].items():
+            test = (usluga.get("healthcheck") or {}).get("test")
+            if not isinstance(test, list) or not test:
+                continue
+            if not any("$" in str(czesc) for czesc in test[1:]):
+                continue
+            with self.subTest(usluga=nazwa):
+                self.assertEqual(test[0], "CMD-SHELL", test)
+
     def test_plain_http_is_the_default_for_the_compose_stack(self):
         # Bez tego wpisu `.env` skopiowany z wzoru daje DEBUG=False i puste pole,
         # czyli wymuszanie HTTPS - a przed aplikacją nie ma czym go obsłużyć.
@@ -388,6 +417,120 @@ def _logiczne_polecenia(skrypt: str) -> list[str]:
     ]
 
 
+class DevOverrideTests(SimpleTestCase):
+    """Nakładka deweloperska: montowanie kodu bez przebudowy obrazu.
+
+    Trzy pułapki, na które nakładka musi odpowiadać - każda sprawdzona pomiarem
+    w działającym kontenerze:
+      * `.:/app` ZASŁANIA `/app/staticfiles` z obrazu, a tam leży manifest
+        `staticfiles.json`; bez osłony każda strona z tagiem `{% static %}`
+        kończy się błędem 500,
+      * `inotify` nie przechodzi przez montowanie z systemu plików Windows, więc
+        obserwator plików musi odpytywać czasy modyfikacji,
+      * odpytywanie całego `/app` jest bezużyteczne, bo w katalogu projektu leży
+        `venv/` z ponad 26 tysiącami plików.
+    """
+
+    MONTOWANIE_KODU = ".:/app"
+
+    @property
+    def override(self) -> dict:
+        return yaml.safe_load(
+            (Path(settings.BASE_DIR) / "docker-compose.override.yml").read_text(
+                encoding="utf-8"
+            )
+        )
+
+    @property
+    def compose(self) -> dict:
+        return yaml.safe_load(
+            (Path(settings.BASE_DIR) / "docker-compose.yml").read_text(encoding="utf-8")
+        )
+
+    def _uslugi_z_kodem(self, plik: dict) -> dict:
+        return {
+            nazwa: usluga
+            for nazwa, usluga in (plik.get("services") or {}).items()
+            if self.MONTOWANIE_KODU in (usluga.get("volumes") or [])
+        }
+
+    def test_the_source_is_mounted_for_both_application_services(self):
+        self.assertEqual(set(self._uslugi_z_kodem(self.override)), {"web", "worker"})
+
+    def test_every_service_mounting_the_source_shields_the_static_manifest(self):
+        for nazwa, usluga in self._uslugi_z_kodem(self.override).items():
+            with self.subTest(usluga=nazwa):
+                cele = [str(w).rsplit(":", 1)[-1] for w in usluga["volumes"]]
+                self.assertIn("/app/staticfiles", cele)
+
+    def test_the_production_compose_does_not_mount_the_source(self):
+        # Na wdrożeniu kod ma pochodzić z warstwy obrazu - inaczej to, co działa,
+        # zależy od zawartości katalogu na serwerze.
+        self.assertEqual(self._uslugi_z_kodem(self.compose), {})
+
+    def test_the_worker_watcher_polls_instead_of_using_inotify(self):
+        polecenie = self.override["services"]["worker"]["command"]
+
+        self.assertIn("--debug-force-polling", polecenie)
+
+    def test_the_worker_watcher_does_not_scan_the_whole_project(self):
+        polecenie = [str(c) for c in self.override["services"]["worker"]["command"]]
+        katalogi = [c.split("=", 1)[1] for c in polecenie if c.startswith("--directory=")]
+
+        self.assertTrue(katalogi)
+        self.assertNotIn("/app", katalogi)
+        for katalog in katalogi:
+            with self.subTest(katalog=katalog):
+                self.assertTrue(katalog.startswith("/app/"))
+
+    def test_the_file_watcher_is_a_declared_dependency(self):
+        # `watchmedo` pochodzi z paczki watchdog; bez niej polecenie workera
+        # nie wstanie w ogóle.
+        wymagania = (Path(settings.BASE_DIR) / "requirements-docker.txt").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("watchdog==", wymagania)
+
+    def test_templates_are_reread_on_every_request(self):
+        # Zmiany w szablonach nie pojawiały się w przeglądarce, choć katalog był
+        # zamontowany: przy DEBUG=False Django owija loadery w `cached.Loader`
+        # i trzyma skompilowany szablon w pamięci procesu, a `gunicorn --reload`
+        # obserwuje wyłącznie pliki .py. W tym projekcie dotyczy to też CAŁEGO
+        # arkusza stylów, bo jest blokiem <style> w base.html.
+        for usluga in ("web", "worker"):
+            with self.subTest(usluga=usluga):
+                self.assertEqual(
+                    self.override["services"][usluga]["environment"][
+                        "DJANGO_TEMPLATE_RELOAD"
+                    ],
+                    "1",
+                )
+
+    def test_reload_is_opt_in_for_the_web_server(self):
+        # Skrypt startowy dokłada `--reload` tylko na tę zmienną - domyślny obraz
+        # produkcyjny zostaje bez obserwowania plików.
+        self.assertEqual(
+            self.override["services"]["web"]["environment"]["GUNICORN_RELOAD"], "1"
+        )
+        skrypt = (Path(settings.BASE_DIR) / "docker/start-web.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("GUNICORN_RELOAD", skrypt)
+
+
+def _uruchamia_gunicorna(polecenie: str) -> bool:
+    """Czy polecenie URUCHAMIA gunicorna, a nie tylko o nim wspomina.
+
+    Komunikat `echo "... gunicorn ..."` zawiera to słowo, ale serwera nie startuje -
+    dopasowanie po samym wystąpieniu słowa dawało fałszywy alarm.
+    """
+    slowa = polecenie.split()
+    if slowa and slowa[0] == "exec":
+        slowa = slowa[1:]
+    return bool(slowa) and slowa[0] == "gunicorn"
+
+
 class WebStartupCommandTests(SimpleTestCase):
     """Z czym naprawdę startuje gunicorn w usłudze `web`.
 
@@ -411,7 +554,7 @@ class WebStartupCommandTests(SimpleTestCase):
 
     def test_gunicorn_is_started_with_the_bind_flag(self):
         # 127.0.0.1 to adres WNĘTRZA kontenera - mapowanie portu prowadzi wtedy w nic.
-        polecenia = [p for p in _logiczne_polecenia(self.skrypt) if "gunicorn" in p]
+        polecenia = [p for p in _logiczne_polecenia(self.skrypt) if _uruchamia_gunicorna(p)]
 
         self.assertEqual(len(polecenia), 1, polecenia)
         self.assertIn("--bind 0.0.0.0:8000", polecenia[0])
@@ -428,7 +571,7 @@ class WebStartupCommandTests(SimpleTestCase):
 
         for zrodlo, tekst in zrodla.items():
             for polecenie in _logiczne_polecenia(tekst):
-                if "gunicorn" not in polecenie:
+                if not _uruchamia_gunicorna(polecenie):
                     continue
                 with self.subTest(zrodlo=zrodlo):
                     self.assertIn("--bind 0.0.0.0:8000", polecenie)

@@ -154,7 +154,7 @@ class PeriodInPanelTests(TestCase):
 
     def _audit(self, **pola):
         domyslne = {
-            "url": "https://earlystage.pl/",
+            "url": "https://klienttestowy.pl/",
             "owner": self.user,
             "status": Audit.Status.COMPLETED,
             "ga4_property_id": "316375346",
@@ -257,7 +257,7 @@ class GscPeriodPersistenceTests(TestCase):
         from auditor.services.date_ranges import last_n_full_months_range
         from auditor.services.ga4_service import YOY_COMPARISON_MONTHS
 
-        audit = Audit.objects.create(url="https://earlystage.pl/", owner=self.user)
+        audit = Audit.objects.create(url="https://klienttestowy.pl/", owner=self.user)
         puste = {
             "total_clicks_current": 0, "total_clicks_previous": 0,
             "yoy_change_percent": 0.0, "top_gainers": [], "top_losers": [],
@@ -284,7 +284,7 @@ class GscPeriodPersistenceTests(TestCase):
         # siebie porównywałyby różne rzeczy.
         from auditor.services.audit_service import AuditService
 
-        audit = Audit.objects.create(url="https://earlystage.pl/", owner=self.user)
+        audit = Audit.objects.create(url="https://klienttestowy.pl/", owner=self.user)
         puste = {
             "total_clicks_current": 0, "total_clicks_previous": 0,
             "yoy_change_percent": 0.0, "top_gainers": [], "top_losers": [],

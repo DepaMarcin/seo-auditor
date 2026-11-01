@@ -607,7 +607,7 @@
         .score { font-size: 2.5rem; font-weight: 700; }
         h2 { text-transform: capitalize; }
         /* Nagłówki zawierające DANE (domena, adres) nie mogą być kapitalizowane:
-           reguła powyżej zamienia "earlystage.pl" w "Earlystage.Pl". Dotyczy to
+           reguła powyżej zamienia "klienttestowy.pl" w "Klienttestowy.Pl". Dotyczy to
            każdego nagłówka z interpolowaną wartością - stąd osobna lista. */
         .analytics-connect-title,
         .analytics-empty-title { text-transform: none; }
@@ -2804,7 +2804,6 @@
         }
         /* Konfiguracja wewnątrz karty - bez ramki, bo kartę rysuje `.panel`. */
         .analytics-config-inline { border-top: none; margin-top: auto; }
-        .analytics-config-form-stacked { grid-template-columns: 1fr; padding: 0.4rem 0 0.8rem; }
         .analytics-disconnect { padding-bottom: 0.4rem; }
         .analytics-config { border-top: 1px solid var(--border); }
         .analytics-config-summary {
@@ -2826,6 +2825,46 @@
             padding: 0.4rem 1.1rem 1.1rem;
         }
         @media (max-width: 860px) { .analytics-config-form { grid-template-columns: 1fr; }}
+
+        /* Wariant w karcie: pola JEDNO POD DRUGIM. Reguła musi stać PO
+           `.analytics-config-form`, bo ma tę samą wagę (jedna klasa) - wcześniej
+           była wyżej w arkuszu i przegrywała, więc dwa selekty lądowały obok siebie
+           w kafelku o 1/3 szerokości ekranu i ucinały nazwy usług ("Ideo → motiv..."). */
+        /* Jedna pionowa kolumna, bez siatki: kafelek zostaje w swoich 1/3 szerokości,
+           a każde pole zajmuje całą dostępną szerokość. `display: flex` nadpisuje
+           `display: grid` z reguły bazowej, więc `grid-template-columns` z niej
+           przestaje cokolwiek znaczyć. */
+        .analytics-config-form-stacked {
+            display: flex;
+            flex-direction: column;
+            width: 100%;
+            gap: 12px;
+            padding: 0.4rem 0 0.8rem;
+        }
+        /* Globalny `select` ma `min-width: 260px` - w wąskim kafelku rozpychałby
+           kolumnę poza jej szerokość. */
+        .analytics-config-form-stacked select,
+        .analytics-config-form-stacked .analytics-config-field { width: 100%; min-width: 0; }
+
+        /* Wartość techniczna (adres witryny, identyfikator usługi) jako znacznik:
+           monospace odróżnia ją od zdania wokół, a obcięcie z wielokropkiem
+           zastępuje łamanie w losowym miejscu ("https://www.moti / vationdirect.pl/").
+           Pełna treść zostaje w atrybucie `title`. */
+        .analytics-config-value {
+            display: inline-block;
+            max-width: 100%;
+            vertical-align: bottom;
+            padding: 0.1rem 0.4rem;
+            border-radius: var(--radius-sm);
+            background: rgba(148, 163, 184, 0.14);
+            border: 1px solid rgba(148, 163, 184, 0.22);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 0.75rem;
+            color: var(--text);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
         .analytics-config-field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
         .analytics-config-field label {
             font-size: 0.75rem;
@@ -2842,7 +2881,25 @@
             gap: 0.85rem;
             flex-wrap: wrap;
         }
-        .analytics-config-actions button { padding: 0.45rem 1rem; font-size: 0.85rem; }</style>
+        .analytics-config-actions button { padding: 0.45rem 1rem; font-size: 0.85rem; }
+        /* Oba przyciski w JEDNYM rzędzie, także w wąskim kafelku: bez tego
+           `flex-wrap` z reguły wyżej zrzucał "Anuluj" do nowej linii. */
+        .analytics-config-form-stacked .analytics-config-actions {
+            flex-wrap: nowrap;
+            gap: 0.5rem;
+        }
+        .analytics-config-form-stacked .analytics-config-actions button {
+            flex: 0 1 auto;
+            min-width: 0;
+            white-space: nowrap;
+        }
+        /* "Anuluj" obok "Zapisz" - wygląda na drugorzędny, bo nic nie zmienia. */
+        .analytics-config-cancel {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--muted);
+        }
+        .analytics-config-cancel:hover { color: var(--text); border-color: var(--muted-dim); }</style>
 </head>
 <body>
 <header>

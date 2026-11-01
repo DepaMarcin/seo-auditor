@@ -196,6 +196,24 @@ TEMPLATES = [
     },
 ]
 
+# Przeładowywanie szablonów bez restartu procesu - nakładka deweloperska.
+#
+# Przy DEBUG=False Django owija loadery w `cached.Loader` i trzyma SKOMPILOWANY
+# szablon w pamięci procesu do końca jego życia. Zmiana pliku .html w zamontowanym
+# katalogu nie dawała więc żadnego efektu w przeglądarce, a `gunicorn --reload`
+# obserwuje wyłącznie pliki .py - nic tego restartu nie wywoływało.
+#
+# Nie mieszać z `collectstatic`: w tym projekcie CAŁY arkusz stylów jest blokiem
+# <style> w `auditor/templates/auditor/base.html`, czyli szablonem. Pliki statyczne
+# to tu wyłącznie zasoby panelu administracyjnego Django.
+if os.environ.get('DJANGO_TEMPLATE_RELOAD', '').strip().lower() in ('1', 'true', 'yes'):
+    # `APP_DIRS` i jawne `loaders` wykluczają się wzajemnie, więc podajemy oba ręcznie.
+    TEMPLATES[0]['APP_DIRS'] = False
+    TEMPLATES[0]['OPTIONS']['loaders'] = [
+        'django.template.loaders.filesystem.Loader',
+        'django.template.loaders.app_directories.Loader',
+    ]
+
 WSGI_APPLICATION = 'config.wsgi.application'
 
 

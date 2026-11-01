@@ -311,7 +311,7 @@ class AccountSwitchTests(TestCase):
 class PropertySwitchDataTests(TestCase):
     """Zmiana usługi GA4 nie może zostawić liczb poprzedniej.
 
-    Objaw zgłoszony przez użytkownika: po wskazaniu usługi konta "universe" raport
+    Objaw zgłoszony przez użytkownika: po wskazaniu usługi konta "strefa" raport
     pokazywał dane orlen.pl. Sam zapis wyboru działał poprawnie - w bazie zostawały
     natomiast `ga4_organic_sessions`, `ga4_history`, `ga4_insights` i nazwa zdarzenia
     konwersji pobrane z poprzedniej usługi, a to one są renderowane w raporcie.
@@ -347,7 +347,7 @@ class PropertySwitchDataTests(TestCase):
 
     def _audit_with_old_data(self) -> Audit:
         return Audit.objects.create(
-            url="https://universe.pl/",
+            url="https://innyklient.pl/",
             owner=self.user,
             ga4_property_id="999999",
             ga4_organic_sessions=123456,
@@ -403,7 +403,7 @@ class PropertySwitchDataTests(TestCase):
 
         with patch(
             "auditor.services.google_services.resolve_gsc_site",
-            return_value="sc-domain:universe.pl",
+            return_value="sc-domain:innyklient.pl",
         ):
             self.client.post(
                 reverse("auditor:assign_google_services", args=[audit.pk]),
@@ -438,7 +438,7 @@ class PropertySwitchDataTests(TestCase):
 
         with patch(
             "auditor.services.google_services.resolve_gsc_site",
-            return_value="sc-domain:universe.pl",
+            return_value="sc-domain:innyklient.pl",
         ):
             self.client.post(
                 reverse("auditor:assign_google_services", args=[audit.pk]),

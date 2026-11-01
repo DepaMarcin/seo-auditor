@@ -82,7 +82,7 @@ Zasady:
 - jedno pytanie w linii, bez numeracji i bez komentarza."""
 
 # Separatory, którymi strony oddzielają nazwę marki od reszty tytułu:
-# "Early Stage | Szkoła językowa dla dzieci".
+# "Klient Testowy | Serwis rowerowy w całej Polsce".
 BRAND_SEPARATORS = ("|", "—", "–", "-", "·", "»", ":")
 
 # Najkrótsza sensowna nazwa marki. Jednoliterowe fragmenty tytułu to zwykle śmieci
@@ -229,7 +229,7 @@ def extract_brand_name(url: str, title: str = "", site_name: str = "") -> str:
 
     Kolejność źródeł od najpewniejszego: `og:site_name` jest deklaracją właściciela,
     tytuł bywa nazwą sklejoną z opisem oferty, a domena zostaje jako ostatnia deska
-    ratunku. Nazwa jest potrzebna, bo model pisze "Early Stage", nie "earlystage.pl" -
+    ratunku. Nazwa jest potrzebna, bo model pisze "Klient Testowy", nie "klienttestowy.pl" -
     bez niej wzmianki w treści odpowiedzi byłyby dla pomiaru niewidoczne.
     """
     kandydat = (site_name or "").strip()
@@ -253,7 +253,7 @@ def extract_brand_name(url: str, title: str = "", site_name: str = "") -> str:
 
 
 def _brand_from_domain(url: str) -> str:
-    """Nazwa z samej domeny: "earlystage.pl" -> "Earlystage"."""
+    """Nazwa z samej domeny: "klienttestowy.pl" -> "Klienttestowy"."""
     domena = normalize_domain(url)
     if not domena:
         return ""
@@ -264,8 +264,8 @@ def _brand_from_domain(url: str) -> str:
 def brand_mention_pattern(brand_name: str) -> re.Pattern | None:
     """Wzorzec szukający nazwy marki w treści odpowiedzi.
 
-    Dopasowanie na granicach słów, żeby "Early Stage" nie trafiało w środek innego
-    wyrazu, i z elastyczną spacją - model bywa pisze "EarlyStage" łącznie.
+    Dopasowanie na granicach słów, żeby "Klient Testowy" nie trafiało w środek innego
+    wyrazu, i z elastyczną spacją - model bywa pisze "KlientTestowy" łącznie.
 
     Odwrotny przypadek dotyczy nazw wyprowadzonych z domeny: z "helendoron.pl" wychodzi
     jednoczłonowe "Helendoron", a model pisze "Helen Doron". Dla dostatecznie długich

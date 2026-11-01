@@ -21,9 +21,20 @@ python manage.py migrate --noinput
 # `--bind 0.0.0.0:8000` - wszystkie interfejsy, inaczej ruch z gospodarza nie wchodzi.
 # `--timeout 180`, bo pojedyncze żądanie czeka na odpowiedź Google albo na skan
 # strony. Domyślne 30 s zabijałoby je w połowie.
+# `--reload` wyłącznie na żądanie, z nakładki deweloperskiej
+# (docker-compose.override.yml): gunicorn obserwuje wtedy pliki źródłowe i restartuje
+# procesy robocze po każdej zmianie, dzięki czemu montowany katalog z kodem działa bez
+# przebudowy obrazu. Na produkcji to zbędny koszt i dodatkowe operacje na dysku.
+DODATKOWE=""
+if [ -n "$GUNICORN_RELOAD" ]; then
+    DODATKOWE="--reload"
+    echo "start-web: tryb deweloperski - gunicorn z --reload"
+fi
+
 exec gunicorn config.wsgi:application \
     --bind 0.0.0.0:8000 \
     --workers 3 \
     --timeout 180 \
     --access-logfile - \
-    --error-logfile -
+    --error-logfile - \
+    $DODATKOWE

@@ -33,7 +33,7 @@ def _body_only(html: str) -> str:
 
 
 def _state(audit_id=None, **daty) -> SEOInvestigatorState:
-    state = SEOInvestigatorState(domain="earlystage.pl")
+    state = SEOInvestigatorState(domain="klienttestowy.pl")
     state.audit_id = audit_id
     state.data_timestamps.update(daty)
     return state
@@ -65,7 +65,7 @@ class StaleActionTests(SimpleTestCase):
 
     def test_analytics_opens_the_panel_of_this_domain(self):
         # Analityka ma własny ekran per domena - prowadzimy wprost do niego.
-        audyt = Audit(pk=42, url="https://earlystage.pl/")
+        audyt = Audit(pk=42, url="https://klienttestowy.pl/")
 
         akcje = self._akcje(_state(analytics=DAWNO), audit=audyt)
 
@@ -125,7 +125,7 @@ class StaleBannerMarkupTests(TestCase):
             password="haslo-kontrolne-1",
         )
         cls.audit = Audit.objects.create(
-            url="https://earlystage.pl/", owner=cls.user, status=Audit.Status.COMPLETED
+            url="https://klienttestowy.pl/", owner=cls.user, status=Audit.Status.COMPLETED
         )
 
     def setUp(self):
@@ -133,7 +133,7 @@ class StaleBannerMarkupTests(TestCase):
 
     def _open(self, **daty):
         """Strona wyniku zapisanego badania z podanymi datami źródeł."""
-        state = SEOInvestigatorState(domain="earlystage.pl")
+        state = SEOInvestigatorState(domain="klienttestowy.pl")
         state.technical_issues.append("Błąd: brak meta description.")
         state.mark_source("technical", True)
         state.mark_source("analytics", True)
@@ -142,7 +142,7 @@ class StaleBannerMarkupTests(TestCase):
         state.final_synthesis_report = "## Podsumowanie\nTreść."
 
         run = InvestigationRun.objects.create(
-            domain="earlystage.pl", owner=self.user, audit=self.audit,
+            domain="klienttestowy.pl", owner=self.user, audit=self.audit,
             status=InvestigationRun.Status.COMPLETED,
             state=state.as_dict(), report=state.final_synthesis_report,
         )
@@ -215,14 +215,14 @@ class SynthesisLinkAuditTests(TestCase):
             password="haslo-kontrolne-1",
         )
         cls.audit = Audit.objects.create(
-            url="https://earlystage.pl/", owner=cls.user, status=Audit.Status.COMPLETED
+            url="https://klienttestowy.pl/", owner=cls.user, status=Audit.Status.COMPLETED
         )
 
     def setUp(self):
         self.client.force_login(self.user)
 
     def _run(self, **pola):
-        state = SEOInvestigatorState(domain="earlystage.pl")
+        state = SEOInvestigatorState(domain="klienttestowy.pl")
         state.mark_source("technical", True)
         state.final_synthesis_report = "## Podsumowanie\nTreść."
         pola.setdefault("state", state.as_dict())
@@ -231,7 +231,7 @@ class SynthesisLinkAuditTests(TestCase):
         pola.setdefault("status", InvestigationRun.Status.COMPLETED)
         pola.setdefault("report", "## Podsumowanie\nTreść.")
         return InvestigationRun.objects.create(
-            domain="earlystage.pl", owner=self.user, **pola
+            domain="klienttestowy.pl", owner=self.user, **pola
         )
 
     def test_back_button_returns_to_the_technical_report(self):

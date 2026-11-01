@@ -38,31 +38,31 @@ from auditor.services.geo import (
     parse_competitors_input,
 )
 
-# Szkoła językowa - branża, w której model chętnie wymienia marki z nazwy, często
-# bez podawania odnośnika.
-EARLYSTAGE_HTML = """
+# Usługa konsumencka ze stacjonarnymi punktami - branża, w której model chętnie
+# wymienia marki z nazwy, często bez podawania odnośnika.
+KLIENTTESTOWY_HTML = """
 <html>
 <head>
-    <title>Early Stage | Szkoła języka angielskiego dla dzieci i młodzieży</title>
-    <meta name="description" content="Kursy angielskiego dla dzieci od 3 lat.
-          Autorska metoda nauczania, ponad 300 placówek w całej Polsce.">
-    <meta property="og:site_name" content="Early Stage">
+    <title>Klient Testowy | Serwis rowerowy z punktami w całej Polsce</title>
+    <meta name="description" content="Przeglądy i naprawy rowerów od 2010 roku.
+          Własny warsztat mobilny, ponad 300 punktów w całej Polsce.">
+    <meta property="og:site_name" content="Klient Testowy">
 </head>
 <body>
-    <h1>Szkoła języka angielskiego dla dzieci</h1>
-    <h2>Kursy dla przedszkolaków</h2>
-    <h2>Zapisy na rok szkolny</h2>
-    <p>Prowadzimy kursy angielskiego dla dzieci i młodzieży w ponad 300 placówkach.</p>
+    <h1>Serwis rowerowy z dojazdem do klienta</h1>
+    <h2>Przeglądy sezonowe</h2>
+    <h2>Naprawy gwarancyjne</h2>
+    <p>Prowadzimy przeglądy i naprawy rowerów w ponad 300 punktach.</p>
 </body>
 </html>
 """
 
 KOMERCYJNE_PYTANIA = [
-    "Jaka szkoła językowa dla dzieci jest polecana w Warszawie?",
-    "Gdzie zapisać sześciolatka na angielski?",
-    "Ranking najlepszych szkół języka angielskiego dla dzieci",
-    "Które kursy angielskiego dla przedszkolaków są polecane?",
-    "Jaka firma prowadzi kursy angielskiego dla młodzieży?",
+    "Jaki serwis rowerowy jest polecany w Warszawie?",
+    "Gdzie oddać rower do przeglądu sezonowego?",
+    "Ranking najlepszych serwisów rowerowych",
+    "Które warsztaty rowerowe są polecane przez klientów?",
+    "Jaka firma naprawia rowery z dojazdem do klienta?",
 ]
 
 
@@ -92,38 +92,38 @@ def tearDownModule():
 
 
 class BrandExtractionTests(SimpleTestCase):
-    """Nazwa marki odczytana ze strony - model pisze "Early Stage", nie "earlystage.pl"."""
+    """Nazwa marki odczytana ze strony - model pisze "Klient Testowy", nie "klienttestowy.pl"."""
 
     def test_site_name_wins(self):
         brand = extract_brand_name(
-            "https://earlystage.pl/",
-            title="Kursy angielskiego | Coś zupełnie innego",
-            site_name="Early Stage",
+            "https://klienttestowy.pl/",
+            title="Naprawy rowerów | Coś zupełnie innego",
+            site_name="Klient Testowy",
         )
 
-        self.assertEqual(brand, "Early Stage")
+        self.assertEqual(brand, "Klient Testowy")
 
     def test_brand_is_taken_from_the_title_before_the_separator(self):
         brand = extract_brand_name(
-            "https://earlystage.pl/",
-            title="Early Stage | Szkoła języka angielskiego dla dzieci",
+            "https://klienttestowy.pl/",
+            title="Klient Testowy | Serwis rowerowy z dojazdem do klienta",
         )
 
-        self.assertEqual(brand, "Early Stage")
+        self.assertEqual(brand, "Klient Testowy")
 
     def test_brand_is_taken_from_the_title_after_a_dash(self):
         brand = extract_brand_name(
-            "https://earlystage.pl/",
-            title="Szkoła języka angielskiego dla dzieci - Early Stage",
+            "https://klienttestowy.pl/",
+            title="Serwis rowerowy z dojazdem do klienta - Klient Testowy",
         )
 
-        self.assertEqual(brand, "Early Stage")
+        self.assertEqual(brand, "Klient Testowy")
 
     def test_domain_is_the_last_resort(self):
-        self.assertEqual(extract_brand_name("https://earlystage.pl/"), "Earlystage")
+        self.assertEqual(extract_brand_name("https://klienttestowy.pl/"), "Klienttestowy")
 
     def test_hyphenated_domain_becomes_words(self):
-        self.assertEqual(extract_brand_name("https://early-stage.pl/"), "Early stage")
+        self.assertEqual(extract_brand_name("https://klient-testowy.pl/"), "Klient testowy")
 
     def test_no_url_gives_no_brand(self):
         self.assertEqual(extract_brand_name(""), "")
@@ -133,22 +133,22 @@ class BrandMentionDetectionTests(SimpleTestCase):
     """Wzmianka w treści odpowiedzi, niezależnie od przypisów."""
 
     def test_plain_mention_is_found(self):
-        self.assertTrue(detect_brand_mention("Polecam szkołę Early Stage.", "Early Stage"))
+        self.assertTrue(detect_brand_mention("Polecam warsztat Klient Testowy.", "Klient Testowy"))
 
     def test_case_is_ignored(self):
-        self.assertTrue(detect_brand_mention("warto sprawdzić early stage", "Early Stage"))
+        self.assertTrue(detect_brand_mention("warto sprawdzić klient testowy", "Klient Testowy"))
 
     def test_name_written_without_a_space_is_found(self):
-        # Model bywa skleja nazwę: "EarlyStage".
-        self.assertTrue(detect_brand_mention("Sprawdź EarlyStage.", "Early Stage"))
+        # Model bywa skleja nazwę: "KlientTestowy".
+        self.assertTrue(detect_brand_mention("Sprawdź KlientTestowy.", "Klient Testowy"))
 
     def test_other_brands_do_not_count(self):
         self.assertFalse(
-            detect_brand_mention("Polecam Helen Doron oraz Berlitz.", "Early Stage")
+            detect_brand_mention("Polecam Helen Doron oraz Berlitz.", "Klient Testowy")
         )
 
     def test_name_inside_a_longer_word_does_not_count(self):
-        self.assertFalse(detect_brand_mention("Earlystageous", "Early Stage"))
+        self.assertFalse(detect_brand_mention("Klienttestowyous", "Klient Testowy"))
 
     def test_empty_brand_never_matches(self):
         self.assertFalse(detect_brand_mention("dowolna treść", ""))
@@ -158,11 +158,11 @@ class SiteContextBrandTests(TestCase):
     """Marka trafia do kontekstu razem z resztą danych strony."""
 
     def test_scan_reads_the_brand_from_og_site_name(self):
-        with patch("auditor.services.scraper.SEOScraper.fetch", return_value=EARLYSTAGE_HTML):
-            context = get_or_fetch_site_context("https://earlystage.pl/")
+        with patch("auditor.services.scraper.SEOScraper.fetch", return_value=KLIENTTESTOWY_HTML):
+            context = get_or_fetch_site_context("https://klienttestowy.pl/")
 
-        self.assertEqual(context.brand_name, "Early Stage")
-        self.assertIn("angielskiego", context.title)
+        self.assertEqual(context.brand_name, "Klient Testowy")
+        self.assertIn("rowerowy", context.title)
 
 
 class CommercialPromptTests(SimpleTestCase):
@@ -170,12 +170,12 @@ class CommercialPromptTests(SimpleTestCase):
 
     def _context(self) -> SiteContext:
         return SiteContext(
-            url="https://earlystage.pl/",
-            title="Early Stage | Szkoła języka angielskiego dla dzieci",
-            meta_description="Kursy angielskiego dla dzieci od 3 lat.",
-            headings=["Szkoła języka angielskiego dla dzieci", "Zapisy na rok szkolny"],
-            body_snippet="Prowadzimy kursy angielskiego w ponad 300 placówkach.",
-            brand_name="Early Stage",
+            url="https://klienttestowy.pl/",
+            title="Klient Testowy | Serwis rowerowy z dojazdem do klienta",
+            meta_description="Przeglądy i naprawy rowerów od 2010 roku.",
+            headings=["Serwis rowerowy z dojazdem do klienta", "Naprawy gwarancyjne"],
+            body_snippet="Prowadzimy naprawy rowerów w ponad 300 punktach.",
+            brand_name="Klient Testowy",
             source="scan",
         )
 
@@ -185,14 +185,14 @@ class CommercialPromptTests(SimpleTestCase):
             output_text=json.dumps(KOMERCYJNE_PYTANIA, ensure_ascii=False)
         )
         with patch("auditor.services.geo._client", return_value=client):
-            generate_questions("earlystage.pl", context=context)
+            generate_questions("klienttestowy.pl", context=context)
         return client.responses.create.call_args.kwargs["input"]
 
     def test_prompt_names_the_brand_so_the_model_can_avoid_it(self):
         prompt = self._prompt_for(self._context())
 
-        self.assertIn("Marka: Early Stage", prompt)
-        self.assertIn("ZAKAZ używania nazwy marki (Early Stage)", prompt)
+        self.assertIn("Marka: Klient Testowy", prompt)
+        self.assertIn("ZAKAZ używania nazwy marki (Klient Testowy)", prompt)
 
     def test_prompt_demands_recommendation_questions(self):
         prompt = self._prompt_for(self._context())
@@ -212,17 +212,17 @@ class CommercialPromptTests(SimpleTestCase):
             output_text=json.dumps(KOMERCYJNE_PYTANIA, ensure_ascii=False)
         )
         with patch("auditor.services.geo._client", return_value=client):
-            questions = generate_questions("earlystage.pl", context=self._context())
+            questions = generate_questions("klienttestowy.pl", context=self._context())
 
         self.assertEqual(len(questions), 5)
-        zakupowe = ("polecan", "ranking", "gdzie zapisać", "jaka szkoła", "jaka firma", "które kursy")
+        zakupowe = ("polecan", "ranking", "gdzie oddać", "jaki serwis", "jaka firma", "które warsztaty")
         for question in questions:
             with self.subTest(question=question):
                 self.assertTrue(
                     any(fraza in question.lower() for fraza in zakupowe),
                     f"pytanie bez intencji zakupowej: {question}",
                 )
-                self.assertNotIn("early stage", question.lower())
+                self.assertNotIn("klient testowy", question.lower())
 
     def test_prompt_is_the_commercial_one(self):
         prompt = self._prompt_for(self._context())
@@ -248,11 +248,11 @@ class TwoLevelDetectionTests(SimpleTestCase):
 
     def test_linked_citation_when_domain_is_in_the_sources(self):
         client = self._client_returning(
-            "Polecam Early Stage.",
-            [{"url": "https://earlystage.pl/kursy", "title": "Kursy"}],
+            "Polecam Klient Testowy.",
+            [{"url": "https://klienttestowy.pl/kursy", "title": "Kursy"}],
         )
 
-        result = ask_once("Jaka szkoła?", "earlystage.pl", client=client, brand_name="Early Stage")
+        result = ask_once("Jaki serwis?", "klienttestowy.pl", client=client, brand_name="Klient Testowy")
 
         self.assertTrue(result.brand_cited)
         self.assertEqual(result.visibility, GeoRun.Visibility.LINKED_CITATION)
@@ -260,11 +260,11 @@ class TwoLevelDetectionTests(SimpleTestCase):
     def test_brand_mention_when_named_without_a_link(self):
         # Najciekawszy przypadek: model poleca firmę, ale linkuje konkurenta.
         client = self._client_returning(
-            "Warto rozważyć Early Stage oraz Helen Doron.",
+            "Warto rozważyć Klient Testowy oraz Helen Doron.",
             [{"url": "https://helendoron.pl/", "title": "Helen Doron"}],
         )
 
-        result = ask_once("Jaka szkoła?", "earlystage.pl", client=client, brand_name="Early Stage")
+        result = ask_once("Jaki serwis?", "klienttestowy.pl", client=client, brand_name="Klient Testowy")
 
         self.assertFalse(result.brand_cited)
         self.assertTrue(result.brand_mentioned)
@@ -276,7 +276,7 @@ class TwoLevelDetectionTests(SimpleTestCase):
             [{"url": "https://helendoron.pl/", "title": "Helen Doron"}],
         )
 
-        result = ask_once("Jaka szkoła?", "earlystage.pl", client=client, brand_name="Early Stage")
+        result = ask_once("Jaki serwis?", "klienttestowy.pl", client=client, brand_name="Klient Testowy")
 
         self.assertFalse(result.brand_cited)
         self.assertFalse(result.brand_mentioned)
@@ -285,20 +285,20 @@ class TwoLevelDetectionTests(SimpleTestCase):
     def test_link_wins_over_mention(self):
         # Cytowanie z linkiem przynosi ruch, sama wzmianka nie - więc ma pierwszeństwo.
         client = self._client_returning(
-            "Early Stage prowadzi kursy.",
-            [{"url": "https://earlystage.pl/", "title": "Early Stage"}],
+            "Klient Testowy prowadzi kursy.",
+            [{"url": "https://klienttestowy.pl/", "title": "Klient Testowy"}],
         )
 
-        result = ask_once("Jaka szkoła?", "earlystage.pl", client=client, brand_name="Early Stage")
+        result = ask_once("Jaki serwis?", "klienttestowy.pl", client=client, brand_name="Klient Testowy")
 
         self.assertTrue(result.brand_cited)
         self.assertTrue(result.brand_mentioned)
         self.assertEqual(result.visibility, GeoRun.Visibility.LINKED_CITATION)
 
     def test_without_brand_name_only_links_are_detected(self):
-        client = self._client_returning("Early Stage prowadzi kursy.", [])
+        client = self._client_returning("Klient Testowy prowadzi kursy.", [])
 
-        result = ask_once("Jaka szkoła?", "earlystage.pl", client=client)
+        result = ask_once("Jaki serwis?", "klienttestowy.pl", client=client)
 
         self.assertFalse(result.brand_mentioned)
 
@@ -313,11 +313,11 @@ class VisibilityTotalsTests(TestCase):
             password="haslo-kontrolne-1",
         )
         cls.study = GeoStudy.objects.create(
-            owner=cls.user, domain="earlystage.pl", brand_name="Early Stage",
+            owner=cls.user, domain="klienttestowy.pl", brand_name="Klient Testowy",
             status=GeoStudy.Status.COMPLETED, overall_score=40, repetitions=5,
         )
         cls.query = GeoQuery.objects.create(
-            study=cls.study, text="Jaka szkoła językowa dla dzieci?", position=1,
+            study=cls.study, text="Jaki serwis rowerowy w Warszawie?", position=1,
             citation_rate=40, stability=GeoQuery.Stability.VOLATILE,
             competitors=[{"domain": "helendoron.pl", "count": 3}, {"domain": "berlitz.pl", "count": 1}],
         )
@@ -327,8 +327,8 @@ class VisibilityTotalsTests(TestCase):
         ):
             GeoRun.objects.create(
                 query=cls.query, attempt=attempt,
-                answer="Polecam Early Stage." if mentioned else "Polecam Helen Doron.",
-                citations=[{"url": "https://earlystage.pl/", "domain": "earlystage.pl", "position": 1}]
+                answer="Polecam Klient Testowy." if mentioned else "Polecam Helen Doron.",
+                citations=[{"url": "https://klienttestowy.pl/", "domain": "klienttestowy.pl", "position": 1}]
                 if cited else [{"url": "https://helendoron.pl/", "domain": "helendoron.pl", "position": 1}],
                 brand_cited=cited, brand_mentioned=mentioned,
                 brand_position=1 if cited else None,
@@ -371,8 +371,8 @@ class VisibilityTotalsTests(TestCase):
     def test_summary_carries_brand_and_numbers(self):
         summary = build_geo_executive_summary(self.study, self._queries())
 
-        self.assertEqual(summary["brand_name"], "Early Stage")
-        self.assertEqual(summary["domain"], "earlystage.pl")
+        self.assertEqual(summary["brand_name"], "Klient Testowy")
+        self.assertEqual(summary["domain"], "klienttestowy.pl")
         # Wynik liczony z prób (2 linki + 2 wzmianki na 5 prób = 80%), a nie
         # odczytany z `study.overall_score` - ten trzyma jeszcze starą punktację
         # sprzed ujednolicenia.
@@ -404,22 +404,22 @@ class ExecutiveSummaryRenderingTests(TestCase):
             password="haslo-kontrolne-1",
         )
         cls.study = GeoStudy.objects.create(
-            owner=cls.user, domain="earlystage.pl", brand_name="Early Stage",
+            owner=cls.user, domain="klienttestowy.pl", brand_name="Klient Testowy",
             status=GeoStudy.Status.COMPLETED, overall_score=40, repetitions=2,
         )
         query = GeoQuery.objects.create(
-            study=cls.study, text="Jaka szkoła językowa dla dzieci?", position=1,
+            study=cls.study, text="Jaki serwis rowerowy w Warszawie?", position=1,
             citation_rate=50, stability=GeoQuery.Stability.VOLATILE,
             competitors=[{"domain": "helendoron.pl", "count": 2}],
         )
         GeoRun.objects.create(
-            query=query, attempt=1, answer="Polecam Early Stage.",
-            citations=[{"url": "https://earlystage.pl/", "domain": "earlystage.pl", "position": 1}],
+            query=query, attempt=1, answer="Polecam Klient Testowy.",
+            citations=[{"url": "https://klienttestowy.pl/", "domain": "klienttestowy.pl", "position": 1}],
             brand_cited=True, brand_mentioned=True, brand_position=1,
             visibility=GeoRun.Visibility.LINKED_CITATION,
         )
         GeoRun.objects.create(
-            query=query, attempt=2, answer="Warto rozważyć Early Stage oraz Helen Doron.",
+            query=query, attempt=2, answer="Warto rozważyć Klient Testowy oraz Helen Doron.",
             citations=[{"url": "https://helendoron.pl/", "domain": "helendoron.pl", "position": 1}],
             brand_cited=False, brand_mentioned=True,
             visibility=GeoRun.Visibility.BRAND_MENTION,
@@ -432,8 +432,8 @@ class ExecutiveSummaryRenderingTests(TestCase):
         response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
 
         self.assertContains(response, "Podsumowanie Widoczności AI")
-        self.assertContains(response, "Early Stage")
-        self.assertContains(response, "earlystage.pl")
+        self.assertContains(response, "Klient Testowy")
+        self.assertContains(response, "klienttestowy.pl")
 
     def test_summary_separates_links_from_mentions(self):
         response = self.client.get(reverse("auditor:geo_detail", args=[self.study.pk]))
@@ -505,12 +505,12 @@ class CompetitorBenchmarkTests(TestCase):
     def _study(self, competitors=None) -> GeoStudy:
         """Badanie o znanym rozkładzie: 4 próby, każda z innym układem widoczności."""
         study = GeoStudy.objects.create(
-            owner=self.user, domain="earlystage.pl", brand_name="Early Stage",
+            owner=self.user, domain="klienttestowy.pl", brand_name="Klient Testowy",
             competitors_input=competitors or [],
             status=GeoStudy.Status.COMPLETED, overall_score=50, repetitions=4,
         )
         query = GeoQuery.objects.create(
-            study=study, text="Jaka szkoła językowa dla dzieci?", position=1,
+            study=study, text="Jaki serwis rowerowy w Warszawie?", position=1,
         )
 
         # 1: my z linkiem, Helen Doron z linkiem
@@ -518,11 +518,11 @@ class CompetitorBenchmarkTests(TestCase):
         # 3: my tylko z nazwy, Helen Doron z linkiem
         # 4: nas nie ma, Helen Doron z linkiem, Berlitz z nazwy
         uklad = [
-            ("Polecam Early Stage oraz Helen Doron.",
-             ["https://earlystage.pl/", "https://helendoron.pl/"], True, True),
-            ("Polecam Early Stage, alternatywą jest Helen Doron.",
-             ["https://earlystage.pl/"], True, True),
-            ("Warto rozważyć Early Stage.", ["https://helendoron.pl/"], False, True),
+            ("Polecam Klient Testowy oraz Helen Doron.",
+             ["https://klienttestowy.pl/", "https://helendoron.pl/"], True, True),
+            ("Polecam Klient Testowy, alternatywą jest Helen Doron.",
+             ["https://klienttestowy.pl/"], True, True),
+            ("Warto rozważyć Klient Testowy.", ["https://helendoron.pl/"], False, True),
             ("Polecam Helen Doron oraz Berlitz.", ["https://helendoron.pl/"], False, False),
         ]
         for attempt, (answer, urls, cited, mentioned) in enumerate(uklad, start=1):
@@ -609,7 +609,7 @@ class CompetitorBenchmarkTests(TestCase):
         benchmark = build_geo_benchmark(study, self._queries(study))
 
         self.assertTrue(benchmark["rows"][0]["is_brand"])
-        self.assertEqual(benchmark["rows"][0]["domain"], "earlystage.pl")
+        self.assertEqual(benchmark["rows"][0]["domain"], "klienttestowy.pl")
 
     def test_study_without_any_citations_has_no_benchmark(self):
         puste = GeoStudy.objects.create(
@@ -644,14 +644,14 @@ class BenchmarkRenderingTests(TestCase):
             password="haslo-kontrolne-1",
         )
         cls.study = GeoStudy.objects.create(
-            owner=cls.user, domain="earlystage.pl", brand_name="Early Stage",
+            owner=cls.user, domain="klienttestowy.pl", brand_name="Klient Testowy",
             competitors_input=["helendoron.pl"],
             status=GeoStudy.Status.COMPLETED, overall_score=50, repetitions=2,
         )
-        query = GeoQuery.objects.create(study=cls.study, text="Jaka szkoła?", position=1)
+        query = GeoQuery.objects.create(study=cls.study, text="Jaki serwis?", position=1)
         GeoRun.objects.create(
-            query=query, attempt=1, answer="Polecam Early Stage.",
-            citations=[{"url": "https://earlystage.pl/", "domain": "earlystage.pl", "position": 1}],
+            query=query, attempt=1, answer="Polecam Klient Testowy.",
+            citations=[{"url": "https://klienttestowy.pl/", "domain": "klienttestowy.pl", "position": 1}],
             brand_cited=True, brand_mentioned=True, brand_position=1,
             visibility=GeoRun.Visibility.LINKED_CITATION,
         )
@@ -717,8 +717,8 @@ class CompetitorFormTests(TestCase):
     def test_submitted_competitors_are_stored_on_the_study(self):
         with patch("auditor.tasks.enqueue_geo_study"):
             self.client.post(reverse("auditor:geo_dashboard"), {
-                "domain": "earlystage.pl",
-                "questions": ["Jaka szkoła językowa?"],
+                "domain": "klienttestowy.pl",
+                "questions": ["Jaki serwis rowerowy?"],
                 "competitors": "helendoron.pl, https://www.berlitz.pl/kursy",
             })
 
@@ -728,8 +728,8 @@ class CompetitorFormTests(TestCase):
     def test_empty_field_leaves_automatic_selection(self):
         with patch("auditor.tasks.enqueue_geo_study"):
             self.client.post(reverse("auditor:geo_dashboard"), {
-                "domain": "earlystage.pl",
-                "questions": ["Jaka szkoła językowa?"],
+                "domain": "klienttestowy.pl",
+                "questions": ["Jaki serwis rowerowy?"],
                 "competitors": "",
             })
 
@@ -752,7 +752,7 @@ class UnifiedScoringTests(TestCase):
             password="haslo-kontrolne-1",
         )
         cls.study = GeoStudy.objects.create(
-            owner=cls.user, domain="earlystage.pl", brand_name="Early Stage",
+            owner=cls.user, domain="klienttestowy.pl", brand_name="Klient Testowy",
             competitors_input=["helendoron.pl"],
             status=GeoStudy.Status.COMPLETED, repetitions=5,
         )
@@ -769,7 +769,7 @@ class UnifiedScoringTests(TestCase):
         ]
         for numer, uklad in enumerate(uklady, start=1):
             query = GeoQuery.objects.create(
-                study=cls.study, text=f"Jaka szkoła językowa - pytanie {numer}?",
+                study=cls.study, text=f"Jaki serwis rowerowy - pytanie {numer}?",
                 position=numer,
             )
             for rodzaj, attempt in uklad:
@@ -777,8 +777,8 @@ class UnifiedScoringTests(TestCase):
                 mentioned = rodzaj in ("link", "nazwa")
                 GeoRun.objects.create(
                     query=query, attempt=attempt,
-                    answer="Polecam Early Stage." if mentioned else "Polecam Helen Doron.",
-                    citations=[{"url": "https://earlystage.pl/", "domain": "earlystage.pl", "position": 1}]
+                    answer="Polecam Klient Testowy." if mentioned else "Polecam Helen Doron.",
+                    citations=[{"url": "https://klienttestowy.pl/", "domain": "klienttestowy.pl", "position": 1}]
                     if cited
                     else [{"url": "https://helendoron.pl/", "domain": "helendoron.pl", "position": 1}],
                     brand_cited=cited, brand_mentioned=mentioned,
@@ -869,17 +869,17 @@ class ScoreConsistencyRenderingTests(TestCase):
         # Zapisany `overall_score` celowo błędny - strona ma pokazać wynik liczony
         # z prób, a nie odziedziczoną liczbę ze starej punktacji.
         cls.study = GeoStudy.objects.create(
-            owner=cls.user, domain="earlystage.pl", brand_name="Early Stage",
+            owner=cls.user, domain="klienttestowy.pl", brand_name="Klient Testowy",
             competitors_input=["helendoron.pl"],
             status=GeoStudy.Status.COMPLETED, overall_score=25, repetitions=4,
         )
-        query = GeoQuery.objects.create(study=cls.study, text="Jaka szkoła?", position=1)
+        query = GeoQuery.objects.create(study=cls.study, text="Jaki serwis?", position=1)
         uklad = [(True, True), (False, True), (False, True), (False, False)]
         for attempt, (cited, mentioned) in enumerate(uklad, start=1):
             GeoRun.objects.create(
                 query=query, attempt=attempt,
-                answer="Polecam Early Stage." if mentioned else "Polecam Helen Doron.",
-                citations=[{"url": "https://earlystage.pl/", "domain": "earlystage.pl", "position": 1}]
+                answer="Polecam Klient Testowy." if mentioned else "Polecam Helen Doron.",
+                citations=[{"url": "https://klienttestowy.pl/", "domain": "klienttestowy.pl", "position": 1}]
                 if cited
                 else [{"url": "https://helendoron.pl/", "domain": "helendoron.pl", "position": 1}],
                 brand_cited=cited, brand_mentioned=mentioned,
@@ -948,8 +948,8 @@ class ScoreConsistencyRenderingTests(TestCase):
         ).content.decode()
 
         naglowek = html.split('class="geo-header-subtitle"', 1)[1][:300]
-        self.assertIn("earlystage.pl", naglowek)
-        self.assertIn("Early Stage", naglowek)
+        self.assertIn("klienttestowy.pl", naglowek)
+        self.assertIn("Klient Testowy", naglowek)
 
 
 class StabilityLabelTests(SimpleTestCase):
@@ -1012,21 +1012,21 @@ class LabelRenderingTests(TestCase):
             password="haslo-kontrolne-1",
         )
         cls.study = GeoStudy.objects.create(
-            owner=cls.user, domain="earlystage.pl", brand_name="Early Stage",
+            owner=cls.user, domain="klienttestowy.pl", brand_name="Klient Testowy",
             status=GeoStudy.Status.COMPLETED, repetitions=3,
         )
         query = GeoQuery.objects.create(
-            study=cls.study, text="Jaka szkoła językowa?", position=1,
+            study=cls.study, text="Jaki serwis rowerowy?", position=1,
             citation_rate=67, stability=GeoQuery.Stability.VOLATILE,
         )
         GeoRun.objects.create(
-            query=query, attempt=1, answer="Polecam Early Stage.",
-            citations=[{"url": "https://earlystage.pl/", "domain": "earlystage.pl", "position": 1}],
+            query=query, attempt=1, answer="Polecam Klient Testowy.",
+            citations=[{"url": "https://klienttestowy.pl/", "domain": "klienttestowy.pl", "position": 1}],
             brand_cited=True, brand_mentioned=True, brand_position=1,
             visibility=GeoRun.Visibility.LINKED_CITATION,
         )
         GeoRun.objects.create(
-            query=query, attempt=2, answer="Warto rozważyć Early Stage.",
+            query=query, attempt=2, answer="Warto rozważyć Klient Testowy.",
             citations=[{"url": "https://helendoron.pl/", "domain": "helendoron.pl", "position": 1}],
             brand_cited=False, brand_mentioned=True,
             visibility=GeoRun.Visibility.BRAND_MENTION,
@@ -1079,7 +1079,7 @@ class PolishMarketPromptTests(SimpleTestCase):
     def _client(self) -> MagicMock:
         client = MagicMock()
         client.responses.create.return_value = SimpleNamespace(
-            output_text="Polecam Early Stage.", output=[]
+            output_text="Polecam Klient Testowy.", output=[]
         )
         return client
 
@@ -1091,7 +1091,7 @@ class PolishMarketPromptTests(SimpleTestCase):
     def test_every_query_carries_the_market_instruction(self):
         client = self._client()
 
-        ask_once("Jaka szkoła językowa dla dzieci?", "earlystage.pl", client=client)
+        ask_once("Jaki serwis rowerowy w Warszawie?", "klienttestowy.pl", client=client)
 
         self.assertEqual(
             client.responses.create.call_args.kwargs["instructions"], MARKET_INSTRUCTION
@@ -1100,16 +1100,16 @@ class PolishMarketPromptTests(SimpleTestCase):
     def test_question_text_is_sent_unchanged(self):
         # Pytanie jest tym, co mierzymy - instrukcja rynkowa nie może go przerabiać.
         client = self._client()
-        pytanie = "Gdzie zapisać sześciolatka na angielski?"
+        pytanie = "Gdzie oddać rower do przeglądu?"
 
-        ask_once(pytanie, "earlystage.pl", client=client)
+        ask_once(pytanie, "klienttestowy.pl", client=client)
 
         self.assertEqual(client.responses.create.call_args.kwargs["input"], pytanie)
 
     def test_web_search_stays_required(self):
         client = self._client()
 
-        ask_once("Jaka szkoła?", "earlystage.pl", client=client)
+        ask_once("Jaki serwis?", "klienttestowy.pl", client=client)
 
         kwargs = client.responses.create.call_args.kwargs
         self.assertEqual(kwargs["tool_choice"], "required")

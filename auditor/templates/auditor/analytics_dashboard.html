@@ -100,7 +100,7 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
 <div class="panel analytics-connect">
     {% comment %}
     Sama domena, bez schematu: w nagłówku pełny adres niósł tylko szum, a globalna
-    reguła `h2 { text-transform: capitalize }` zamieniała go w "Https://Earlystage.Pl/".
+    reguła `h2 { text-transform: capitalize }` zamieniała go w "Https://Klienttestowy.Pl/".
     Klasa `analytics-connect-title` wyłącza tę kapitalizację, bo nagłówek zawiera dane,
     a nie tekst redakcyjny.
     {% endcomment %}
@@ -354,7 +354,7 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
                     <select name="gsc_site_url" id="gsc-change-{{ audit.pk }}">
                         <option value="">— dopasuj automatycznie po domenie —</option>
                         {% for option in selectors.gsc_matching %}
-                        <option value="{{ option.value }}"
+                        <option value="{{ option.value }}" title="{{ option.label }}"
                                 {% if option.value == audit.gsc_site_url %}selected{% endif %}>
                             {{ option.label }}
                         </option>
@@ -362,19 +362,32 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
                     </select>
                 </div>
 
+                {% comment %}
+                Cała treść w jednym elemencie flex: zdanie łamie się wtedy wewnątrz
+                siebie, a nie na kolumny wokół adresu (patrz .analytics-auto-gsc-text).
+                {% endcomment %}
                 <p class="analytics-auto-gsc">
                     <span class="analytics-auto-gsc-icon" aria-hidden="true">🔎</span>
-                    {% if audit.gsc_site_url %}
-                    Obecnie: <strong>{{ audit.gsc_site_url }}</strong>
-                    {% else %}
-                    Automat nie dopasował jeszcze żadnej witryny.
-                    {% endif %}
-                    Wskaż ją wprost, gdy jest zarejestrowana pod inną nazwą albo gdy
-                    automat wybrał subdomenę zamiast domeny głównej.
+                    <span class="analytics-auto-gsc-text">
+                        {% if audit.gsc_site_url %}
+                        Obecnie:
+                        <span class="analytics-config-value" title="{{ audit.gsc_site_url }}">{{ audit.gsc_site_url }}</span>
+                        {% else %}
+                        Automat nie dopasował jeszcze żadnej witryny.
+                        {% endif %}
+                        Wskaż ją wprost, gdy jest zarejestrowana pod inną nazwą albo gdy
+                        automat wybrał subdomenę zamiast domeny głównej.
+                    </span>
                 </p>
 
                 <div class="analytics-config-actions">
                     <button type="submit">Zapisz</button>
+                    {% comment %}
+                    Zwija sekcję i przywraca wartości wyjściowe - bez tego jedynym
+                    wyjściem z edycji był zapis albo przeładowanie strony.
+                    {% endcomment %}
+                    <button type="button" class="analytics-config-cancel"
+                            id="analytics-config-cancel">Anuluj</button>
                 </div>
             </form>
             <form method="post" action="{% url 'auditor:google_disconnect' %}"
@@ -697,6 +710,22 @@ nie zawiera już sekcji analitycznej, więc kierowała w puste miejsce.
     });
     if (window.location.hash === "#analytics-config") {
         sekcja.open = true;
+    }
+
+    // "Anuluj": zwija sekcję i przywraca wartości wyjściowe. `form.reset()` wraca
+    // do stanu z serwera, więc porzucone zmiany nie zostają w selektorach po
+    // ponownym otwarciu.
+    var anuluj = document.getElementById("analytics-config-cancel");
+    if (anuluj) {
+        anuluj.addEventListener("click", function () {
+            var formularz = anuluj.closest("form");
+            if (formularz) { formularz.reset(); }
+            sekcja.open = false;
+            // Kotwica w adresie otwierałaby sekcję z powrotem po odświeżeniu.
+            if (window.location.hash === "#analytics-config") {
+                history.replaceState(null, "", window.location.pathname + window.location.search);
+            }
+        });
     }
 })();
 </script>

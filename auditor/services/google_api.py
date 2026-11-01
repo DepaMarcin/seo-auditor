@@ -82,9 +82,9 @@ def normalize_host(value: str) -> str:
     co użytkownik czyta jako wygaśnięcie tokena, choć token jest w porządku.
 
     Rozumie wszystkie postacie, w jakich ta sama domena występuje w Google i w polu
-    formularza: "https://earlystage.pl/", "http://earlystage.pl", "www.earlystage.pl",
-    "earlystage.pl/blog", "earlystage.pl:8080", "sc-domain:earlystage.pl" oraz samo
-    "earlystage.pl".
+    formularza: "https://klienttestowy.pl/", "http://klienttestowy.pl", "www.klienttestowy.pl",
+    "klienttestowy.pl/blog", "klienttestowy.pl:8080", "sc-domain:klienttestowy.pl" oraz samo
+    "klienttestowy.pl".
     """
     tekst = (value or "").strip().lower()
     if not tekst:
@@ -99,10 +99,188 @@ def normalize_host(value: str) -> str:
         tekst = urlparse(tekst).hostname or tekst.split("//", 1)[1]
 
     # Bez schematu `urlparse` nie rozpoznaje hosta, więc ścieżkę, zapytanie i port
-    # odcinamy sami - inaczej "earlystage.pl/blog" nie zrównałoby się z "earlystage.pl".
+    # odcinamy sami - inaczej "klienttestowy.pl/blog" nie zrównałoby się z "klienttestowy.pl".
     tekst = tekst.split("/")[0].split("?")[0].split("#")[0].split(":")[0]
 
     return tekst.removeprefix("www.").strip(".")
+
+
+def rank_gsc_site(site_url: str, domain: str) -> tuple[int, int, str]:
+    """Klucz sortowania witryn Search Console dla danej domeny; mniejszy = lepszy.
+
+    Konto ma zwykle dla jednej domeny KILKA usług: osobno "sc-domain:domena.pl",
+    osobno prefiksy "https://domena.pl/" i "https://www.domena.pl/". Każda zbiera
+    dane niezależnie, więc wybór między nimi decyduje o liczbach w raporcie.
+    Pobranie pierwszej z listy (tak było wcześniej) dawało wynik zależny od
+    kolejności odpowiedzi Google - stąd 1 kliknięcie przy 442 sesjach organicznych
+    w Analytics.
+
+    Kolejność:
+      0. usługa DOMENOWA dokładnie tej domeny - obejmuje każdy protokół i każdą
+         subdomenę, więc to jedyna usługa z pełnymi danymi witryny,
+      1. usługa domenowa domeny nadrzędnej (audyt subdomeny),
+      2. prefiks URL po https,
+      3. prefiks URL po http,
+      4. cokolwiek innego, co się dopasowało.
+
+    Przy równym stopniu wygrywa host krótszy, czyli wariant bez "www." - to już
+    tylko konwencja, bo bez odpytania API nie da się stwierdzić, na którym
+    wariancie ruch faktycznie się zbiera. Dlatego `pick_gsc_site` zapisuje wtedy
+    ostrzeżenie w logu z listą pozostałych kandydatów.
+    """
+    tekst = (site_url or "").strip()
+    host = normalize_host(tekst)
+    cel = normalize_host(domain)
+
+    # Prefiks obejmujący podkatalog ("https://domena.pl/en/") opisuje CZĘŚĆ witryny,
+    # więc przegrywa z prefiksem korzenia nawet przy tym samym protokole.
+    podkatalog = 0
+    if "//" in tekst:
+        sciezka = urlparse(tekst if "://" in tekst else f"https://{tekst}").path
+        podkatalog = 1 if sciezka.strip("/") else 0
+
+    if tekst.lower().startswith(DOMAIN_PROPERTY_PREFIX):
+        stopien = 0 if host == cel else 1
+    elif tekst.lower().startswith("https://"):
+        stopien = 2 + podkatalog
+    elif tekst.lower().startswith("http://"):
+        stopien = 4 + podkatalog
+    else:
+        stopien = 6
+
+    return (stopien, len(host), tekst.lower())
+
+
+def pick_gsc_site(sites: list[dict], domain: str) -> str:
+    """Najlepsza witryna Search Console dla tej domeny - albo pusty ciąg.
+
+    `sites` to wpisy z `list_gsc_sites` (klucz "site_url"). Pusty wynik znaczy
+    "nie widzimy takiej witryny" i obejmuje też awarię API u wywołującego.
+    """
+    kandydaci = sorted(
+        (
+            str(w.get("site_url", ""))
+            for w in sites
+            if same_site(str(w.get("site_url", "")), domain)
+        ),
+        key=lambda u: rank_gsc_site(u, domain),
+    )
+    if not kandydaci:
+        return ""
+
+    wybrana = kandydaci[0]
+    # Prefiksy URL bez usługi domenowej to przypadek, w którym sama postać adresu
+    # NIE wystarcza: pomiar na motivationdirect.pl pokazał 1 kliknięcie na
+    # "https://domena.pl/" i 1248 na "https://www.domena.pl/". Rozstrzyga wtedy
+    # `pick_gsc_site_by_traffic`, a ta funkcja zostaje wyborem awaryjnym.
+    if len(kandydaci) > 1 and rank_gsc_site(wybrana, domain)[0] >= 2:
+        logger.warning(
+            "Search Console: dla %s konto ma kilka usług prefiksowych i żadnej domenowej. "
+            "Bez pomiaru ruchu wybór jest zgadywaniem - wybrano %s, pozostałe: %s.",
+            domain, wybrana, ", ".join(kandydaci[1:]),
+        )
+    return wybrana
+
+
+def matching_gsc_sites(sites: list[dict], domain: str) -> list[str]:
+    """Adresy witryn dopasowanych do domeny, od najlepiej opisującej witrynę."""
+    return sorted(
+        (
+            str(w.get("site_url", ""))
+            for w in sites
+            if same_site(str(w.get("site_url", "")), domain)
+        ),
+        key=lambda u: rank_gsc_site(u, domain),
+    )
+
+
+def pick_gsc_site_by_traffic(
+    credentials, sites: list[dict], domain: str, days: int = 92
+) -> str:
+    """Wybór usługi Search Console na podstawie tego, GDZIE SĄ DANE.
+
+    Postać adresu nie wystarcza, gdy konto nie ma usługi domenowej: dla
+    motivationdirect.pl prefiks "https://domena.pl/" miał 1 kliknięcie, a
+    "https://www.domena.pl/" - 1248. Który wariant zbiera ruch, zależy od tego,
+    na który host witryna przekierowuje, a tego z samej nazwy nie widać.
+
+    Odpytujemy więc kandydatów o sumę wyświetleń w oknie `days` i bierzemy
+    największą. Wyświetlenia, a nie kliknięcia: witryna o małym ruchu może mieć
+    zero kliknięć na każdym wariancie, a wyświetlenia i tak wskażą właściwy.
+
+    Pomiar robimy TYLKO wtedy, gdy jest co rozstrzygać - przy usłudze domenowej
+    albo jednym kandydacie wynik bierze się z samej postaci adresu. Przy
+    jakimkolwiek błędzie wracamy do `pick_gsc_site`, bo brak danych nie może
+    zablokować raportu.
+    """
+    kandydaci = matching_gsc_sites(sites, domain)
+    if not kandydaci:
+        return ""
+
+    najlepsza_ranga = rank_gsc_site(kandydaci[0], domain)[0]
+    if najlepsza_ranga < 2:
+        return kandydaci[0]
+
+    rownorzedni = [k for k in kandydaci if rank_gsc_site(k, domain)[0] == najlepsza_ranga]
+    if len(rownorzedni) == 1:
+        return rownorzedni[0]
+
+    from datetime import date, timedelta
+
+    from django.conf import settings
+    from django.core.cache import cache
+
+    # Klucz z listy KANDYDATÓW, nie z domeny: gdy konto traci lub zyskuje usługę,
+    # pomiar trzeba powtórzyć. Zapamiętujemy sam wynik porównania, więc późniejsza
+    # awaria listowania witryn nie udaje, że witryna jest widoczna.
+    klucz = "gsc_traffic_choice:" + "|".join(rownorzedni)
+    zapamietany = cache.get(klucz)
+    if zapamietany is not None:
+        return zapamietany
+
+    # Ostatnie dni Google jeszcze uzupełnia, więc okno kończymy z zapasem.
+    koniec = date.today() - timedelta(days=3)
+    start = koniec - timedelta(days=days)
+    body = {
+        "startDate": start.isoformat(),
+        "endDate": koniec.isoformat(),
+        "dimensions": [],
+        "type": "web",
+        "dataState": "final",
+    }
+
+    try:
+        from googleapiclient.discovery import build
+
+        service = build("searchconsole", "v1", credentials=credentials, cache_discovery=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Nie udało się zbudować klienta Search Console: %s", exc)
+        return pick_gsc_site(sites, domain)
+
+    pomiary: list[tuple[int, str]] = []
+    for adres in rownorzedni:
+        try:
+            odpowiedz = service.searchanalytics().query(siteUrl=adres, body=body).execute()
+            wiersze = (odpowiedz or {}).get("rows") or []
+            wyswietlenia = round(wiersze[0].get("impressions", 0)) if wiersze else 0
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Search Console: nie udało się odpytać %s: %s", adres, exc)
+            continue
+        pomiary.append((wyswietlenia, adres))
+
+    if not pomiary:
+        return pick_gsc_site(sites, domain)
+
+    pomiary.sort(key=lambda p: (-p[0], rank_gsc_site(p[1], domain)))
+    wybrana = pomiary[0][1]
+    logger.info(
+        "Search Console: dla %s wybrano %s na podstawie wyświetleń (%s).",
+        domain,
+        wybrana,
+        ", ".join(f"{adres}: {ile}" for ile, adres in pomiary),
+    )
+    cache.set(klucz, wybrana, getattr(settings, "CACHE_TTL_GSC", 12 * 3600))
+    return wybrana
 
 
 def same_site(first: str, second: str) -> bool:

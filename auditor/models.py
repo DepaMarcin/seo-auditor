@@ -304,7 +304,7 @@ class GeoStudy(models.Model):
     )
     domain = models.CharField(max_length=253)
     # Nazwa marki odczytana ze strony (tytuł, og:site_name albo domena). Domena nie
-    # wystarcza: model pisze "Early Stage", a nie "earlystage.pl", więc bez tej nazwy
+    # wystarcza: model pisze "Klient Testowy", a nie "klienttestowy.pl", więc bez tej nazwy
     # wzmianki w treści odpowiedzi byłyby niewidoczne dla pomiaru.
     brand_name = models.CharField(max_length=120, blank=True, default="")
     # Domeny konkurentów wskazane przez użytkownika, np. ["autos.com.pl"]. Pusta lista

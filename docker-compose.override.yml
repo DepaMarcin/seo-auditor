@@ -1,0 +1,76 @@
+# Nakładka DEWELOPERSKA: kod z katalogu projektu montowany do kontenera, więc zmiana
+# w pliku .py działa bez `docker compose up --build`.
+#
+# `docker compose` wczytuje ten plik AUTOMATYCZNIE, jeśli leży obok
+# docker-compose.yml. Uruchomienie bez niego (np. na serwerze):
+#
+#     docker compose -f docker-compose.yml up -d
+#
+# Dlaczego osobny plik, a nie wpis w docker-compose.yml: montowanie katalogu
+# roboczego i `--reload` są wygodą przy pisaniu kodu, a nie konfiguracją wdrożenia.
+# W obrazie produkcyjnym kod ma pochodzić z warstwy obrazu - inaczej to, co działa,
+# zależy od zawartości katalogu na serwerze.
+
+services:
+  web:
+    environment:
+      # Włącza `--reload` w docker/start-web.sh.
+      GUNICORN_RELOAD: "1"
+      # Szablony czytane przy każdym żądaniu. Bez tego przy DEBUG=False Django
+      # trzyma skompilowany szablon w pamięci procesu, a zmiana pliku .html
+      # (w tym projekcie także CAŁY arkusz stylów) nie daje żadnego efektu -
+      # `gunicorn --reload` obserwuje tylko pliki .py.
+      DJANGO_TEMPLATE_RELOAD: "1"
+    volumes:
+      # Kod źródłowy wprost z katalogu projektu.
+      - .:/app
+      # OSŁONA: `.:/app` zasłania `/app/staticfiles` z obrazu, a tam leży manifest
+      # `staticfiles.json` wygenerowany przy budowaniu. Bez tego wolumenu
+      # ManifestStaticFilesStorage nie znajduje manifestu i KAŻDA strona z tagiem
+      # `{% static %}` kończy się błędem 500. Wolumen nazwany wypełnia się
+      # zawartością z obrazu przy pierwszym uruchomieniu.
+      - statyka:/app/staticfiles
+
+  worker:
+    environment:
+      # Zadania renderują szablony (raport PDF), więc ta sama zasada co w `web`.
+      DJANGO_TEMPLATE_RELOAD: "1"
+    volumes:
+      - .:/app
+      # Zadania renderują szablony (np. raport PDF), więc manifest jest potrzebny
+      # także tutaj.
+      - statyka:/app/staticfiles
+    # Celery nie ma własnego przeładowywania po zmianie kodu (flagę `--autoreload`
+    # usunięto w 5.x), więc proces restartuje `watchmedo` z paczki watchdog.
+    #
+    # `--ignore-patterns` jest istotne: w zamontowanym katalogu leży `venv/` z kilkoma
+    # tysiącami plików, a obserwowanie ich zajmowałoby procesor bez żadnego powodu.
+    command:
+      - watchmedo
+      - auto-restart
+      # Obserwujemy WYŁĄCZNIE katalogi ze źródłami, nie całe /app. Przy odpytywaniu
+      # watchdog przechodzi całe drzewo w każdym cyklu, a w zamontowanym katalogu
+      # projektu leży `venv/` z ponad 26 tysiącami plików i `.git` - jeden przebieg
+      # nad montowaniem z Windows trwał tyle, że restart nie następował wcale.
+      - --directory=/app/auditor
+      - --directory=/app/config
+      - --pattern=*.py
+      - --recursive
+      - --signal=SIGTERM
+      # Odpytywanie zamiast `inotify`. Zdarzenia jądra NIE przechodzą przez
+      # montowanie katalogu z systemu plików Windows, więc obserwator domyślny
+      # nie widział żadnej zmiany (sprawdzone: utworzenie pliku .py nie wywołało
+      # restartu). Gunicorn działa, bo też odpytuje czasy modyfikacji.
+      - --debug-force-polling
+      - --
+      - celery
+      - -A
+      - config
+      - worker
+      - --loglevel
+      - info
+      - --concurrency
+      - "3"
+
+volumes:
+  statyka:

@@ -1,6 +1,6 @@
 """Formularz podłączenia usług Google po przełączeniu konta.
 
-Dymek „Search Console: automatycznie dopasowane do earlystage.pl" twierdził to
+Dymek „Search Console: automatycznie dopasowane do klienttestowy.pl" twierdził to
 bezwarunkowo - także po przełączeniu na konto, które tej domeny w ogóle nie widzi.
 Automat nie miał wtedy czego dopasować, a użytkownik dowiadywał się o tym dopiero
 po zapisie, patrząc na pustą analitykę.
@@ -22,9 +22,9 @@ from auditor.models import Audit, GoogleAccount
 User = get_user_model()
 
 WITRYNA_PASUJACA = {
-    "site_url": "sc-domain:earlystage.pl",
-    "label": "sc-domain:earlystage.pl",
-    "domain": "earlystage.pl",
+    "site_url": "sc-domain:klienttestowy.pl",
+    "label": "sc-domain:klienttestowy.pl",
+    "domain": "klienttestowy.pl",
 }
 WITRYNA_OBCA = {
     "site_url": "sc-domain:innafirma.pl",
@@ -33,7 +33,7 @@ WITRYNA_OBCA = {
 }
 GA4_PASUJACA = {
     "property_id": "316375346",
-    "display_name": "earlystage.pl",
+    "display_name": "klienttestowy.pl",
     "account_name": "Konto",
 }
 GA4_OBCA = {
@@ -58,7 +58,7 @@ class ConnectFormBase(TestCase):
         )
         # Audyt BEZ przypisanej usługi - to stan, w którym widać ten formularz.
         cls.audit = Audit.objects.create(
-            url="https://earlystage.pl/", owner=cls.user, status=Audit.Status.COMPLETED
+            url="https://klienttestowy.pl/", owner=cls.user, status=Audit.Status.COMPLETED
         )
 
     def setUp(self):
@@ -97,17 +97,17 @@ class HeadingTests(ConnectFormBase):
     def test_heading_shows_the_bare_domain(self):
         html = self._html(witryny=[WITRYNA_PASUJACA])
 
-        self.assertIn("Wskaż usługi dla domeny earlystage.pl", html)
+        self.assertIn("Wskaż usługi dla domeny klienttestowy.pl", html)
 
     def test_heading_does_not_show_the_full_address(self):
         # Schemat i ukośnik niosły w nagłówku tylko szum.
         html = self._html(witryny=[WITRYNA_PASUJACA])
 
-        self.assertNotIn("Wskaż usługi dla domeny https://earlystage.pl/", html)
+        self.assertNotIn("Wskaż usługi dla domeny https://klienttestowy.pl/", html)
 
     def test_data_headings_opt_out_of_capitalisation(self):
         # Globalna reguła `h2 { text-transform: capitalize }` zamieniała
-        # "earlystage.pl" w "Earlystage.Pl" - nagłówki z danymi muszą ją wyłączać.
+        # "klienttestowy.pl" w "Klienttestowy.Pl" - nagłówki z danymi muszą ją wyłączać.
         from pathlib import Path
 
         from django.conf import settings
@@ -133,13 +133,13 @@ class AutoMatchClaimTests(ConnectFormBase):
     def test_claim_appears_only_with_a_real_match(self):
         html = self._html(witryny=[WITRYNA_PASUJACA])
 
-        self.assertIn("dopasowano <strong>sc-domain:earlystage.pl</strong>", html)
+        self.assertIn("dopasowano <strong>sc-domain:klienttestowy.pl</strong>", html)
 
     def test_claim_names_the_actual_site_not_the_domain(self):
-        # „Dopasowane do earlystage.pl" nie mówiło, CO zostało przypisane.
+        # „Dopasowane do klienttestowy.pl" nie mówiło, CO zostało przypisane.
         html = self._html(witryny=[WITRYNA_PASUJACA])
 
-        self.assertIn("sc-domain:earlystage.pl", html)
+        self.assertIn("sc-domain:klienttestowy.pl", html)
 
     def test_no_claim_when_the_account_lacks_the_domain(self):
         # Sedno błędu: po przełączeniu konta formularz nadal obiecywał dopasowanie.
@@ -151,7 +151,7 @@ class AutoMatchClaimTests(ConnectFormBase):
         html = self._html(wlasciwosci=[GA4_OBCA], witryny=[WITRYNA_OBCA])
 
         self.assertIn(
-            "nie ma dostępu do witryny <strong>earlystage.pl</strong>", html
+            "nie ma dostępu do witryny <strong>klienttestowy.pl</strong>", html
         )
         self.assertIn("Przełącz konto Google", html)
 
@@ -165,7 +165,7 @@ class AutoMatchClaimTests(ConnectFormBase):
         # Dostęp do GA4 i do Search Console nadaje się niezależnie.
         html = self._html(wlasciwosci=[GA4_OBCA], witryny=[WITRYNA_PASUJACA])
 
-        self.assertIn("dopasowano <strong>sc-domain:earlystage.pl</strong>", html)
+        self.assertIn("dopasowano <strong>sc-domain:klienttestowy.pl</strong>", html)
 
 
 class SiteSelectorTests(ConnectFormBase):
@@ -189,7 +189,7 @@ class SiteSelectorTests(ConnectFormBase):
         html = self._html(wlasciwosci=[GA4_OBCA], witryny=[WITRYNA_OBCA])
 
         self.assertIn(
-            "nie ma dostępu do witryny <strong>earlystage.pl</strong>", html
+            "nie ma dostępu do witryny <strong>klienttestowy.pl</strong>", html
         )
 
     def test_no_selector_when_a_single_match_exists(self):
@@ -205,9 +205,9 @@ class SiteSelectorTests(ConnectFormBase):
             witryny=[
                 WITRYNA_PASUJACA,
                 {
-                    "site_url": "https://earlystage.pl/",
-                    "label": "https://earlystage.pl/",
-                    "domain": "earlystage.pl",
+                    "site_url": "https://klienttestowy.pl/",
+                    "label": "https://klienttestowy.pl/",
+                    "domain": "klienttestowy.pl",
                 },
             ]
         )
@@ -224,8 +224,8 @@ class SiteSelectorTests(ConnectFormBase):
         # Pole musi faktycznie działać, nie tylko się wyświetlać.
         with patch("auditor.views._has_access_to_property", return_value=True), patch(
             "auditor.views._verified_gsc_site",
-            return_value="sc-domain:earlystage.pl",
-        ), patch("auditor.views._ga4_property_name", return_value="earlystage.pl"), patch(
+            return_value="sc-domain:klienttestowy.pl",
+        ), patch("auditor.views._ga4_property_name", return_value="klienttestowy.pl"), patch(
             "auditor.views.apply_google_services"
         ) as zapis:
             zapis.return_value = MagicMock(changed=True, fetched=True)
@@ -233,13 +233,13 @@ class SiteSelectorTests(ConnectFormBase):
                 reverse("auditor:assign_google_services", args=[self.audit.pk]),
                 {
                     "ga4_property_id": "316375346",
-                    "gsc_site_url": "sc-domain:earlystage.pl",
+                    "gsc_site_url": "sc-domain:klienttestowy.pl",
                     "next": "analytics",
                 },
             )
 
         self.assertEqual(
-            zapis.call_args.kwargs["site_url"], "sc-domain:earlystage.pl"
+            zapis.call_args.kwargs["site_url"], "sc-domain:klienttestowy.pl"
         )
 
 
@@ -284,7 +284,7 @@ class SelectorFlagTests(ConnectFormBase):
         kontekst = self._open(witryny=[WITRYNA_PASUJACA]).context
 
         self.assertEqual(
-            kontekst["selectors"]["gsc_matched"], "sc-domain:earlystage.pl"
+            kontekst["selectors"]["gsc_matched"], "sc-domain:klienttestowy.pl"
         )
         self.assertTrue(kontekst["selectors"]["has_match"])
 
@@ -303,9 +303,9 @@ class SelectorFlagTests(ConnectFormBase):
         kontekst = self._open(
             witryny=[
                 {
-                    "site_url": "https://materialy.earlystage.pl/",
-                    "label": "materialy.earlystage.pl",
-                    "domain": "materialy.earlystage.pl",
+                    "site_url": "https://materialy.klienttestowy.pl/",
+                    "label": "materialy.klienttestowy.pl",
+                    "domain": "materialy.klienttestowy.pl",
                 }
             ]
         ).context

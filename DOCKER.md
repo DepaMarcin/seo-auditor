@@ -86,6 +86,40 @@ polecenia: startował bez flag z dalszych linii, w tym bez `--bind`, i słuchał
 domyślnym `127.0.0.1:8000` — adresie wnętrza kontenera, do którego mapowanie portu
 nie prowadzi. W logach było to widać jako `Listening at: http://127.0.0.1:8000`.
 
+## Praca nad kodem bez przebudowy obrazu
+
+`docker-compose.override.yml` montuje katalog projektu jako `/app` w usługach `web`
+i `worker`, więc zmiana w pliku `.py` działa od razu. Compose wczytuje ten plik
+**automatycznie**; uruchomienie bez niego (serwer, wdrożenie):
+
+```bash
+docker compose -f docker-compose.yml up -d
+```
+
+Przeładowywanie działa inaczej w obu usługach, bo wymusiły to pomiary:
+
+| Usługa | Mechanizm | Opóźnienie |
+|---|---|---|
+| `web` | `gunicorn --reload` (odpytuje czasy modyfikacji) | ~1 s |
+| `worker` | `watchmedo auto-restart` z paczki `watchdog` | ~9 s (restart Celery) |
+
+Trzy rzeczy, które trzeba było obejść — każda potwierdzona w działającym kontenerze:
+
+1. **Statyka.** `.:/app` zasłania `/app/staticfiles` z obrazu, a tam leży manifest
+   `staticfiles.json`. Bez osłony (wolumen nazwany `statyka`) każda strona z tagiem
+   `{% static %}` kończy się błędem 500, bo `ManifestStaticFilesStorage` nie znajduje
+   manifestu.
+2. **Zdarzenia plików.** `inotify` nie przechodzi przez montowanie z systemu plików
+   Windows — obserwator musi odpytywać (`--debug-force-polling`). Gunicorn działa
+   sam z siebie, bo odpytuje.
+3. **Zakres obserwacji.** Odpytywanie całego `/app` nie wywoływało restartu w ogóle:
+   w katalogu projektu leży `venv/` z ponad 26 tysiącami plików, więc jeden przebieg
+   po drzewie trwał dłużej niż cykl. Obserwowane są tylko `auditor/` i `config/`.
+
+Uwaga: `.dockerignore` **nie dotyczy** montowania katalogu. Przy włączonej nakładce
+`.env`, `client_secret.json` i `db.sqlite3` są widoczne wewnątrz kontenera (to ta sama
+maszyna, ale w obrazie produkcyjnym ich nie ma).
+
 ## Czego ten obraz nie zawiera
 
 - **Playwright/Chromium** — fallback przeglądarkowy scrapera dla stron renderowanych

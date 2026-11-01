@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
@@ -23,7 +24,7 @@ from auditor.models import Audit, GoogleAccount
 User = get_user_model()
 
 WLASNA = {"property_id": "222", "display_name": "shell.pl", "account_name": "Konto"}
-OBCA = {"property_id": "999", "display_name": "earlystage.pl", "account_name": "Konto"}
+OBCA = {"property_id": "999", "display_name": "klienttestowy.pl", "account_name": "Konto"}
 WITRYNA_WLASNA = {
     "site_url": "sc-domain:shell.pl",
     "label": "sc-domain:shell.pl",
@@ -51,6 +52,10 @@ class CleanEntryTests(TestCase):
         )
 
     def setUp(self):
+        # Wybór usługi Search Console jest zapamiętywany w cache'u, a LocMemCache
+        # żyje przez cały proces testowy - bez czyszczenia wynik jednego testu
+        # przeciekałby do następnego.
+        cache.clear()
         self.client.force_login(self.user)
         konto, _ = GoogleAccount.objects.get_or_create(user=self.user)
         konto.refresh_token_encrypted = "jawny-token-testowy"
@@ -66,7 +71,7 @@ class CleanEntryTests(TestCase):
         ), patch(
             "auditor.services.google_api.list_authorized_domains",
             return_value=[
-                {"domain": "earlystage.pl", "ga4": [OBCA], "gsc": []},
+                {"domain": "klienttestowy.pl", "ga4": [OBCA], "gsc": []},
             ],
         ):
             return self.client.get(adres)
@@ -126,6 +131,10 @@ class OauthReturnTests(TestCase):
         )
 
     def setUp(self):
+        # Wybór usługi Search Console jest zapamiętywany w cache'u, a LocMemCache
+        # żyje przez cały proces testowy - bez czyszczenia wynik jednego testu
+        # przeciekałby do następnego.
+        cache.clear()
         self.client.force_login(self.user)
         konto, _ = GoogleAccount.objects.get_or_create(user=self.user)
         konto.refresh_token_encrypted = "jawny-token-testowy"
@@ -172,13 +181,33 @@ class OauthReturnTests(TestCase):
             response, reverse("auditor:analytics"), fetch_redirect_response=False
         )
 
-    def test_the_reason_is_explained(self):
-        self._callback([OBCA], [])
-
-        komunikaty = [
+    def _komunikaty(self) -> list[str]:
+        return [
             str(m) for m in self.client.get(reverse("auditor:hub")).context["messages"]
         ]
-        self.assertTrue(any("nie ma ono dostępu do domeny shell.pl" in m for m in komunikaty))
+
+    def test_the_connection_is_confirmed_without_an_alarm(self):
+        # Brak dostępu do domeny, od której użytkownik właśnie odszedł, nie jest
+        # usterką - to powód, dla którego przełączał konto. Czerwony baner
+        # o "braku dostępu do shell.pl" na ekranie wyboru domen mylił.
+        self._callback([OBCA], [])
+
+        komunikaty = self._komunikaty()
+
+        self.assertTrue(any("Połączono konto Google" in m for m in komunikaty))
+        self.assertFalse(any("nie ma ono dostępu" in m for m in komunikaty))
+
+    def test_the_message_says_what_to_do_next(self):
+        self._callback([OBCA], [])
+
+        self.assertTrue(any("Wybierz domenę" in m for m in self._komunikaty()))
+
+    def test_the_message_names_the_connected_account(self):
+        # Przy kilku kontach Google w przeglądarce to jedyna informacja, której
+        # użytkownik w tym miejscu potrzebuje.
+        self._callback([OBCA], [])
+
+        self.assertTrue(any("krzysztof@gmail.com" in m for m in self._komunikaty()))
 
     def test_account_with_access_returns_to_the_panel(self):
         # Gdy nowe konto obsługuje tę domenę, powrót na jej panel jest właściwy.

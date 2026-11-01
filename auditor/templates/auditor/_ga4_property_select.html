@@ -20,7 +20,12 @@ Parametry: `matching`, `other`, `field_id`, `current` (obecnie przypisany identy
     {% if matching %}
     <optgroup label="Usługi pasujące do {{ audit_domain }}">
         {% for option in matching %}
+        {% comment %}
+        Pełna etykieta w `title`: <select> ucina długie nazwy ("Ideo → motiv..."),
+        a konta agencyjne mają nazwy dłuższe niż szerokość kafelka.
+        {% endcomment %}
         <option value="{{ option.value }}"
+                title="{% if option.account %}{{ option.account }} → {% endif %}{{ option.label }} (ID: {{ option.value }})"
                 {% if option.value == current %}selected{% elif not current and forloop.first %}selected{% endif %}>
             {% if option.account %}{{ option.account }} → {% endif %}{{ option.label }} (ID: {{ option.value }})
         </option>
@@ -31,7 +36,9 @@ Parametry: `matching`, `other`, `field_id`, `current` (obecnie przypisany identy
     {% if other %}
     <optgroup label="Pozostałe usługi na koncie (inne domeny)">
         {% for option in other %}
-        <option value="{{ option.value }}" {% if option.value == current %}selected{% endif %}>
+        <option value="{{ option.value }}"
+                title="{% if option.account %}{{ option.account }} → {% endif %}{{ option.label }} (ID: {{ option.value }})"
+                {% if option.value == current %}selected{% endif %}>
             {% if option.account %}{{ option.account }} → {% endif %}{{ option.label }} (ID: {{ option.value }})
         </option>
         {% endfor %}

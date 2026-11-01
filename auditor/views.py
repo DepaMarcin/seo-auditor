@@ -262,8 +262,25 @@ def _autoselect_google_services(audit: Audit, uprawnienie: dict) -> None:
         usluga = str(uslugi[0].get("property_id", ""))
 
     witryna = audit.gsc_site_url or ""
-    if not witryna and len(witryny) == 1:
-        witryna = witryny[0].get("site_url", "")
+    if not witryna and witryny:
+        # Przypisujemy tylko wybór ROZSTRZYGALNY z samej postaci adresu: jedynego
+        # kandydata albo usługę domenową (ta obejmuje wszystkie protokoły
+        # i subdomeny). Gdy zostają same prefiksy URL, decyzja wymaga pomiaru ruchu
+        # - zapisanie tu przypadkowego wariantu utrwaliłoby usterkę
+        # motivationdirect.pl (1 kliknięcie zamiast 1248). Pustkę rozstrzyga potem
+        # `_matching_gsc_site`, który porównuje dane.
+        from auditor.services.google_api import (
+            audit_domain,
+            matching_gsc_sites,
+            rank_gsc_site,
+        )
+
+        domena_audytu = audit_domain(audit.url)
+        kandydaci = matching_gsc_sites(witryny, domena_audytu)
+        if len(kandydaci) == 1 or (
+            kandydaci and rank_gsc_site(kandydaci[0], domena_audytu)[0] < 2
+        ):
+            witryna = kandydaci[0]
 
     if usluga == (audit.ga4_property_id or "") and witryna == (audit.gsc_site_url or ""):
         return
@@ -809,7 +826,7 @@ def _service_mismatch_reason(
     odpytanie Google w warstwie, która dziś z nim nie rozmawia.
 
     Nazwa usługi GA4 to dowolny tekst nadany przez właściciela, więc czasem nie
-    zawiera domeny ("Early Stage", "Klient 3"). Wtedy NIE blokujemy: nie mamy podstaw
+    zawiera domeny ("Klient Testowy", "Klient 3"). Wtedy NIE blokujemy: nie mamy podstaw
     twierdzić, że usługa jest niewłaściwa, a odmowa uniemożliwiłaby przypisanie takiej
     usługi na zawsze.
     """
@@ -837,7 +854,7 @@ def _service_mismatch_reason(
             f"({domena_audytu}). Wybierz usługę powiązaną z tą domeną."
         )
 
-    # Nazwa usługi bywa bez domeny ("Early Stage", "Klient 3") i wtedy sama w sobie
+    # Nazwa usługi bywa bez domeny ("Klient Testowy", "Klient 3") i wtedy sama w sobie
     # niczego nie dowodzi. Rozstrzyga wtedy drugie pytanie: czy to konto ma dla tej
     # domeny COKOLWIEK - usługę GA4 albo witrynę Search Console. Jeśli nie ma nic,
     # to cokolwiek użytkownik wybrał, na pewno nie opisuje badanej witryny.
@@ -859,7 +876,7 @@ def _matching_gsc_site(request: HttpRequest, domain: str) -> str:
     Rozstrzyga o treści komunikatu, nie o dostępie, więc ta nieostrość jest tu
     bezpieczna - byle komunikat nie twierdził więcej, niż wiadomo.
     """
-    from auditor.services.google_api import list_gsc_sites, same_site
+    from auditor.services.google_api import list_gsc_sites, pick_gsc_site_by_traffic
     from auditor.services.google_services import build_credentials_from_refresh_token
 
     konto = _user_google_account(request)
@@ -880,14 +897,11 @@ def _matching_gsc_site(request: HttpRequest, domain: str) -> str:
         logger.exception("Nie udało się pobrać witryn Search Console konta %s.", konto.pk)
         return ""
 
-    return next(
-        (
-            w.get("site_url", "")
-            for w in witryny
-            if same_site(w.get("site_url", ""), domain)
-        ),
-        "",
-    )
+    # Wybór między równorzędnymi prefiksami URL wymaga pomiaru ruchu - cache siedzi
+    # WEWNĄTRZ `pick_gsc_site_by_traffic`, przy samych zapytaniach o dane. Trzymanie
+    # go tutaj znaczyłoby, że późniejsza awaria `list_gsc_sites` nadal zwraca
+    # zapamiętaną witrynę, choć ta funkcja ma wtedy mówić "nie wiem".
+    return pick_gsc_site_by_traffic(credentials, witryny, domain)
 
 
 def _account_covers_domain(request: HttpRequest, domain: str) -> bool:
@@ -1770,6 +1784,23 @@ def ga4_callback(request: HttpRequest) -> HttpResponse:
     return _redirect_after_oauth(request, audit, state, properties)
 
 
+def _opis_konta(request: HttpRequest) -> str:
+    """Adres podłączonego konta w nawiasie, albo pusty łańcuch.
+
+    Przy kilku kontach Google w przeglądarce sam komunikat "Połączono konto" nie
+    mówi, KTÓRE konto jest teraz aktywne - a to jedyna informacja, której
+    użytkownik w tym miejscu potrzebuje.
+    """
+    from auditor.models import GoogleAccount
+
+    email = (
+        GoogleAccount.objects.filter(user=request.user)
+        .values_list("email", flat=True)
+        .first()
+    )
+    return f" ({email})" if email else ""
+
+
 def _redirect_after_oauth(
     request: HttpRequest, audit: Audit, state: str, properties: list
 ) -> HttpResponse:
@@ -1794,11 +1825,13 @@ def _redirect_after_oauth(
         # Powrót na panel domeny, której konto nie obsługuje, to ślepy zaułek:
         # użytkownik widzi same ostrzeżenia i zablokowany formularz. Przełączał
         # konto właśnie dlatego, że poprzednie nie miało dostępu.
-        messages.warning(
-            request,
-            f"Połączono konto Google, ale nie ma ono dostępu do domeny {domena}. "
-            "Wybierz domenę, którą to konto obsługuje.",
-        )
+        #
+        # Komunikat jest POTWIERDZENIEM, nie ostrzeżeniem: brak dostępu do domeny,
+        # od której użytkownik właśnie odszedł, nie jest usterką - to powód, dla
+        # którego przełączał konto. Czerwony baner o "braku dostępu do enova.pl"
+        # na ekranie wyboru domen mylił, bo opisywał stan nieistotny w tym miejscu.
+        messages.success(request, f"Połączono konto Google{_opis_konta(request)}. "
+                         "Wybierz domenę, którą chcesz analizować.")
         return redirect("auditor:analytics")
 
     if not properties:

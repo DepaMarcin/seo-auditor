@@ -290,6 +290,13 @@ class GSCService:
             "endDate": end.isoformat(),
             "dimensions": [dimension],
             "rowLimit": QUERY_ROW_LIMIT,
+            # Oba poniżej to obecne wartości DOMYŚLNE API, podane jawnie: raport ma
+            # pokazywać dokładnie to, co karta "Wyniki w wyszukiwarce" w Search
+            # Console. "web" wyklucza Discover i Wiadomości, a "final" bierze tylko
+            # dane kompletne - bez nich porównanie rok do roku mieszałoby okres
+            # domknięty z ostatnimi dniami, które Google jeszcze uzupełnia.
+            "type": "web",
+            "dataState": "final",
         }
         response = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
         return response.get("rows", [])
@@ -300,7 +307,15 @@ class GSCService:
         zagregowany wiersz obejmujący cały ruch witryny, w tym anonimowe/rzadkie frazy
         pomijane przez Google w rozbiciu `dimensions=["query"]`. To jedyne rzetelne
         źródło nagłówkowej liczby kliknięć (patrz `_fetch_yoy_dimension_performance`)."""
-        body = {"startDate": start.isoformat(), "endDate": end.isoformat(), "dimensions": []}
+        body = {
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "dimensions": [],
+            # Te same wartości co w `_query_rows` - inaczej suma nagłówkowa
+            # obejmowałaby inny zakres niż rozbicie pod nią.
+            "type": "web",
+            "dataState": "final",
+        }
         response = service.searchanalytics().query(siteUrl=site_url, body=body).execute()
         rows = response.get("rows", [])
         if not rows:

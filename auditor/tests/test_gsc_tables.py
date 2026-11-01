@@ -25,14 +25,14 @@ User = get_user_model()
 
 WITRYNY_GSC = [
     {
-        "site_url": "sc-domain:earlystage.pl",
-        "label": "sc-domain:earlystage.pl",
-        "domain": "earlystage.pl",
+        "site_url": "sc-domain:klienttestowy.pl",
+        "label": "sc-domain:klienttestowy.pl",
+        "domain": "klienttestowy.pl",
     },
     {
-        "site_url": "https://materialy.earlystage.pl/",
-        "label": "materialy.earlystage.pl",
-        "domain": "materialy.earlystage.pl",
+        "site_url": "https://materialy.klienttestowy.pl/",
+        "label": "materialy.klienttestowy.pl",
+        "domain": "materialy.klienttestowy.pl",
     },
 ]
 
@@ -98,12 +98,12 @@ class GscRowBuilderTests(SimpleTestCase):
 
     def test_page_rows_carry_the_full_address(self):
         wiersz = build_gsc_rows(
-            [{"page": "https://earlystage.pl/blog/x", "clicks_current": 5,
+            [{"page": "https://klienttestowy.pl/blog/x", "clicks_current": 5,
               "clicks_previous": 1, "delta": 4}],
-            "earlystage.pl",
+            "klienttestowy.pl",
         )[0]
 
-        self.assertEqual(wiersz["url"], "https://earlystage.pl/blog/x")
+        self.assertEqual(wiersz["url"], "https://klienttestowy.pl/blog/x")
         self.assertEqual(wiersz["label"], "/blog/x")
 
 
@@ -113,47 +113,47 @@ class PageLabelTests(SimpleTestCase):
     def test_same_domain_shows_only_the_path(self):
         # Host powtarzałby się w każdym wierszu tabeli o jednej witrynie.
         self.assertEqual(
-            page_label("https://earlystage.pl/blog/present-simple", "earlystage.pl"),
+            page_label("https://klienttestowy.pl/blog/present-simple", "klienttestowy.pl"),
             "/blog/present-simple",
         )
 
     def test_other_subdomain_keeps_its_host(self):
         # To nie szum: ruch na innej subdomenie to inna rzecz niż na domenie głównej.
         self.assertEqual(
-            page_label("https://universe.earlystage.pl/freebies", "earlystage.pl"),
-            "universe.earlystage.pl/freebies",
+            page_label("https://strefa.klienttestowy.pl/freebies", "klienttestowy.pl"),
+            "strefa.klienttestowy.pl/freebies",
         )
 
     def test_www_is_not_a_different_subdomain(self):
         self.assertEqual(
-            page_label("https://www.earlystage.pl/blog/x", "earlystage.pl"), "/blog/x"
+            page_label("https://www.klienttestowy.pl/blog/x", "klienttestowy.pl"), "/blog/x"
         )
 
     def test_homepage_shows_the_host(self):
         # Sama "/" nie mówi nic - pokazujemy domenę.
         self.assertEqual(
-            page_label("https://earlystage.pl/", "earlystage.pl"), "earlystage.pl"
+            page_label("https://klienttestowy.pl/", "klienttestowy.pl"), "klienttestowy.pl"
         )
 
     def test_query_string_is_kept(self):
         self.assertEqual(
-            page_label("https://earlystage.pl/szukaj?q=angielski", "earlystage.pl"),
-            "/szukaj?q=angielski",
+            page_label("https://klienttestowy.pl/szukaj?q=rower", "klienttestowy.pl"),
+            "/szukaj?q=rower",
         )
 
     def test_long_address_is_shortened_in_the_middle(self):
         # Koniec adresu bywa rozpoznawalny (nazwa artykułu), więc ucinamy środek.
-        dlugi = "https://earlystage.pl/" + "/".join(f"segment{n}" for n in range(12))
+        dlugi = "https://klienttestowy.pl/" + "/".join(f"segment{n}" for n in range(12))
 
-        etykieta = page_label(dlugi, "earlystage.pl")
+        etykieta = page_label(dlugi, "klienttestowy.pl")
 
         self.assertLessEqual(len(etykieta), 64)
         self.assertIn("…", etykieta)
         self.assertTrue(etykieta.endswith("segment11"))
 
     def test_empty_address_gives_an_empty_label(self):
-        self.assertEqual(page_label("", "earlystage.pl"), "")
-        self.assertEqual(page_label(None, "earlystage.pl"), "")
+        self.assertEqual(page_label("", "klienttestowy.pl"), "")
+        self.assertEqual(page_label(None, "klienttestowy.pl"), "")
 
 
 class AnalyticsPanelBase(TestCase):
@@ -165,9 +165,9 @@ class AnalyticsPanelBase(TestCase):
             password="haslo-kontrolne-1",
         )
         cls.audit = Audit.objects.create(
-            url="https://earlystage.pl/", owner=cls.user, status=Audit.Status.COMPLETED,
+            url="https://klienttestowy.pl/", owner=cls.user, status=Audit.Status.COMPLETED,
             ga4_property_id="316375346", ga4_organic_sessions=38035,
-            gsc_site_url="sc-domain:earlystage.pl", gsc_total_clicks_current=103953,
+            gsc_site_url="sc-domain:klienttestowy.pl", gsc_total_clicks_current=103953,
             senuto_top3=5, senuto_top10=40, senuto_top50=120,
             senuto_history={
                 "dates": ["2026-09-01", "2026-10-01"],
@@ -182,11 +182,11 @@ class AnalyticsPanelBase(TestCase):
                  "clicks_previous": 458, "delta": -404},
             ],
             gsc_top_page_gainers=[
-                {"page": "https://universe.earlystage.pl/universe/freebies",
+                {"page": "https://strefa.klienttestowy.pl/strefa/freebies",
                  "clicks_current": 2180, "clicks_previous": 0, "delta": 2180},
             ],
             gsc_top_page_losers=[
-                {"page": "https://earlystage.pl/blog/jezyki-swiata/",
+                {"page": "https://klienttestowy.pl/blog/jezyki-swiata/",
                  "clicks_current": 957, "clicks_previous": 3965, "delta": -3008},
             ],
         )
@@ -282,12 +282,12 @@ class PageTableTests(AnalyticsPanelBase):
         # Inaczej 2180 kliknięć wyglądałoby na ruch domeny głównej.
         html = _body_only(self._open().content.decode())
 
-        self.assertIn("universe.earlystage.pl/universe/freebies", html)
+        self.assertIn("strefa.klienttestowy.pl/strefa/freebies", html)
 
     def test_full_address_stays_in_the_title(self):
         html = _body_only(self._open().content.decode())
 
-        self.assertIn('title="https://earlystage.pl/blog/jezyki-swiata/"', html)
+        self.assertIn('title="https://klienttestowy.pl/blog/jezyki-swiata/"', html)
 
     def test_section_is_hidden_without_data(self):
         Audit.objects.filter(pk=self.audit.pk).update(
@@ -313,13 +313,13 @@ class ServiceSwitchTests(AnalyticsPanelBase):
         html = _body_only(self._open().content.decode())
 
         self.assertIn('name="gsc_site_url"', html)
-        self.assertIn("materialy.earlystage.pl", html)
+        self.assertIn("materialy.klienttestowy.pl", html)
         self.assertIn("dopasuj automatycznie", html)
 
     def test_current_site_is_preselected(self):
         html = _body_only(self._open().content.decode())
 
-        self.assertRegex(html, r'value="sc-domain:earlystage\.pl"\s*\n?\s*selected')
+        self.assertRegex(html, r'value="sc-domain:klienttestowy\.pl"\s*\n?\s*selected')
 
     def _assign(self, dane):
         """Zapis konfiguracji z atrapami Google - zwraca atrapę `apply_google_services`.
@@ -345,10 +345,10 @@ class ServiceSwitchTests(AnalyticsPanelBase):
     def test_explicit_site_overrides_the_automatic_match(self):
         # Automat nie odgadnie witryny zarejestrowanej pod inną nazwą ani wyboru
         # między subdomeną a domeną główną - i to jest powód tego pola.
-        zapis = self._assign({"gsc_site_url": "https://materialy.earlystage.pl/"})
+        zapis = self._assign({"gsc_site_url": "https://materialy.klienttestowy.pl/"})
 
         self.assertEqual(
-            zapis.call_args.kwargs["site_url"], "https://materialy.earlystage.pl/"
+            zapis.call_args.kwargs["site_url"], "https://materialy.klienttestowy.pl/"
         )
 
     def test_site_outside_the_account_falls_back_to_matching(self):
@@ -380,7 +380,7 @@ class ServiceSwitchTests(AnalyticsPanelBase):
                 reverse("auditor:assign_google_services", args=[self.audit.pk]),
                 {
                     "ga4_property_id": "316375346",
-                    "gsc_site_url": "sc-domain:earlystage.pl",
+                    "gsc_site_url": "sc-domain:klienttestowy.pl",
                     "next": "analytics",
                 },
             )
@@ -403,7 +403,7 @@ class ServiceSwitchTests(AnalyticsPanelBase):
 
         self.assertEqual(response.status_code, 302)
         self.assertEqual(pobranie.call_args.args[1], "316375346")
-        self.assertEqual(pobranie.call_args.args[2], "sc-domain:earlystage.pl")
+        self.assertEqual(pobranie.call_args.args[2], "sc-domain:klienttestowy.pl")
 
     def test_refresh_clears_the_cached_event_list(self):
         # Po zmianie usługi formularz celu musi pokazać zdarzenia NOWEJ usługi.

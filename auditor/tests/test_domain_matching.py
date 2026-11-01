@@ -1,8 +1,8 @@
 """Normalizacja adresów przy weryfikacji dostępu do usług Google.
 
 Ta sama domena występuje w Google i w polu formularza w kilku zapisach:
-`sc-domain:earlystage.pl`, `https://earlystage.pl/`, `www.earlystage.pl`, samo
-`earlystage.pl`. Porównanie ciągów znak w znak odmawiało dostępu do domeny, do
+`sc-domain:klienttestowy.pl`, `https://klienttestowy.pl/`, `www.klienttestowy.pl`, samo
+`klienttestowy.pl`. Porównanie ciągów znak w znak odmawiało dostępu do domeny, do
 której konto dostęp MA - a użytkownik czytał to jako wygaśnięcie tokena.
 
 Żadne wywołanie Google nie jest tu prawdziwe.
@@ -28,15 +28,15 @@ User = get_user_model()
 
 # Zapisy TEJ SAMEJ domeny, jakie użytkownik może wpisać w formularzu.
 ZAPISY_DOMENY = (
-    "earlystage.pl",
-    "https://earlystage.pl",
-    "https://earlystage.pl/",
-    "http://earlystage.pl",
-    "http://earlystage.pl/",
-    "www.earlystage.pl",
-    "https://www.earlystage.pl/",
-    "EARLYSTAGE.PL",
-    "  https://earlystage.pl/  ",
+    "klienttestowy.pl",
+    "https://klienttestowy.pl",
+    "https://klienttestowy.pl/",
+    "http://klienttestowy.pl",
+    "http://klienttestowy.pl/",
+    "www.klienttestowy.pl",
+    "https://www.klienttestowy.pl/",
+    "KLIENTTESTOWY.PL",
+    "  https://klienttestowy.pl/  ",
 )
 
 
@@ -46,31 +46,31 @@ class NormalizeHostTests(SimpleTestCase):
     def test_every_spelling_gives_the_same_host(self):
         wyniki = {normalize_host(zapis) for zapis in ZAPISY_DOMENY}
 
-        self.assertEqual(wyniki, {"earlystage.pl"})
+        self.assertEqual(wyniki, {"klienttestowy.pl"})
 
     def test_domain_property_prefix_is_stripped(self):
         # "sc-domain:" musi zniknąć przed resztą - inaczej dwukropek wyglądałby
         # jak numer portu i zostałaby pusta nazwa.
-        self.assertEqual(normalize_host("sc-domain:earlystage.pl"), "earlystage.pl")
+        self.assertEqual(normalize_host("sc-domain:klienttestowy.pl"), "klienttestowy.pl")
 
     def test_path_does_not_change_the_host(self):
-        self.assertEqual(normalize_host("earlystage.pl/blog/x"), "earlystage.pl")
+        self.assertEqual(normalize_host("klienttestowy.pl/blog/x"), "klienttestowy.pl")
         self.assertEqual(
-            normalize_host("https://earlystage.pl/blog/x?q=1#top"), "earlystage.pl"
+            normalize_host("https://klienttestowy.pl/blog/x?q=1#top"), "klienttestowy.pl"
         )
 
     def test_port_is_dropped(self):
-        self.assertEqual(normalize_host("earlystage.pl:8080"), "earlystage.pl")
-        self.assertEqual(normalize_host("https://earlystage.pl:8080/"), "earlystage.pl")
+        self.assertEqual(normalize_host("klienttestowy.pl:8080"), "klienttestowy.pl")
+        self.assertEqual(normalize_host("https://klienttestowy.pl:8080/"), "klienttestowy.pl")
 
     def test_subdomain_is_kept(self):
         # Subdomena to inna rzecz niż domena główna - nie wolno jej zgubić.
         self.assertEqual(
-            normalize_host("https://materialy.earlystage.pl/"), "materialy.earlystage.pl"
+            normalize_host("https://materialy.klienttestowy.pl/"), "materialy.klienttestowy.pl"
         )
 
     def test_www_is_not_a_subdomain(self):
-        self.assertEqual(normalize_host("www.earlystage.pl"), "earlystage.pl")
+        self.assertEqual(normalize_host("www.klienttestowy.pl"), "klienttestowy.pl")
 
     def test_empty_input_gives_an_empty_host(self):
         self.assertEqual(normalize_host(""), "")
@@ -81,20 +81,20 @@ class NormalizeHostTests(SimpleTestCase):
         # `audit_domain` i `gsc_site_domain` muszą dawać ten sam wynik dla tej samej
         # domeny - rozjechanie ich to właśnie opisywana odmowa dostępu.
         self.assertEqual(
-            audit_domain("https://www.earlystage.pl/cennik"),
-            gsc_site_domain("sc-domain:earlystage.pl"),
+            audit_domain("https://www.klienttestowy.pl/cennik"),
+            gsc_site_domain("sc-domain:klienttestowy.pl"),
         )
 
     def test_property_name_with_a_full_address(self):
         self.assertEqual(
-            property_domain("Sklep (https://www.earlystage.pl/)"), "earlystage.pl"
+            property_domain("Sklep (https://www.klienttestowy.pl/)"), "klienttestowy.pl"
         )
 
 
 class FindAuthorizedDomainTests(SimpleTestCase):
     """Dopasowanie wpisanej domeny do listy uprawnień z Google."""
 
-    def _konto(self, zapis="sc-domain:earlystage.pl"):
+    def _konto(self, zapis="sc-domain:klienttestowy.pl"):
         """Lista uprawnień z jedną domeną, zapisaną tak jak ją oddaje Google."""
         return [
             {
@@ -105,8 +105,8 @@ class FindAuthorizedDomainTests(SimpleTestCase):
         ]
 
     def test_every_spelling_matches_a_domain_property(self):
-        # Sedno błędu: wpisanie "https://earlystage.pl/" nie trafiało w
-        # "sc-domain:earlystage.pl", bo schemat zostawał w porównywanym ciągu.
+        # Sedno błędu: wpisanie "https://klienttestowy.pl/" nie trafiało w
+        # "sc-domain:klienttestowy.pl", bo schemat zostawał w porównywanym ciągu.
         konto = self._konto()
 
         for zapis in ZAPISY_DOMENY:
@@ -114,30 +114,30 @@ class FindAuthorizedDomainTests(SimpleTestCase):
                 wynik = find_authorized_domain(konto, zapis)
 
                 self.assertIsNotNone(wynik, f"nie dopasowano zapisu {zapis!r}")
-                self.assertEqual(wynik["domain"], "earlystage.pl")
+                self.assertEqual(wynik["domain"], "klienttestowy.pl")
 
     def test_entry_stored_as_a_url_also_matches(self):
         # Search Console oddaje usługi prefiksowe jako pełne adresy.
-        for zapis in ("https://earlystage.pl/", "http://earlystage.pl", "https://www.earlystage.pl/"):
+        for zapis in ("https://klienttestowy.pl/", "http://klienttestowy.pl", "https://www.klienttestowy.pl/"):
             with self.subTest(zapis=zapis):
                 self.assertIsNotNone(
-                    find_authorized_domain(self._konto(zapis), "https://earlystage.pl/")
+                    find_authorized_domain(self._konto(zapis), "https://klienttestowy.pl/")
                 )
 
     def test_subdomain_matches_the_main_domain_both_ways(self):
         # Jedno konto zwykle ma dostęp do całej rodziny adresów jednej firmy.
         self.assertIsNotNone(
-            find_authorized_domain(self._konto(), "materialy.earlystage.pl")
+            find_authorized_domain(self._konto(), "materialy.klienttestowy.pl")
         )
         self.assertIsNotNone(
             find_authorized_domain(
-                self._konto("https://materialy.earlystage.pl/"), "earlystage.pl"
+                self._konto("https://materialy.klienttestowy.pl/"), "klienttestowy.pl"
             )
         )
 
     def test_unrelated_domain_is_still_refused(self):
         # Luźniejsze dopasowanie nie może oznaczać dostępu do czegokolwiek.
-        for obca in ("orlen.pl", "https://orlen.pl/", "earlystage.com", "notearlystage.pl"):
+        for obca in ("orlen.pl", "https://orlen.pl/", "klienttestowy.com", "notklienttestowy.pl"):
             with self.subTest(obca=obca):
                 self.assertIsNone(find_authorized_domain(self._konto(), obca))
 
@@ -149,7 +149,7 @@ class FindAuthorizedDomainTests(SimpleTestCase):
         lista = [{"domain": "", "ga4": [], "gsc": []}] + self._konto()
 
         self.assertEqual(
-            find_authorized_domain(lista, "earlystage.pl")["domain"], "earlystage.pl"
+            find_authorized_domain(lista, "klienttestowy.pl")["domain"], "klienttestowy.pl"
         )
 
 
@@ -178,9 +178,9 @@ class AnalyticsEntryAccessTests(TestCase):
             if witryny is not None
             else [
                 {
-                    "site_url": "sc-domain:earlystage.pl",
-                    "label": "sc-domain:earlystage.pl",
-                    "domain": "earlystage.pl",
+                    "site_url": "sc-domain:klienttestowy.pl",
+                    "label": "sc-domain:klienttestowy.pl",
+                    "domain": "klienttestowy.pl",
                 }
             ]
         )
@@ -204,7 +204,7 @@ class AnalyticsEntryAccessTests(TestCase):
             return_value=[],
         ), patch(
             "auditor.services.gsc_service.GSCService.resolve_site_url",
-            return_value="sc-domain:earlystage.pl",
+            return_value="sc-domain:klienttestowy.pl",
         ), patch(
             "auditor.services.audit_service.AuditService.sync_ga4_data"
         ), patch("auditor.services.audit_service.AuditService.sync_gsc_data"):
@@ -229,29 +229,29 @@ class AnalyticsEntryAccessTests(TestCase):
                 )
 
     def test_panel_is_reached_not_the_entry_screen(self):
-        response = self._open("https://earlystage.pl/")
+        response = self._open("https://klienttestowy.pl/")
 
         self.assertTemplateUsed(response, "auditor/analytics_dashboard.html")
 
     def test_record_is_created_with_the_normalised_domain(self):
-        self._open("https://WWW.earlystage.pl/cennik")
+        self._open("https://WWW.klienttestowy.pl/cennik")
 
         audit = Audit.objects.get()
-        self.assertEqual(audit.url, "https://earlystage.pl/")
+        self.assertEqual(audit.url, "https://klienttestowy.pl/")
         self.assertTrue(audit.analytics_only)
 
     def test_single_gsc_site_is_bound_automatically(self):
         # Domena z dostępem tylko do Search Console też ma zostać powiązana -
         # inaczej użytkownik trafia na ekran podłączenia bez powodu.
-        self._open("earlystage.pl")
+        self._open("klienttestowy.pl")
 
-        self.assertEqual(Audit.objects.get().gsc_site_url, "sc-domain:earlystage.pl")
+        self.assertEqual(Audit.objects.get().gsc_site_url, "sc-domain:klienttestowy.pl")
 
     def test_single_ga4_property_is_bound_automatically(self):
         self._open(
-            "earlystage.pl",
+            "klienttestowy.pl",
             wlasciwosci=[
-                {"property_id": "316375346", "display_name": "earlystage.pl",
+                {"property_id": "316375346", "display_name": "klienttestowy.pl",
                  "account_name": "Konto"}
             ],
         )
@@ -261,11 +261,11 @@ class AnalyticsEntryAccessTests(TestCase):
     def test_several_properties_leave_the_choice_to_the_user(self):
         # Przy kilku pasujących usługach zgadywanie przypisałoby cudze liczby.
         self._open(
-            "earlystage.pl",
+            "klienttestowy.pl",
             wlasciwosci=[
-                {"property_id": "111", "display_name": "earlystage.pl - stara",
+                {"property_id": "111", "display_name": "klienttestowy.pl - stara",
                  "account_name": "Konto"},
-                {"property_id": "222", "display_name": "earlystage.pl - nowa",
+                {"property_id": "222", "display_name": "klienttestowy.pl - nowa",
                  "account_name": "Konto"},
             ],
         )
@@ -275,12 +275,12 @@ class AnalyticsEntryAccessTests(TestCase):
     def test_existing_audit_also_gets_the_service_bound(self):
         # Wcześniej autoselekcja działała tylko dla nowego rekordu, więc domena
         # z audytem technicznym lądowała na ekranie podłączenia.
-        istniejacy = Audit.objects.create(url="https://earlystage.pl/", owner=self.user)
+        istniejacy = Audit.objects.create(url="https://klienttestowy.pl/", owner=self.user)
 
         self._open(
-            "https://earlystage.pl/",
+            "https://klienttestowy.pl/",
             wlasciwosci=[
-                {"property_id": "316375346", "display_name": "earlystage.pl",
+                {"property_id": "316375346", "display_name": "klienttestowy.pl",
                  "account_name": "Konto"}
             ],
         )
@@ -293,21 +293,21 @@ class AnalyticsEntryAccessTests(TestCase):
         # Przypisanie wskazane ręcznie to decyzja użytkownika, także gdy wskazuje
         # subdomenę - autoselekcja nie może jej cofać przy każdym wejściu.
         istniejacy = Audit.objects.create(
-            url="https://earlystage.pl/", owner=self.user,
-            ga4_property_id="999", gsc_site_url="https://materialy.earlystage.pl/",
+            url="https://klienttestowy.pl/", owner=self.user,
+            ga4_property_id="999", gsc_site_url="https://materialy.klienttestowy.pl/",
         )
 
         self._open(
-            "https://earlystage.pl/",
+            "https://klienttestowy.pl/",
             wlasciwosci=[
-                {"property_id": "316375346", "display_name": "earlystage.pl",
+                {"property_id": "316375346", "display_name": "klienttestowy.pl",
                  "account_name": "Konto"}
             ],
         )
 
         istniejacy.refresh_from_db()
         self.assertEqual(istniejacy.ga4_property_id, "999")
-        self.assertEqual(istniejacy.gsc_site_url, "https://materialy.earlystage.pl/")
+        self.assertEqual(istniejacy.gsc_site_url, "https://materialy.klienttestowy.pl/")
 
     def test_domain_outside_the_account_is_still_refused(self):
         # Naprawa normalizacji nie może zamienić się w dostęp do czegokolwiek.
