@@ -20,10 +20,21 @@ MIN_RANGE_DAYS = 1
 # wymiarem "yearMonth", bez sumowania po stronie Pythona.
 MONTHLY_GRANULARITY_THRESHOLD_DAYS = 92
 
+# Domyślne okno danych: 28 PEŁNYCH dni. 28, bo to standard raportowania SEO -
+# obejmuje dokładnie cztery tygodnie, więc porównania nie przesuwają się między
+# dniami tygodnia (ruch w weekend i w środku tygodnia różni się na tyle, że okno
+# 30-dniowe zawiera dwa razy jeden dzień tygodnia i zaburza porównanie).
+DEFAULT_RANGE_DAYS = 28
+
+# Ile dni odjąć od dzisiaj, żeby trafić w ostatni ZAMKNIĘTY dzień. Dzisiejszy dzień
+# jeszcze trwa, więc jego częściowe liczby zaniżałyby sumy i psuły porównania -
+# kafelek GA4 pokazywał np. ruch do godziny 9:00 jako pełny dzień.
+LAST_COMPLETE_DAY_OFFSET = 1
+
 # Zakresy przycisków szybkiego wyboru w interfejsie (etykieta -> liczba dni wstecz).
 QUICK_RANGES = {
     "7d": 7,
-    "30d": 30,
+    "28d": DEFAULT_RANGE_DAYS,
     "90d": 90,
     "12m": 365,
 }
@@ -76,18 +87,33 @@ def validate_range(start: date, end: date, today: date | None = None) -> tuple[d
     return start, end
 
 
+def last_complete_day(today: date | None = None) -> date:
+    """Ostatni ZAMKNIĘTY dzień, czyli wczoraj.
+
+    Jedno miejsce na tę regułę, bo stosują ją wszystkie zakresy - domyślny,
+    skrótowy i porównanie rok do roku. Rozjechanie się ich kończyłoby się tym, że
+    kafelek GA4 i kafelek Search Console liczą inne okresy i nie dają się porównać.
+    """
+    return (today or date.today()) - timedelta(days=LAST_COMPLETE_DAY_OFFSET)
+
+
 def quick_range(key: str, today: date | None = None) -> tuple[date, date]:
-    """Zamienia klucz przycisku szybkiego wyboru ("7d"/"30d"/"90d"/"12m") na zakres dat."""
+    """Zamienia klucz przycisku szybkiego wyboru ("7d"/"28d"/"90d"/"12m") na zakres dat.
+
+    Zakres kończy się na ostatnim pełnym dniu - trwający dzień zaniżałby sumy.
+    """
     if key not in QUICK_RANGES:
         raise DateRangeError(f"Nieznany zakres skrótowy: {key!r}.")
-    today = today or date.today()
-    return today - timedelta(days=QUICK_RANGES[key] - 1), today
+    koniec = last_complete_day(today)
+    return koniec - timedelta(days=QUICK_RANGES[key] - 1), koniec
 
 
-def default_range(days: int = 30, today: date | None = None) -> tuple[date, date]:
-    """Domyślny zakres pokazywany przy pierwszym wejściu na stronę audytu."""
-    today = today or date.today()
-    return today - timedelta(days=days - 1), today
+def default_range(
+    days: int = DEFAULT_RANGE_DAYS, today: date | None = None
+) -> tuple[date, date]:
+    """Domyślny zakres: `days` PEŁNYCH dni kończących się wczoraj."""
+    koniec = last_complete_day(today)
+    return koniec - timedelta(days=days - 1), koniec
 
 
 def use_monthly_granularity(start: date, end: date) -> bool:

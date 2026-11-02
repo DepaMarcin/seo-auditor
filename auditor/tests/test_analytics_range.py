@@ -16,8 +16,10 @@ from django.urls import reverse
 
 from auditor.models import Audit
 from auditor.services.date_ranges import (
+    DEFAULT_RANGE_DAYS,
     MAX_RANGE_DAYS,
     DateRangeError,
+    default_range,
     expected_days,
     expected_months_between,
     format_range_label,
@@ -65,7 +67,40 @@ class DateRangeHelpersTests(SimpleTestCase):
         start, end = quick_range("7d", today=TODAY)
 
         self.assertEqual((end - start).days + 1, 7)
-        self.assertEqual(end, TODAY)
+        # Zakres kończy się na ostatnim PEŁNYM dniu: trwający dzień ma dane tylko
+        # do bieżącej godziny, więc zaniżałby sumy i psuł porównanie rok do roku.
+        self.assertEqual(end, TODAY - timedelta(days=1))
+
+    def test_the_default_window_is_four_full_weeks(self):
+        # 28, nie 30: cztery pełne tygodnie, więc porównanie nie liczy dwukrotnie
+        # żadnego dnia tygodnia (weekend różni się od środka tygodnia na tyle, że
+        # okno 30-dniowe przekrzywiało wynik).
+        self.assertEqual(DEFAULT_RANGE_DAYS, 28)
+        self.assertEqual(DEFAULT_RANGE_DAYS % 7, 0)
+
+    def test_the_default_range_covers_28_complete_days(self):
+        start, end = default_range(today=TODAY)
+
+        self.assertEqual(end, TODAY - timedelta(days=1))
+        self.assertEqual(start, TODAY - timedelta(days=28))
+        self.assertEqual((end - start).days + 1, 28)
+
+    def test_the_quick_button_matches_the_default(self):
+        # Przycisk "28 dni" jest zaznaczony przy wejściu, więc musi dawać dokładnie
+        # ten sam zakres co widok bez parametrów - inaczej kliknięcie w podświetlony
+        # przycisk zmieniałoby liczby.
+        self.assertEqual(quick_range("28d", today=TODAY), default_range(today=TODAY))
+
+    def test_the_old_thirty_day_key_is_gone(self):
+        with self.assertRaises(DateRangeError):
+            quick_range("30d", today=TODAY)
+
+    def test_today_is_never_part_of_a_range(self):
+        for klucz in ("7d", "28d", "90d", "12m"):
+            with self.subTest(klucz=klucz):
+                _, end = quick_range(klucz, today=TODAY)
+
+                self.assertLess(end, TODAY)
 
     def test_previous_year_range_shifts_exactly_one_year(self):
         start, end = previous_year_range(date(2026, 6, 1), date(2026, 6, 30))
@@ -150,7 +185,7 @@ class AnalyticsDataEndpointTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_rejects_unknown_source_with_400(self):
-        response = self.client.get(self.url, {"range": "30d", "source": "facebook"})
+        response = self.client.get(self.url, {"range": "28d", "source": "facebook"})
 
         self.assertEqual(response.status_code, 400)
 
@@ -164,14 +199,14 @@ class AnalyticsDataEndpointTests(TestCase):
 
     def test_without_google_connection_reports_unavailable(self):
         """Brak połączenia z Google to nie błąd 500 - sekcja po prostu nie ma danych."""
-        response = self.client.get(self.url, {"range": "30d"})
+        response = self.client.get(self.url, {"range": "28d"})
 
         self.assertEqual(response.status_code, 200)
         self.assertFalse(response.json()["ga4"]["available"])
         self.assertFalse(response.json()["gsc"]["available"])
 
     def test_source_parameter_limits_computed_sections(self):
-        response = self.client.get(self.url, {"range": "30d", "source": "gsc"})
+        response = self.client.get(self.url, {"range": "28d", "source": "gsc"})
 
         payload = response.json()
         self.assertIn("gsc", payload)
@@ -333,3 +368,70 @@ class RangeScopedCacheTests(SimpleTestCase):
             service.fetch_organic_traffic(MagicMock(), "123", date(2026, 7, 1), date(2026, 7, 31))
 
             self.assertEqual(mock_client.return_value.run_report.call_count, 2)
+
+
+class GscDefaultWindowTests(SimpleTestCase):
+    """Okno Search Console bez jawnego zakresu musi być TO SAMO co w GA4.
+
+    Wcześniej GA4 liczyło 30 dni, a Search Console 3 pełne miesiące kalendarzowe
+    (~92 dni), więc kafelki obok siebie opisywały różne okresy i nie dawały się
+    porównać - 442 sesje organiczne przy 1248 kliknięciach to zestawienie bez
+    sensu, jeśli liczby pochodzą z innych przedziałów czasu.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+    def _zapytane_okresy(self) -> list[tuple[str, str]]:
+        """Uruchamia pobranie bez zakresu i zwraca odpytane pary (start, koniec)."""
+        okresy: list[tuple[str, str]] = []
+
+        class _Zapytanie:
+            def __init__(self, body):
+                okresy.append((body["startDate"], body["endDate"]))
+
+            def execute(self):
+                return {"rows": []}
+
+        class _Analityka:
+            def query(self, siteUrl, body):  # noqa: N803 - nazwa z API Google
+                return _Zapytanie(body)
+
+        class _Serwis:
+            def searchanalytics(self):
+                return _Analityka()
+
+        from auditor.services.gsc_service import GSCService
+
+        with patch.object(GSCService, "_build_service", return_value=_Serwis()), patch(
+            "auditor.services.gsc_service.find_best_gsc_site",
+            return_value="sc-domain:przyklad.pl",
+        ):
+            GSCService().fetch_yoy_query_performance(MagicMock(), "https://przyklad.pl/")
+        return okresy
+
+    def test_the_current_period_is_the_default_28_day_window(self):
+        start, koniec = default_range()
+        okresy = self._zapytane_okresy()
+
+        self.assertIn((start.isoformat(), koniec.isoformat()), okresy)
+
+    def test_the_comparison_period_is_the_same_28_days_a_year_earlier(self):
+        rok_start, rok_koniec = previous_year_range(*default_range())
+        okresy = self._zapytane_okresy()
+
+        self.assertIn((rok_start.isoformat(), rok_koniec.isoformat()), okresy)
+
+    def test_every_queried_period_spans_exactly_28_days(self):
+        for start, koniec in self._zapytane_okresy():
+            with self.subTest(okres=(start, koniec)):
+                dni = (date.fromisoformat(koniec) - date.fromisoformat(start)).days + 1
+
+                self.assertEqual(dni, DEFAULT_RANGE_DAYS)
+
+    def test_no_queried_period_reaches_today(self):
+        # Trwający dzień zaniżałby sumy w kafelku.
+        for _, koniec in self._zapytane_okresy():
+            with self.subTest(koniec=koniec):
+                self.assertLess(date.fromisoformat(koniec), date.today())

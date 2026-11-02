@@ -177,7 +177,9 @@ class ForeignPropertyNotPreselectedTests(ForeignAccountBase):
         # Zaostrzenie nie może zabrać podpowiedzi tam, gdzie jest trafna.
         html = self._html(wlasciwosci=[USLUGA_WLASNA])
 
-        self.assertRegex(html, r'value="222222"\s*selected')
+        # `[^>]*`, bo opcje noszą teraz także `title` z pełną etykietą - wiązanie
+        # testu z kolejnością atrybutów rozjeżdżało się przy każdej zmianie znacznika.
+        self.assertRegex(html, r'value="222222"[^>]*selected')
 
     def test_field_has_a_real_identifier(self):
         # Filtr `add` przy łączeniu tekstu z liczbą zwraca PUSTY ciąg, więc `id`

@@ -321,7 +321,7 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
             <span class="analytics-period-dates">Okres: {{ periods.gsc }}</span>
             <span class="analytics-period-dates">Rok temu: {{ periods.gsc_previous }}</span>
             {% else %}
-            <span>Porównanie: 3 pełne miesiące kalendarzowe vs te same 3 miesiące rok wcześniej</span>
+            <span>Porównanie: ostatnie 28 pełnych dni vs te same 28 dni rok wcześniej</span>
             {% endif %}
             <span>Witryna: {{ audit.gsc_site_url|default:"dopasowana po domenie" }}</span>
         </div>
@@ -417,7 +417,12 @@ działałaby tylko z jednej strony.
     <div class="range-controls" id="analytics-range-picker" data-source="all">
         <div class="range-quick">
             <button type="button" class="range-quick-btn" data-range="7d">7 dni</button>
-            <button type="button" class="range-quick-btn" data-range="30d">30 dni</button>
+            {% comment %}
+            28 dni, nie 30: cztery pełne tygodnie, więc porównanie nie liczy
+            dwukrotnie żadnego dnia tygodnia. Zaznaczony z góry, bo to zakres, który
+            widok pokazuje przy wejściu (patrz DEFAULT_ANALYTICS_RANGE_DAYS).
+            {% endcomment %}
+            <button type="button" class="range-quick-btn active" data-range="28d">28 dni</button>
             <button type="button" class="range-quick-btn" data-range="90d">90 dni</button>
             <button type="button" class="range-quick-btn" data-range="12m">12 miesięcy</button>
         </div>

@@ -271,7 +271,9 @@ class PropertyListSplitTests(AssignmentBase):
         # Zamiast pustego "— wybierz usługę —", które zapraszało do pomyłki.
         html = self._html()
 
-        self.assertRegex(html, r'value="222"\s*selected')
+        # `[^>]*`, bo opcje noszą teraz także `title` z pełną etykietą - wiązanie
+        # testu z kolejnością atrybutów rozjeżdżało się przy każdej zmianie znacznika.
+        self.assertRegex(html, r'value="222"[^>]*selected')
 
     def test_foreign_property_lands_in_the_other_group(self):
         html = self._html()

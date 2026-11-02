@@ -214,7 +214,7 @@ class PeriodInPanelTests(TestCase):
 
         html = _body_only(self._open(audit).content.decode())
 
-        self.assertIn("3 pełne miesiące kalendarzowe vs", html)
+        self.assertIn("ostatnie 28 pełnych dni vs", html)
         # Celujemy w znacznik, nie w sam tekst: "Okres: " występuje też w skrypcie
         # aktualizującym podpis po zmianie zakresu, a skrypty jadą w tej odpowiedzi.
         self.assertNotIn('class="analytics-period-dates">Okres:', html)

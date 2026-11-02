@@ -352,7 +352,7 @@ class AnalyticsRangeIntegrationTests(LeadEventBase):
     def test_quick_ranges_are_rendered(self):
         html = _body_only(self._open_panel().content.decode())
 
-        for zakres in ("7d", "30d", "90d", "12m"):
+        for zakres in ("7d", "28d", "90d", "12m"):
             with self.subTest(zakres=zakres):
                 self.assertIn(f'data-range="{zakres}"', html)
 
@@ -376,7 +376,7 @@ class AnalyticsRangeIntegrationTests(LeadEventBase):
         ), patch("auditor.views._build_gsc_payload", return_value={"available": False}):
             response = self.client.get(
                 reverse("auditor:analytics_data", args=[self.audit.pk]),
-                {"range": "30d"},
+                {"range": "28d"},
             )
 
         self.assertEqual(response.status_code, 200)
@@ -402,7 +402,7 @@ class AnalyticsRangeIntegrationTests(LeadEventBase):
         cudzy = Audit.objects.create(url="https://cudza.pl/", owner=obcy)
 
         response = self.client.get(
-            reverse("auditor:analytics_data", args=[cudzy.pk]), {"range": "30d"}
+            reverse("auditor:analytics_data", args=[cudzy.pk]), {"range": "28d"}
         )
 
         self.assertEqual(response.status_code, 404)

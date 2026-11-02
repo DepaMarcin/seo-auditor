@@ -319,7 +319,9 @@ class ServiceSwitchTests(AnalyticsPanelBase):
     def test_current_site_is_preselected(self):
         html = _body_only(self._open().content.decode())
 
-        self.assertRegex(html, r'value="sc-domain:klienttestowy\.pl"\s*\n?\s*selected')
+        # `[^>]*`, bo opcje noszą teraz także `title` z pełną etykietą - zakładanie,
+        # że `selected` stoi zaraz po `value`, wiązało test z kolejnością atrybutów.
+        self.assertRegex(html, r'value="sc-domain:klienttestowy\.pl"[^>]*selected')
 
     def _assign(self, dane):
         """Zapis konfiguracji z atrapami Google - zwraca atrapę `apply_google_services`.

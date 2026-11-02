@@ -60,6 +60,7 @@ from .services.google_services import (
     load_google_client_config,
 )
 from .services.date_ranges import (
+    DEFAULT_RANGE_DAYS,
     DateRangeError,
     default_range,
     format_range_label,
@@ -84,7 +85,10 @@ logger = logging.getLogger(__name__)
 RECENT_AUDITS_LIMIT = 10
 
 # Zakres pokazywany w sekcjach GA4/GSC przy pierwszym wejściu na stronę audytu.
-DEFAULT_ANALYTICS_RANGE_DAYS = 30
+# Definicja mieszka w `date_ranges`, bo tę samą wartość musi widzieć zapytanie do
+# Search Console - dwie niezależne stałe rozjechały się już raz (30 dni w GA4
+# kontra 92 dni w GSC) i kafelki pokazywały liczby z różnych okresów.
+DEFAULT_ANALYTICS_RANGE_DAYS = DEFAULT_RANGE_DAYS
 
 # Dodatkowe szablony podstron w formularzu nowego audytu. Kolejność odpowiada kolejności
 # pól na ekranie, a `page_type` musi pochodzić z `AuditedPage.PageType`.
@@ -2001,7 +2005,7 @@ def analytics_data(request: HttpRequest, pk: int) -> JsonResponse:
 
     Parametry (query string):
       * `start_date`, `end_date` - zakres w formacie YYYY-MM-DD, albo
-      * `range` - skrót: "7d" / "30d" / "90d" / "12m",
+      * `range` - skrót: "7d" / "28d" / "90d" / "12m",
       * `source` - "ga4", "gsc" albo "all" (domyślnie): która sekcja ma być policzona.
         Ogranicza liczbę wywołań API do tej sekcji, którą użytkownik faktycznie zmienił.
 

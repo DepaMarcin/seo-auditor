@@ -12,12 +12,11 @@ from django.core.cache import cache
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
-from .date_ranges import last_n_full_months_range, previous_year_range, same_months_last_year
+from .date_ranges import default_range, previous_year_range
 
 logger = logging.getLogger(__name__)
 
 QUERY_ROW_LIMIT = 25000
-PERIOD_MONTHS = 3
 TOP_N = 10
 
 # googleapiclient bez jawnego limitu korzysta z domyślnego timeoutu gniazda (który
@@ -112,7 +111,7 @@ class GSCService:
     2.0 (ten sam przepływ "Zaloguj się przez Google" co GA4, ze scope'em
     `webmasters.readonly` - patrz `settings.GA4_SCOPES`). Porównuje wydajność fraz
     kluczowych oraz podstron dla wybranego zakresu dat vs ten sam zakres rok wcześniej
-    (bez podanego zakresu: ostatnie 3 pełne miesiące kalendarzowe).
+    (bez podanego zakresu: ostatnie 28 pełnych dni, kończąc na wczoraj).
 
     Zgodnie z konwencją pozostałych integracji zewnętrznych w tym projekcie
     (SenutoService, GA4OAuthService): błąd komunikacji z GSC (brak dostępu, domena
@@ -181,7 +180,8 @@ class GSCService:
     ) -> dict:
         """Pobiera i porównuje kliknięcia pogrupowane wg `dimension` ("query" lub
         "page") dla dwóch okresów: Okresu A (zakres podany przez `start_date`/`end_date`,
-        a bez niego - ostatnie {PERIOD_MONTHS} pełnych miesięcy kalendarzowych) i Okresu
+        a bez niego - domyślne okno z `date_ranges.default_range`, czyli pełne dni
+        kończące się wczoraj) i Okresu
         B (ten sam zakres przesunięty o rok wstecz). Usługę Search Console dopasowuje do
         `audit_url` przez `find_best_gsc_site` (patrz tam - obsługuje sc-domain:,
         http/https, z/bez www).
@@ -206,8 +206,12 @@ class GSCService:
             period_a_start, period_a_end = start_date, end_date
             period_b_start, period_b_end = previous_year_range(start_date, end_date)
         else:
-            period_a_start, period_a_end = last_n_full_months_range(PERIOD_MONTHS)
-            period_b_start, period_b_end = same_months_last_year(period_a_start, period_a_end)
+            # Ten sam domyślny zakres co kafelek GA4: 28 pełnych dni kończących się
+            # wczoraj. Wcześniej stały tu 3 pełne miesiące kalendarzowe (~92 dni),
+            # więc kafelki GA4 i Search Console pokazywały liczby z RÓŻNYCH okresów
+            # i nie dawały się ze sobą porównać.
+            period_a_start, period_a_end = default_range()
+            period_b_start, period_b_end = previous_year_range(period_a_start, period_a_end)
 
         # GSC publikuje dane z 2-3 dniowym opóźnieniem, więc częstsze odpytywanie nie
         # przyniesie nowych liczb - a każde zapytanie to 4 wywołania API. Klucz MUSI
