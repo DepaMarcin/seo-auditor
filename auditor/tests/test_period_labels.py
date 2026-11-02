@@ -254,15 +254,16 @@ class GscPeriodPersistenceTests(TestCase):
     def test_sync_stores_the_window_it_actually_used(self):
         # Sedno: zakres musi pochodzić z TEGO pobrania, a nie być liczony później.
         from auditor.services.audit_service import AuditService
-        from auditor.services.date_ranges import last_n_full_months_range
-        from auditor.services.ga4_service import YOY_COMPARISON_MONTHS
+        from auditor.services.date_ranges import default_range
 
         audit = Audit.objects.create(url="https://klienttestowy.pl/", owner=self.user)
         puste = {
             "total_clicks_current": 0, "total_clicks_previous": 0,
             "yoy_change_percent": 0.0, "top_gainers": [], "top_losers": [],
         }
-        oczekiwany = last_n_full_months_range(YOY_COMPARISON_MONTHS)
+        # Z `default_range`, nie z dat wpisanych na sztywno: ten sam zakres co
+        # kafelek GA4 i co endpoint zakresów, czyli 28 pełnych dni do wczoraj.
+        oczekiwany = default_range()
 
         with patch(
             "auditor.services.gsc_service.GSCService.fetch_yoy_query_performance",

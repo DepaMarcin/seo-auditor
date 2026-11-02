@@ -302,3 +302,111 @@ class TrafficBasedChoiceTests(SimpleTestCase):
                 # Suma dla całej usługi: rozbicie na wymiary pomija rzadkie frazy.
                 self.assertEqual(body["dimensions"], [])
                 self.assertNotIn("dimensionFilterGroups", body)
+
+
+class AssignedSiteWinsTests(SimpleTestCase):
+    """Witryna wskazana w formularzu musi trafić do zapytania o dane.
+
+    Zgłoszenie: po przypisaniu "https://www.motivationdirect.pl/" kafelek dalej
+    pokazywał 1 kliknięcie zamiast 1248. Przyczyna: KAŻDY wywołujący przekazywał
+    tylko adres audytu, a `GSCService` wybierał usługę sam przez
+    `find_best_gsc_site` - której krok "dokładny adres audytu" trafiał w wariant
+    BEZ "www", czyli ten z 1 kliknięciem. Wybór użytkownika był ignorowany.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+    def _odpytane_witryny(self, site_url=None) -> list[str]:
+        odpytane: list[str] = []
+
+        class _Zapytanie:
+            def execute(self):
+                return {"rows": []}
+
+        class _Analityka:
+            def query(self, siteUrl, body):  # noqa: N803 - nazwa z API Google
+                odpytane.append(siteUrl)
+                return _Zapytanie()
+
+        class _Serwis:
+            def searchanalytics(self):
+                return _Analityka()
+
+        from auditor.services.gsc_service import GSCService
+
+        with patch.object(GSCService, "_build_service", return_value=_Serwis()), patch(
+            "auditor.services.gsc_service.find_best_gsc_site",
+            return_value="https://bez-www.przyklad.pl/",
+        ):
+            GSCService().fetch_yoy_query_performance(
+                MagicMock(), "https://przyklad.pl/", site_url=site_url
+            )
+        return odpytane
+
+    def test_the_assigned_site_is_the_one_queried(self):
+        odpytane = self._odpytane_witryny(site_url="https://www.przyklad.pl/")
+
+        self.assertTrue(odpytane)
+        self.assertEqual(set(odpytane), {"https://www.przyklad.pl/"})
+
+    def test_the_automatic_choice_is_not_consulted_when_a_site_is_assigned(self):
+        # Atrapa automatu zwraca inny adres - gdyby go użyto, zobaczylibyśmy go tutaj.
+        odpytane = self._odpytane_witryny(site_url="https://www.przyklad.pl/")
+
+        self.assertNotIn("https://bez-www.przyklad.pl/", odpytane)
+
+    def test_without_an_assignment_the_automatic_choice_is_used(self):
+        odpytane = self._odpytane_witryny(site_url=None)
+
+        self.assertEqual(set(odpytane), {"https://bez-www.przyklad.pl/"})
+
+
+class UnifiedSiteSelectionTests(SimpleTestCase):
+    """Jedna logika wyboru usługi dla automatu i dla interfejsu.
+
+    Dwie niezależne implementacje (`find_best_gsc_site` po postaci adresu
+    i `resolve_gsc_site` po ruchu) mogły wskazać RÓŻNE usługi, więc automat w tle
+    pobierał dane z innej witryny, niż pokazywał formularz.
+    """
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+    def test_the_automatic_choice_goes_through_the_shared_resolver(self):
+        from auditor.services import gsc_service
+
+        wywolania = []
+
+        class _Lista:
+            def execute(self):
+                return {"siteEntry": [{"siteUrl": "https://www.przyklad.pl/"}]}
+
+        class _Witryny:
+            def list(self):
+                return _Lista()
+
+        class _Serwis:
+            def sites(self):
+                return _Witryny()
+
+        def _atrapa(service, sites, domain, days=None):
+            wywolania.append(domain)
+            return "https://www.przyklad.pl/"
+
+        with patch.object(gsc_service, "resolve_gsc_site", _atrapa, create=True), patch(
+            "auditor.services.google_api.resolve_gsc_site", _atrapa
+        ):
+            wynik = gsc_service.find_best_gsc_site(_Serwis(), "https://przyklad.pl/")
+
+        self.assertEqual(wynik, "https://www.przyklad.pl/")
+        self.assertEqual(wywolania, ["przyklad.pl"])
+
+    def test_the_old_address_shaped_matcher_is_gone(self):
+        # Druga implementacja miała własną kolejność priorytetów; jej pozostawienie
+        # znaczyłoby, że ta sama decyzja zapada w dwóch miejscach na dwa sposoby.
+        from auditor.services import gsc_service
+
+        self.assertFalse(hasattr(gsc_service, "_extract_base_domain"))

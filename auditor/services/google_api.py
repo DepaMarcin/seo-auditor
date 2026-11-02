@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from urllib.parse import urlparse
 
+from .date_ranges import DEFAULT_RANGE_DAYS
+
 logger = logging.getLogger(__name__)
 
 # Przedrostek usługi domenowej w Search Console: "sc-domain:przyklad.pl" obejmuje
@@ -195,7 +197,22 @@ def matching_gsc_sites(sites: list[dict], domain: str) -> list[str]:
 
 
 def pick_gsc_site_by_traffic(
-    credentials, sites: list[dict], domain: str, days: int = 92
+    credentials, sites: list[dict], domain: str, days: int = DEFAULT_RANGE_DAYS
+) -> str:
+    """Wariant dla wywołujących, którzy mają `credentials`, a nie gotowego klienta."""
+    try:
+        from googleapiclient.discovery import build
+
+        service = build("searchconsole", "v1", credentials=credentials, cache_discovery=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Nie udało się zbudować klienta Search Console: %s", exc)
+        return pick_gsc_site(sites, domain)
+
+    return resolve_gsc_site(service, sites, domain, days=days)
+
+
+def resolve_gsc_site(
+    service, sites: list[dict], domain: str, days: int = DEFAULT_RANGE_DAYS
 ) -> str:
     """Wybór usługi Search Console na podstawie tego, GDZIE SĄ DANE.
 
@@ -248,14 +265,6 @@ def pick_gsc_site_by_traffic(
         "type": "web",
         "dataState": "final",
     }
-
-    try:
-        from googleapiclient.discovery import build
-
-        service = build("searchconsole", "v1", credentials=credentials, cache_discovery=False)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("Nie udało się zbudować klienta Search Console: %s", exc)
-        return pick_gsc_site(sites, domain)
 
     pomiary: list[tuple[int, str]] = []
     for adres in rownorzedni:

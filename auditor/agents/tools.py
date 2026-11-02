@@ -322,7 +322,9 @@ def _gsc_trends(audit, credentials, start: date, koniec: date) -> dict | None:
 
     service = GSCService()
     try:
-        frazy = service.fetch_yoy_query_performance(credentials, audit.url, start, koniec)
+        frazy = service.fetch_yoy_query_performance(
+            credentials, audit.url, start, koniec, site_url=audit.gsc_site_url or None
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Nie udało się pobrać danych Search Console dla %s.", audit.url)
         return {"error": f"{type(exc).__name__}: {exc}"}

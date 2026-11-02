@@ -1982,8 +1982,14 @@ def _build_gsc_payload(
         return {"available": False, "reason": "Sesja Google wygasła - połącz konto ponownie."}
 
     service = GSCService()
-    query_stats = service.fetch_yoy_query_performance(credentials, audit.url, start_date, end_date)
-    page_stats = service.fetch_yoy_page_performance(credentials, audit.url, start_date, end_date)
+    # Przypisana witryna wygrywa z automatem (patrz GSCService._fetch_yoy_...).
+    wskazana = audit.gsc_site_url or None
+    query_stats = service.fetch_yoy_query_performance(
+        credentials, audit.url, start_date, end_date, site_url=wskazana
+    )
+    page_stats = service.fetch_yoy_page_performance(
+        credentials, audit.url, start_date, end_date, site_url=wskazana
+    )
 
     return {
         "available": True,

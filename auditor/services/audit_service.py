@@ -8,7 +8,7 @@ from django.db import transaction
 
 from .accessibility import check_bot_accessibility
 from .ga4_insights import analyze_channel_trends
-from .date_ranges import last_n_full_months_range
+from .date_ranges import DEFAULT_RANGE_DAYS, default_range
 from .ga4_service import YOY_COMPARISON_MONTHS, GA4OAuthService
 from .gsc_insights import generate_page_commentary, generate_query_commentary
 from .gsc_service import GSCService
@@ -472,7 +472,13 @@ class AuditService:
     # ------------------------------------------------------------------
     # Google Analytics 4 (OAuth 2.0) -> ruch organiczny
     # ------------------------------------------------------------------
-    def sync_ga4_data(self, audit: "Audit", credentials: "Credentials", property_id: str, days: int = 30) -> "Audit":
+    def sync_ga4_data(
+        self,
+        audit: "Audit",
+        credentials: "Credentials",
+        property_id: str,
+        days: int = DEFAULT_RANGE_DAYS,
+    ) -> "Audit":
         """Pobiera z GA4 dzienną historię sesji z ruchu organicznego dla `property_id`
         i zapisuje wyniki na `audit` przez Django ORM (`auditor.services.ga4_service.GA4OAuthService`).
 
@@ -529,13 +535,19 @@ class AuditService:
         # Zakres wyznaczamy JAWNIE, zamiast zdawać się na domyślny w serwisie:
         # tylko wtedy wiemy, co dokładnie zapisać obok liczb. Bez tego podpis pod
         # kafelkiem musiałby zgadywać okres przy każdym wyświetleniu strony.
-        okres_start, okres_koniec = last_n_full_months_range(YOY_COMPARISON_MONTHS)
+        # Ten sam zakres co kafelek GA4 i co endpoint zakresow: 28 pelnych dni
+        # konczacych sie wczoraj. Wczesniej staly tu 3 pelne miesiace (~92 dni),
+        # wiec kafelki obok siebie opisywaly rozne okresy.
+        okres_start, okres_koniec = default_range()
 
+        # Witryna wskazana w formularzu ma pierwszenstwo nad automatem - bez tego
+        # wybor uzytkownika byl ignorowany przy pobieraniu danych.
+        wskazana = audit.gsc_site_url or None
         query_stats = self.gsc_service.fetch_yoy_query_performance(
-            credentials, audit.url, okres_start, okres_koniec
+            credentials, audit.url, okres_start, okres_koniec, site_url=wskazana
         )
         page_stats = self.gsc_service.fetch_yoy_page_performance(
-            credentials, audit.url, okres_start, okres_koniec
+            credentials, audit.url, okres_start, okres_koniec, site_url=wskazana
         )
 
         audit.gsc_period_start = okres_start

@@ -25,85 +25,56 @@ TOP_N = 10
 GSC_HTTP_TIMEOUT_SECONDS = 30
 
 
-def _extract_base_domain(audit_url: str) -> str:
-    """Wyciąga czystą, bazową nazwę domeny z dowolnego adresu audytu - bez schematu,
-    "www.", ścieżki i portu, np. "https://www.motivationdirect.pl/en/" ->
-    "motivationdirect.pl"."""
-    normalized = audit_url if "://" in audit_url else f"https://{audit_url}"
-    domain = urlparse(normalized).netloc.lower()
-    domain = domain.split(":")[0]  # odetnij ewentualny port
-    return domain[len("www."):] if domain.startswith("www.") else domain
-
-
 def find_best_gsc_site(service, audit_url: str) -> str | None:
-    """Znajduje usługę (property) Search Console najlepiej odpowiadającą `audit_url`
-    wśród wszystkich usług dostępnych dla zalogowanego konta Google.
+    """Usługa Search Console odpowiadająca `audit_url`, wybrana na podstawie RUCHU.
 
-    GSC pozwala zarejestrować tę samą domenę na kilka różnych sposobów - jako usługę
-    domenową ("sc-domain:example.com"), jako URL-prefix z protokołem http/https, z
-    "www." lub bez - dotychczasowe ścisłe porównanie ciągów znaków nie znajdowało
-    właściwej usługi, gdy się różniły formatem. Dopasowanie odbywa się wg priorytetu
-    (od najbardziej precyzyjnego):
-        1. Usługa domenowa "sc-domain:<bazowa domena>".
-        2. Dokładny `audit_url` (po normalizacji końcowego "/").
-        3. Warianty URL z/bez "www." (http oraz https).
-        4. Dowolna usługa, której URL zawiera bazową domenę.
+    Jedno miejsce na tę decyzję: wcześniej stała tu druga, niezależna implementacja
+    dopasowania po postaci adresu, a `auditor.services.google_api` miała własną,
+    opartą na pomiarze wyświetleń. Dwa algorytmy wybierały różne usługi, więc
+    automat w tle pobierał dane z innej witryny niż wskazywał formularz w interfejsie.
 
-    Zwraca `siteUrl` najlepiej pasującej usługi, albo None, gdy żadna nie pasuje lub
-    nie udało się pobrać listy usług.
+    Tamta kolejność miała też wadę merytoryczną: krok "dokładny adres audytu"
+    wygrywał z wariantem "www", a dla motivationdirect.pl prefiks bez "www" miał
+    1 kliknięcie, podczas gdy ruch (1248 kliknięć) zbierał się na wariancie z "www".
+
+    Zwraca `siteUrl` albo None, gdy żadna usługa nie pasuje lub nie udało się
+    pobrać listy.
     """
-    domain = _extract_base_domain(audit_url)
+    from .google_api import audit_domain, resolve_gsc_site
+
+    domain = audit_domain(audit_url)
     if not domain:
         logger.warning("[GSC] Nie udało się wyodrębnić domeny z adresu audytu: %r.", audit_url)
         return None
 
     try:
-        response = service.sites().list().execute()
+        response = service.sites().list().execute() or {}
     except Exception:
         logger.exception("[GSC] Nie udało się pobrać listy usług Search Console (sites().list()).")
         return None
 
-    site_urls = [entry.get("siteUrl", "") for entry in response.get("siteEntry", []) if entry.get("siteUrl")]
-    if not site_urls:
-        logger.info("[GSC] Konto Google nie ma dostępu do żadnej usługi Search Console (domena audytu: %s).", domain)
+    witryny = [
+        {"site_url": wpis.get("siteUrl", "")}
+        for wpis in response.get("siteEntry", [])
+        if wpis.get("siteUrl")
+    ]
+    if not witryny:
+        logger.info(
+            "[GSC] Konto Google nie ma dostępu do żadnej usługi Search Console "
+            "(domena audytu: %s).", domain,
+        )
         return None
 
-    # 1. Usługa domenowa - najbardziej precyzyjne i najczęściej spotykane dopasowanie.
-    domain_property = f"sc-domain:{domain}"
-    for site_url in site_urls:
-        if site_url.lower() == domain_property:
-            logger.info("[GSC] Dopasowano usługę domenową %r dla domeny %s.", site_url, domain)
-            return site_url
+    wybrana = resolve_gsc_site(service, witryny, domain)
+    if not wybrana:
+        logger.info(
+            "[GSC] Nie znaleziono usługi Search Console dla domeny %s. Dostępne usługi: %s",
+            domain, [w["site_url"] for w in witryny],
+        )
+        return None
 
-    # 2. Dokładny URL audytu (po normalizacji końcowego ukośnika).
-    normalized_audit_url = audit_url.rstrip("/").lower()
-    for site_url in site_urls:
-        if site_url.rstrip("/").lower() == normalized_audit_url:
-            logger.info("[GSC] Dopasowano dokładny URL usługi %r dla %s.", site_url, audit_url)
-            return site_url
-
-    # 3. Warianty URL z/bez "www.", http oraz https.
-    url_variants = {
-        f"https://{domain}/", f"http://{domain}/",
-        f"https://www.{domain}/", f"http://www.{domain}/",
-    }
-    for site_url in site_urls:
-        if site_url.lower() in url_variants:
-            logger.info("[GSC] Dopasowano wariant URL usługi %r dla domeny %s.", site_url, domain)
-            return site_url
-
-    # 4. Dowolna usługa, której URL zawiera bazową domenę (np. inna subdomena/ścieżka).
-    for site_url in site_urls:
-        normalized = site_url.lower().replace("sc-domain:", "")
-        if domain in normalized:
-            logger.info("[GSC] Dopasowano usługę %r po zawieraniu domeny %s.", site_url, domain)
-            return site_url
-
-    logger.info(
-        "[GSC] Nie znaleziono usługi Search Console dla domeny %s. Dostępne usługi konta: %s",
-        domain, site_urls,
-    )
-    return None
+    logger.info("[GSC] Dla domeny %s wybrano usługę %r.", domain, wybrana)
+    return wybrana
 
 
 class GSCService:
@@ -143,6 +114,7 @@ class GSCService:
         audit_url: str,
         start_date: date | None = None,
         end_date: date | None = None,
+        site_url: str | None = None,
     ) -> dict:
         """Porównuje wydajność FRAZ kluczowych (`dimensions=["query"]`) w podanym
         zakresie vs ten sam zakres rok wcześniej. Bez podanego zakresu: ostatnie 3
@@ -150,7 +122,7 @@ class GSCService:
         zwracanego słownika (klucz wiersza to tu "query")."""
         return self._fetch_yoy_dimension_performance(
             credentials, audit_url, dimension="query", key_name="query",
-            start_date=start_date, end_date=end_date,
+            start_date=start_date, end_date=end_date, site_url=site_url,
         )
 
     def fetch_yoy_page_performance(
@@ -159,6 +131,7 @@ class GSCService:
         audit_url: str,
         start_date: date | None = None,
         end_date: date | None = None,
+        site_url: str | None = None,
     ) -> dict:
         """Porównuje wydajność PODSTRON (`dimensions=["page"]`) w podanym zakresie vs
         ten sam zakres rok wcześniej. Bez podanego zakresu: ostatnie 3 pełne miesiące.
@@ -166,7 +139,7 @@ class GSCService:
         słownika (klucz wiersza to tu "page", z pełnym adresem URL podstrony)."""
         return self._fetch_yoy_dimension_performance(
             credentials, audit_url, dimension="page", key_name="page",
-            start_date=start_date, end_date=end_date,
+            start_date=start_date, end_date=end_date, site_url=site_url,
         )
 
     def _fetch_yoy_dimension_performance(
@@ -177,6 +150,7 @@ class GSCService:
         key_name: str,
         start_date: date | None = None,
         end_date: date | None = None,
+        site_url: str | None = None,
     ) -> dict:
         """Pobiera i porównuje kliknięcia pogrupowane wg `dimension` ("query" lub
         "page") dla dwóch okresów: Okresu A (zakres podany przez `start_date`/`end_date`,
@@ -217,7 +191,7 @@ class GSCService:
         # przyniesie nowych liczb - a każde zapytanie to 4 wywołania API. Klucz MUSI
         # zawierać zakres dat, inaczej po zmianie zakresu w interfejsie wróciłyby
         # zbuforowane dane poprzedniego okresu.
-        site_digest = hashlib.sha256(audit_url.encode()).hexdigest()[:32]
+        site_digest = hashlib.sha256((site_url or audit_url).encode()).hexdigest()[:32]
         cache_key = (
             f"gsc:{dimension}:{site_digest}:{period_a_start.isoformat()}:{period_a_end.isoformat()}"
         )
@@ -228,9 +202,14 @@ class GSCService:
 
         try:
             service = self._build_service(credentials)
-            site_url = find_best_gsc_site(service, audit_url)
+            # Witryna wskazana wprost w formularzu WYGRYWA z automatem. Wcześniej
+            # każdy wywołujący podawał tylko adres audytu, a serwis wybierał usługę
+            # sam - wybór użytkownika był po cichu ignorowany i dla
+            # motivationdirect.pl kafelek pokazywał 1 kliknięcie zamiast 1248.
+            site_url = site_url or find_best_gsc_site(service, audit_url)
             if not site_url:
                 return self._fallback()
+            logger.info("[GSC] Dane (%s) pobieram z usługi %s.", dimension, site_url)
             rows_current = self._query_rows(service, site_url, dimension, period_a_start, period_a_end)
             rows_previous = self._query_rows(service, site_url, dimension, period_b_start, period_b_end)
             totals_current = self._fetch_site_totals(service, site_url, period_a_start, period_a_end)

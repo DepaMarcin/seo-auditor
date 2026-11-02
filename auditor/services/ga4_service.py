@@ -21,6 +21,7 @@ from google.analytics.data_v1beta.types import (
 from google.oauth2.credentials import Credentials
 
 from .date_ranges import (
+    DEFAULT_RANGE_DAYS,
     MONTHLY_GRANULARITY_THRESHOLD_DAYS,
     default_range,
     expected_days,
@@ -77,7 +78,7 @@ class GA4OAuthService:
         property_id: str,
         start_date: date | None = None,
         end_date: date | None = None,
-        days: int = 30,
+        days: int = DEFAULT_RANGE_DAYS,
     ) -> dict:
         """Zwraca historię sesji z ruchu organicznego dla wskazanego zakresu dat:
         {"total_sessions": int, "history": {"dates": [...], "sessions": [...]}}.
