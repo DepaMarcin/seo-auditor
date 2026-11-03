@@ -22,12 +22,42 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
         {% if audits|length > 1 %}
         <form method="get" action="{% url 'auditor:analytics' %}" class="analytics-domain-switch">
             <label for="analytics-domain" class="analytics-domain-label">Domena</label>
+            {% comment %}
+            Podział na grupy tylko wtedy, gdy WIEMY, co konto obsługuje. Przy braku
+            podłączonego konta albo awarii API Google `grouped` jest fałszywe
+            i zostaje lista bez podziału - wrzucenie wszystkiego do "brak dostępu"
+            byłoby twierdzeniem bez pokrycia (patrz split_audits_by_account_access).
+            {% endcomment %}
             <select name="audit" id="analytics-domain" onchange="this.form.submit()">
+                {% if domain_access.grouped %}
+                {% if domain_access.matching %}
+                <optgroup label="Dostępne na tym koncie Google">
+                    {% for pozycja in domain_access.matching %}
+                    <option value="{{ pozycja.pk }}" title="{{ pozycja.url }}"
+                            {% if pozycja.pk == audit.pk %}selected{% endif %}>
+                        {{ pozycja.url }}
+                    </option>
+                    {% endfor %}
+                </optgroup>
+                {% endif %}
+                {% if domain_access.other %}
+                <optgroup label="Pozostałe projekty (wymaga innego konta)">
+                    {% for pozycja in domain_access.other %}
+                    <option value="{{ pozycja.pk }}" title="{{ pozycja.url }}"
+                            {% if pozycja.pk == audit.pk %}selected{% endif %}>
+                        {{ pozycja.url }} (brak dostępu na tym koncie)
+                    </option>
+                    {% endfor %}
+                </optgroup>
+                {% endif %}
+                {% else %}
                 {% for pozycja in audits %}
-                <option value="{{ pozycja.pk }}" {% if pozycja.pk == audit.pk %}selected{% endif %}>
+                <option value="{{ pozycja.pk }}" title="{{ pozycja.url }}"
+                        {% if pozycja.pk == audit.pk %}selected{% endif %}>
                     {{ pozycja.url }}
                 </option>
                 {% endfor %}
+                {% endif %}
             </select>
             <noscript><button type="submit">Pokaż</button></noscript>
         </form>
@@ -69,6 +99,26 @@ bez dodatkowego kliknięcia przed każdym spojrzeniem na dane.
         </a>
     </div>
 </div>
+
+{% if suggested_audit %}
+{% comment %}
+Bieżąca domena nie jest obsługiwana przez podłączone konto, a obsługiwana jest
+dokładnie JEDNA - proponujemy przejście, zamiast pokazywać pusty panel i zostawiać
+użytkownika ze zgadywaniem, którą domenę wybrać z listy.
+{% endcomment %}
+<div class="panel analytics-suggestion">
+    <span class="analytics-suggestion-icon" aria-hidden="true">💡</span>
+    <p class="analytics-suggestion-text">
+        Konto <strong>{{ google.email|default:"Google" }}</strong> nie ma dostępu do
+        <strong>{{ audit_domain }}</strong>. Obsługuje natomiast
+        <strong>{{ suggested_audit.url }}</strong>.
+    </p>
+    <a class="geo-button-secondary"
+       href="{% url 'auditor:analytics' %}?audit={{ suggested_audit.pk }}">
+        Przejdź do tej domeny
+    </a>
+</div>
+{% endif %}
 
 {% if not has_analytics %}
 {# Stan 1: brak przypisanej usługi. Jedna decyzja na ekranie. #}

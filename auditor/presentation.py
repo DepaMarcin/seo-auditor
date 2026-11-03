@@ -1492,3 +1492,59 @@ def build_period_labels(audit) -> dict:
         "gsc": _format_span(gsc_start, gsc_koniec),
         "gsc_previous": gsc_poprzedni,
     }
+
+
+def account_domains(google: dict) -> list[str]:
+    """Domeny, które obsługuje KONTO opisane przez `google`.
+
+    Źródłem są listy już pobrane przez `_google_account_context` - usługi GA4
+    i witryny Search Console. Nie odpytujemy Google ponownie: jeden komplet
+    zapytań na żądanie wystarcza, a lista dziesięciu audytów nie może znaczyć
+    dziesięciu kompletów.
+    """
+    from auditor.services.google_api import property_domain
+
+    domeny = set()
+    for wlasciwosc in google.get("ga4_properties") or []:
+        domena = property_domain(wlasciwosc.get("display_name", ""))
+        if domena:
+            domeny.add(domena)
+    for witryna in google.get("gsc_sites") or []:
+        domena = (witryna.get("domain") or "").strip()
+        if domena:
+            domeny.add(domena)
+    return sorted(domeny)
+
+
+def split_audits_by_account_access(audits: list, google: dict) -> dict:
+    """Audyty podzielone na obsługiwane przez bieżące konto Google i pozostałe.
+
+    Płaska lista wszystkich audytów wprowadzała w błąd: użytkownik widział
+    w selektorze domeny, do których podłączone konto nie ma żadnych uprawnień,
+    i dowiadywał się o tym dopiero po przełączeniu, z pustego panelu.
+
+    `grouped=False` znaczy "NIE WIEMY, co konto obsługuje" - brak podłączonego
+    konta albo awaria API Google. Wtedy oddajemy listę bez podziału, bo wrzucenie
+    wszystkiego do grupy "brak dostępu" byłoby twierdzeniem bez pokrycia.
+    """
+    from auditor.services.google_api import audit_domain, same_site
+
+    domeny_konta = account_domains(google)
+    if not (google.get("connected") and domeny_konta):
+        return {"grouped": False, "matching": [], "other": [], "suggested": None}
+
+    pasujace, pozostale = [], []
+    for pozycja in audits:
+        domena = audit_domain(getattr(pozycja, "url", "") or "")
+        obsluguje = any(same_site(d, domena) for d in domeny_konta) if domena else False
+        (pasujace if obsluguje else pozostale).append(pozycja)
+
+    return {
+        "grouped": True,
+        "matching": pasujace,
+        "other": pozostale,
+        # Podpowiedź ma sens tylko wtedy, gdy jest JEDNOZNACZNA: przy kilku
+        # obsługiwanych audytach wybór należy do użytkownika, a przy zerowej
+        # liczbie nie ma czego proponować.
+        "suggested": pasujace[0] if len(pasujace) == 1 else None,
+    }

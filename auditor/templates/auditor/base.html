@@ -604,6 +604,20 @@
         .finding-ok::before { content: "✓"; }
         .finding-info { color: var(--text-muted, #94a3b8); }
         .finding-info::before { content: "ℹ"; }
+        /* Podpowiedź przejścia do domeny, którą podłączone konto faktycznie
+           obsługuje. Ton informacyjny, nie ostrzegawczy: brak dostępu do innej
+           domeny nie jest usterką, tylko stanem konta. */
+        .analytics-suggestion {
+            display: flex;
+            align-items: center;
+            gap: 0.85rem;
+            flex-wrap: wrap;
+            border-color: var(--indigo-border);
+            background: var(--indigo-surface);
+        }
+        .analytics-suggestion-icon { flex-shrink: 0; font-size: 1.2rem; }
+        .analytics-suggestion-text { flex: 1 1 18rem; min-width: 0; margin: 0; color: var(--muted); }
+        .analytics-suggestion-text strong { color: var(--text); overflow-wrap: anywhere; }
         .score { font-size: 2.5rem; font-weight: 700; }
         h2 { text-transform: capitalize; }
         /* Nagłówki zawierające DANE (domena, adres) nie mogą być kapitalizowane:

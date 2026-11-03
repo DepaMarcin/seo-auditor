@@ -52,6 +52,7 @@ from .presentation import (
     pagespeed_score_bucket,
     priority_for_metric,
     score_bucket,
+    split_audits_by_account_access,
 )
 from .ratelimit import is_rate_limited
 from .services.google_services import (
@@ -343,11 +344,23 @@ def _render_analytics(request: HttpRequest, audit: "Audit", audits: list) -> Htt
         and gsc_site_domain(audit.gsc_site_url) != audit_domain(audit.url)
     )
 
+    # Podział selektora domen na obsługiwane przez to konto i pozostałe. Liczony
+    # z list JUŻ pobranych do `google`, więc nie dokłada zapytań do Google.
+    dostep = split_audits_by_account_access(audits, google)
+    biezacy_obslugiwany = not dostep["grouped"] or any(
+        pozycja.pk == audit.pk for pozycja in dostep["matching"]
+    )
+
     return render(request, "auditor/analytics_dashboard.html", {
         "nav_section": "analytics",
         "audit": audit,
         "audits": audits,
         "google": google,
+        "domain_access": dostep,
+        # Podpowiedź przejścia pokazujemy tylko wtedy, gdy bieżący audyt NIE jest
+        # obsługiwany, a jest dokładnie jeden, który jest - inaczej byłaby to
+        # sugestia bez podstawy albo wybór za użytkownika.
+        "suggested_audit": None if biezacy_obslugiwany else dostep["suggested"],
         "selectors": _audit_with_selectors(audit, google),
         # Dwa stany, nie więcej: brak przypisanej usługi albo gotowy dashboard.
         "has_analytics": bool(audit.ga4_property_id),
